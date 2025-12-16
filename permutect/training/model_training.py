@@ -52,10 +52,10 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
     is_cuda = device.type == 'cuda'
     print(f"Is CUDA available? {is_cuda}")
 
-    train_base_optimizer = torch.optim.AdamW(model.parameters(), lr=training_params.learning_rate, weight_decay=training_params.weight_decay)
+    train_optimizer = SAM(model.parameters(), torch.optim.AdamW, lr=training_params.learning_rate, weight_decay=training_params.weight_decay)
+    train_base_optimizer = train_optimizer.base_optimizer
     train_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(train_base_optimizer, factor=0.2, patience=5,
         threshold=0.001, min_lr=(training_params.learning_rate / 100), verbose=True)
-    train_optimizer = SAM(model.parameters(), train_base_optimizer, lr=0.1, momentum=0.9)
 
     train_loader = train_dataset.make_data_loader(training_params.batch_size, is_cuda, training_params.num_workers)
     embeddings_loader = train_loader if embedding_dataset is None else \
@@ -156,7 +156,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                             train_optimizer.second_step(zero_grad=True)
 
-                        backpropagate(train_optimizer, loss, params_to_clip=model.parameters())
+                        # backpropagate(train_optimizer, loss, params_to_clip=model.parameters())
                     # done with this batch
                 # done with both SAM optimization steps
             # done with one epoch type -- training or validation -- for this epoch
