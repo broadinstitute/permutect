@@ -12,6 +12,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange, tqdm
 
 from permutect import constants
+from permutect.architecture.sam.sam import SAM
 from permutect.training.balancer import Balancer
 from permutect.training.downsampler import Downsampler
 from permutect.architecture.artifact_model import ArtifactModel, record_embeddings
@@ -51,9 +52,10 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
     is_cuda = device.type == 'cuda'
     print(f"Is CUDA available? {is_cuda}")
 
-    train_optimizer = torch.optim.AdamW(model.parameters(), lr=training_params.learning_rate, weight_decay=training_params.weight_decay)
-    train_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(train_optimizer, factor=0.2, patience=5,
+    train_base_optimizer = torch.optim.AdamW(model.parameters(), lr=training_params.learning_rate, weight_decay=training_params.weight_decay)
+    train_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(train_base_optimizer, factor=0.2, patience=5,
         threshold=0.001, min_lr=(training_params.learning_rate / 100), verbose=True)
+    train_optimizer = SAM(model.parameters(), train_base_optimizer, lr=0.1, momentum=0.9)
 
     train_loader = train_dataset.make_data_loader(training_params.batch_size, is_cuda, training_params.num_workers)
     embeddings_loader = train_loader if embedding_dataset is None else \
@@ -96,55 +98,70 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                 ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
                 downsampled_batch2 = DownsampledReadsBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
                 batches = [downsampled_batch1, downsampled_batch2]
-                outputs = [model.compute_batch_output(batch, balancer) for batch in batches]
-                parent_output = model.compute_batch_output(parent_batch, balancer)
 
-                # distances to the second-nearest cluster (i.e. nearest wrong cluster, most likely) for normalizing
-                # the unsupervised consistency loss function
-                parent_batch_distances_bk = model.feature_clustering.centroid_distances(parent_output.features_be)
-                second_nearest_dist_b = torch.kthvalue(parent_batch_distances_bk, k=2, dim=-1).values
+                for sam_step in ([0,1] if epoch_type == Epoch.TRAIN else [0]):
+                    outputs = [model.compute_batch_output(batch, balancer) for batch in batches]
+                    parent_output = model.compute_batch_output(parent_batch, balancer)
 
-                sources = parent_batch.get_sources()
-                source_mask_b = 1 if (calibration_sources is None or not is_calibration_epoch) else \
-                    torch.sum(torch.vstack([(sources == source).int() for source in calibration_sources]), dim=-1)
+                    # distances to the second-nearest cluster (i.e. nearest wrong cluster, most likely) for normalizing
+                    # the unsupervised consistency loss function
+                    parent_batch_distances_bk = model.feature_clustering.centroid_distances(parent_output.features_be)
+                    second_nearest_dist_b = torch.kthvalue(parent_batch_distances_bk, k=2, dim=-1).values
 
-                # first handle the labeled loss and the adversarial tasks, which treat the parent and downsampled batches independently
-                loss = 0
-                for n, (batch, output) in enumerate(zip(batches, outputs)):
-                    labels_b = batch.get_training_labels()
-                    is_labeled_b = batch.get_is_labeled_mask()
+                    sources = parent_batch.get_sources()
+                    source_mask_b = 1 if (calibration_sources is None or not is_calibration_epoch) else \
+                        torch.sum(torch.vstack([(sources == source).int() for source in calibration_sources]), dim=-1)
 
-                    source_losses_b = source_mask_b * model.compute_source_prediction_losses(output.features_be, batch)
-                    alt_count_losses_b = source_mask_b * model.compute_alt_count_losses(output.features_be, batch)
-                    supervised_losses_b = source_mask_b * is_labeled_b * bce(output.calibrated_logits_b, labels_b)
+                    # first handle the labeled loss and the adversarial tasks, which treat the parent and downsampled batches independently
+                    loss = torch.Tensor([0.0])
+                    for n, (batch, output) in enumerate(zip(batches, outputs)):
+                        labels_b = batch.get_training_labels()
+                        is_labeled_b = batch.get_is_labeled_mask()
 
-                    # unsupervised loss uses uncalibrated logits because different counts should NOT be the same after calibration,
-                    # but should be identical before.  Note that unsupervised losses is used with and without labels
-                    # This must be changed if we have more than one downsampled batch
-                    # TODO: should we detach() torch.sigmoid(other_output...)?
-                    other_output = outputs[1 if n == 0 else 0]
+                        source_losses_b = source_mask_b * model.compute_source_prediction_losses(output.features_be, batch)
+                        alt_count_losses_b = source_mask_b * model.compute_alt_count_losses(output.features_be, batch)
+                        supervised_losses_b = source_mask_b * is_labeled_b * bce(output.calibrated_logits_b, labels_b)
 
-                    consistency_dist_b = torch.norm(output.features_be - parent_output.features_be, dim=-1)
-                    consistency_loss_b = torch.square(consistency_dist_b / second_nearest_dist_b)
+                        # unsupervised loss uses uncalibrated logits because different counts should NOT be the same after calibration,
+                        # but should be identical before.  Note that unsupervised losses is used with and without labels
+                        # This must be changed if we have more than one downsampled batch
+                        # TODO: should we detach() torch.sigmoid(other_output...)?
+                        other_output = outputs[1 if n == 0 else 0]
 
-                    # unsupervised loss: cross-entropy between cluster-resolved predictions
-                    unsupervised_losses_b = source_mask_b * consistency_loss_b
-                    losses = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + output.source_weights * source_losses_b
-                    loss += torch.sum(losses)
+                        consistency_dist_b = torch.norm(output.features_be - parent_output.features_be, dim=-1)
+                        consistency_loss_b = torch.square(consistency_dist_b / second_nearest_dist_b)
 
-                    loss_metrics.record(batch, supervised_losses_b, is_labeled_b * output.weights)
-                    loss_metrics.record(batch, unsupervised_losses_b, output.weights)
-                    source_prediction_loss_metrics.record(batch, source_losses_b, output.source_weights)
-                    alt_count_loss_metrics.record(batch, alt_count_losses_b, output.weights)
+                        # unsupervised loss: cross-entropy between cluster-resolved predictions
+                        unsupervised_losses_b = source_mask_b * consistency_loss_b
+                        losses = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + output.source_weights * source_losses_b
+                        loss += torch.sum(losses)
 
-                if epoch_type == Epoch.TRAIN:
-                    average_loss = loss.item() / batch.size()
-                    if epoch > 1 and average_loss > 100.0:
-                        print(f"Very large batch loss {average_loss:.2f}.")
+                        if sam_step == 0:   # only record metrics on first SAM forward pass
+                            loss_metrics.record(batch, supervised_losses_b, is_labeled_b * output.weights)
+                            loss_metrics.record(batch, unsupervised_losses_b, output.weights)
+                            source_prediction_loss_metrics.record(batch, source_losses_b, output.source_weights)
+                            alt_count_loss_metrics.record(batch, alt_count_losses_b, output.weights)
 
-                    backpropagate(train_optimizer, loss, params_to_clip=model.parameters())
-                # done with this batch
+                    if epoch_type == Epoch.TRAIN:
+                        average_loss = loss.item() / batch.size()
+                        if epoch > 1 and average_loss > 100.0:
+                            print(f"Very large batch loss {average_loss:.2f}.")
+
+                        if sam_step == 0:
+                            loss.backward()
+                            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                            train_optimizer.first_step(zero_grad=True)
+                        elif sam_step == 1:
+                            loss.backward()
+                            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                            train_optimizer.second_step(zero_grad=True)
+
+                        backpropagate(train_optimizer, loss, params_to_clip=model.parameters())
+                    # done with this batch
+                # done with both SAM optimization steps
             # done with one epoch type -- training or validation -- for this epoch
+
+            # Training scheduler -- note that scheduler is, correctly, applied to the base optimizer
             if epoch_type == Epoch.TRAIN:
                 mean_over_labels = torch.mean(loss_metrics.get_marginal(BatchProperty.LABEL)).item()
                 train_scheduler.step(mean_over_labels)
