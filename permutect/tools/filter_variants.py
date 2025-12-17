@@ -15,6 +15,7 @@ from permutect.architecture.artifact_model import ArtifactModel, load_model
 from permutect.data import plain_text_data
 from permutect.data.batch import BatchIndexedTensor
 from permutect.data.datum import Datum
+from permutect.data.memory_mapped_posterior_data import MemoryMappedPosteriorData
 from permutect.data.posterior_data import PosteriorDataset, PosteriorDatum, PosteriorBatch
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.data.reads_batch import ReadsBatch
@@ -184,7 +185,7 @@ def make_filtered_vcf(artifact_model_path, initial_log_variant_prior: float, ini
 
 
 @torch.inference_mode()
-def make_posterior_data_loader(dataset_file, input_vcf, contig_index_to_name_map, model: ArtifactModel,
+def generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model: ArtifactModel,
                                batch_size: int, num_workers: int, segmentation=defaultdict(IntervalTree), normal_segmentation=defaultdict(IntervalTree)):
     print("Reading test dataset")
 
@@ -201,13 +202,8 @@ def make_posterior_data_loader(dataset_file, input_vcf, contig_index_to_name_map
 
     # pass through the plain text dataset, normalizing and creating ReadSetDatasets as we go, running the artifact model
     # to get artifact logits, which we record in a dict keyed by variant strings.  These will later be added to PosteriorDatum objects.
-    posterior_data = []
-
     report_memory_usage("Parsing and normalizing plain text data.")
-    normalized_mmap_data = plain_text_data.make_normalized_mmap_data(dataset_files=[dataset_file])
 
-    report_memory_usage("Creating ReadsDataset.")
-    dataset = ReadsDataset(memory_mapped_data=normalized_mmap_data)
     loader = dataset.make_data_loader(batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
 
     print("creating posterior data...")
@@ -230,11 +226,24 @@ def make_posterior_data_loader(dataset_file, input_vcf, contig_index_to_name_map
                 maf = list(segmentation_overlaps)[0].data if segmentation_overlaps else 0.5
                 normal_maf = list(normal_segmentation_overlaps)[0].data if normal_segmentation_overlaps else 0.5
 
-                posterior_datum = PosteriorDatum(datum_array, allele_frequency, logit, maf, normal_maf, embedding)
-                posterior_data.append(posterior_datum)
+                posterior_datum = PosteriorDatum.create(datum_array, allele_frequency, logit, maf, normal_maf, embedding)
+                yield posterior_datum
 
-    print(f"Size of filtering dataset: {len(posterior_data)}")
-    posterior_dataset = PosteriorDataset(posterior_data)
+@torch.inference_mode()
+def make_posterior_data_loader(dataset_file, input_vcf, contig_index_to_name_map, model: ArtifactModel,
+                               batch_size: int, num_workers: int, segmentation=defaultdict(IntervalTree), normal_segmentation=defaultdict(IntervalTree)):
+    normalized_mmap_data = plain_text_data.make_normalized_mmap_data(dataset_files=[dataset_file])
+
+    report_memory_usage("Creating ReadsDataset.")
+    dataset = ReadsDataset(memory_mapped_data=normalized_mmap_data)
+
+    posterior_generator = generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model,
+        batch_size, num_workers, segmentation, normal_segmentation)
+    posterior_mmap = MemoryMappedPosteriorData.from_generator(posterior_generator, estimated_num_data=len(dataset))
+    print(f"Size of filtering dataset: {len(posterior_mmap)}")
+
+
+    posterior_dataset = PosteriorDataset(posterior_mmap)
     report_memory_usage("Finished creating PosteriorDataset.")
     return posterior_dataset.make_data_loader(batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
 
