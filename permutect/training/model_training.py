@@ -113,7 +113,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                         torch.sum(torch.vstack([(sources == source).int() for source in calibration_sources]), dim=-1)
 
                     # first handle the labeled loss and the adversarial tasks, which treat the parent and downsampled batches independently
-                    loss = torch.Tensor([0.0])
+                    loss = torch.Tensor([0.0], device=device)
                     for n, (batch, output) in enumerate(zip(batches, outputs)):
                         labels_b = batch.get_training_labels()
                         is_labeled_b = batch.get_is_labeled_mask()
