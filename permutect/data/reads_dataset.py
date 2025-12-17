@@ -49,7 +49,6 @@ class ReadsDataset(IterableDataset):
         available_memory = psutil.virtual_memory().available
         print(f"Data occupy {memory_mapped_data.size_in_bytes() // 1000000} Mb and the system has {available_memory // 1000000} Mb of RAM available.")
 
-        # copy memory-mapped data to RAM if space allows, otherwise use the memory-mapped data
         self._stacked_reads_re = self.memory_mapped_data.reads_mmap
         self._stacked_data_ve = self.memory_mapped_data.data_mmap
 

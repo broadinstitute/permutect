@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import copy
-import random
-import math
-from typing import List, Iterable
+from typing import List
 
 import numpy as np
 import torch
 from torch import IntTensor, Tensor
-from torch.utils.data import Dataset, DataLoader
 
 from permutect.data.batch import Batch
 from permutect.data.datum import Datum
@@ -21,15 +18,20 @@ class PosteriorDatum(Datum):
     MAF = 2
     NORMAL_MAF = 3
 
-    def __init__(self, datum_array, allele_frequency: float, artifact_logit: float, maf: float, normal_maf: float, embedding: Tensor):
+    def __init__(self, datum_array, float_array, embedding: Tensor):
         super().__init__(datum_array)
         self.embedding = embedding
+        self.float_array = float_array
 
-        self.float_array = torch.zeros(4, dtype=torch.float16)
-        self.float_array[PosteriorDatum.ALLELE_FREQUENCY] = allele_frequency
-        self.float_array[PosteriorDatum.ARTIFACT_LOGIT] = artifact_logit
-        self.float_array[PosteriorDatum.MAF] = maf
-        self.float_array[PosteriorDatum.NORMAL_MAF] = normal_maf
+
+    @classmethod
+    def create(cls, datum_array, allele_frequency: float, artifact_logit: float, maf: float, normal_maf: float, embedding: Tensor):
+        float_array = np.zeros(4, dtype=np.float16)
+        float_array[PosteriorDatum.ALLELE_FREQUENCY] = allele_frequency
+        float_array[PosteriorDatum.ARTIFACT_LOGIT] = artifact_logit
+        float_array[PosteriorDatum.MAF] = maf
+        float_array[PosteriorDatum.NORMAL_MAF] = normal_maf
+        return cls(datum_array, float_array, embedding)
 
     def get_artifact_logit(self) -> float:
         return self.float_array[self.__class__.ARTIFACT_LOGIT]
@@ -39,8 +41,8 @@ class PosteriorBatch(Batch):
 
     def __init__(self, data: List[PosteriorDatum]):
         super().__init__(data)
-        self.embeddings = torch.vstack([item.embedding for item in data]).float()
-        self.float_tensor = torch.vstack([item.float_array for item in data]).float()
+        self.embeddings = torch.from_numpy(np.vstack([item.embedding for item in data])).float()
+        self.float_tensor = torch.from_numpy(np.vstack([item.float_array for item in data])).float()
 
     def pin_memory(self):
         super().pin_memory()
@@ -73,18 +75,3 @@ class PosteriorBatch(Batch):
         return self.get_original_normal_depths() - self.get_original_normal_alt_counts()
 
 
-class PosteriorDataset(Dataset):
-    def __init__(self, data: Iterable[PosteriorDatum], shuffle: bool = True):
-        self.data = data
-
-        if shuffle:
-            random.shuffle(self.data)
-
-    def __len__(self) -> int:
-        return len(self.data)
-
-    def __getitem__(self, index) -> PosteriorDatum:
-        return self.data[index]
-
-    def make_data_loader(self, batch_size: int, pin_memory: bool = False, num_workers: int = 0):
-        return DataLoader(dataset=self, batch_size=batch_size, pin_memory=pin_memory, num_workers=num_workers, collate_fn=PosteriorBatch)
