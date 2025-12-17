@@ -16,7 +16,8 @@ from permutect.data import plain_text_data
 from permutect.data.batch import BatchIndexedTensor
 from permutect.data.datum import Datum
 from permutect.data.memory_mapped_posterior_data import MemoryMappedPosteriorData
-from permutect.data.posterior_data import PosteriorDataset, PosteriorDatum, PosteriorBatch
+from permutect.data.posterior_data import PosteriorDatum, PosteriorBatch
+from permutect.data.posterior_dataset import PosteriorDataset
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.data.reads_batch import ReadsBatch
 from permutect.data.reads_dataset import ReadsDataset
@@ -226,7 +227,7 @@ def generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model:
                 maf = list(segmentation_overlaps)[0].data if segmentation_overlaps else 0.5
                 normal_maf = list(normal_segmentation_overlaps)[0].data if normal_segmentation_overlaps else 0.5
 
-                posterior_datum = PosteriorDatum.create(datum_array, allele_frequency, logit, maf, normal_maf, embedding)
+                posterior_datum = PosteriorDatum.create(datum_array, allele_frequency, logit, maf, normal_maf, embedding.numpy())
                 yield posterior_datum
 
 @torch.inference_mode()
