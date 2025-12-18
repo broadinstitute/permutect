@@ -65,38 +65,71 @@ workflow Permutect {
         File? EMPTY_STRING_HACK
     }
 
-    if(!defined(cached_plain_text_test_dataset)) {
+    # I (David Benjamin, that is) always run Permutect on Terra, which has the following extremely irritating bug:
+    # whenever you upload new data to your Terra workspace, values in the table that were previously unset
+    # (i.e. None, empty Optional) are **silently and invisibly** (there's no sign in the GUI) rewritten as
+    # empty String literals.  That is, your Nones become ""s.  This ruins workflows with optional inputs, of course.
+    # The workaround is to explicitly test for Strings equal to "", which are actually empty Optionals that
+    # Terra converted.
+
+    File? intervals_hack = if (select_first([intervals,""]) == "") then EMPTY_STRING_HACK else intervals
+    File? masks_hack = if (select_first([masks,""]) == "") then EMPTY_STRING_HACK else masks
+
+    File? control_bam_hack = if select_first([control_bam, ""]) == "" then EMPTY_STRING_HACK else control_bam
+    File? control_bai_hack = if select_first([control_bai, ""]) == "" then EMPTY_STRING_HACK else control_bai
+    File? gnomad_hack = if select_first([gnomad, ""]) == "" then EMPTY_STRING_HACK else gnomad
+    File? gnomad_idx_hack = if select_first([gnomad_idx, ""]) == "" then EMPTY_STRING_HACK else gnomad_idx
+
+    File? variants_for_contamination_hack = if select_first([variants_for_contamination, ""]) == "" then EMPTY_STRING_HACK else variants_for_contamination
+    File? variants_for_contamination_idx_hack = if select_first([variants_for_contamination_idx, ""]) == "" then EMPTY_STRING_HACK else variants_for_contamination_idx
+    File? realignment_index_bundle_hack = if select_first([realignment_index_bundle, ""]) == "" then EMPTY_STRING_HACK else realignment_index_bundle
+    File? dragstr_model_hack = if select_first([dragstr_model, ""]) == "" then EMPTY_STRING_HACK else dragstr_model
+    File? test_dataset_truth_vcf_hack = if select_first([test_dataset_truth_vcf, ""]) == "" then EMPTY_STRING_HACK else test_dataset_truth_vcf
+    File? test_dataset_truth_vcf_idx_hack = if select_first([test_dataset_truth_vcf_idx, ""]) == "" then EMPTY_STRING_HACK else test_dataset_truth_vcf_idx
+
+    File? cached_dataset_hack = if (select_first([cached_plain_text_test_dataset,""]) == "") then EMPTY_STRING_HACK else cached_plain_text_test_dataset
+    String? cached_mutect2_vcf_hack = if (select_first([cached_mutect2_vcf,""]) == "") then EMPTY_STRING_HACK else cached_mutect2_vcf
+    String? cached_mutect2_vcf_idx_hack = if (select_first([cached_mutect2_vcf_idx,""]) == "") then EMPTY_STRING_HACK else cached_mutect2_vcf_idx
+    String? cached_contigs_table_hack = if (select_first([cached_contigs_table,""]) == "") then EMPTY_STRING_HACK else cached_contigs_table
+    String? cached_maf_segments_hack = if (select_first([cached_maf_segments,""]) == "") then EMPTY_STRING_HACK else cached_maf_segments
+    String? cached_normal_maf_segments_hack = if (select_first([cached_normal_maf_segments,""]) == "") then EMPTY_STRING_HACK else cached_normal_maf_segments
+    String? cached_mutect_stats_hack = if (select_first([cached_mutect_stats,""]) == "") then EMPTY_STRING_HACK else cached_mutect_stats
+
+    String? gcs_project_for_requester_pays_hack = if select_first([gcs_project_for_requester_pays, ""]) == "" then EMPTY_STRING_HACK else gcs_project_for_requester_pays
+
+    Boolean use_cache = defined(cached_dataset_hack) && defined(cached_mutect2_vcf_hack) && defined(cached_contigs_table_hack) && defined(cached_mutect_stats_hack)
+    if(!use_cache) {
         call m2.Mutect2 {
             input:
                 make_permutect_training_dataset = false,
                 make_permutect_test_dataset = true,
-                permutect_test_dataset_truth_vcf = test_dataset_truth_vcf,
-                permutect_test_dataset_truth_vcf_idx = test_dataset_truth_vcf_idx,
-                intervals = intervals,
-                masked_intervals = masks,
+                permutect_test_dataset_truth_vcf = test_dataset_truth_vcf_hack,
+                permutect_test_dataset_truth_vcf_idx = test_dataset_truth_vcf_idx_hack,
+                intervals = intervals_hack,
+                masked_intervals = masks_hack,
                 ref_fasta = ref_fasta,
                 ref_fai = ref_fai,
                 ref_dict = ref_dict,
                 tumor_reads = primary_bam,
                 tumor_reads_index = primary_bai,
-                normal_reads = if select_first([control_bam, ""]) == "" then EMPTY_STRING_HACK else control_bam,
-                normal_reads_index = if select_first([control_bam, ""]) == "" then EMPTY_STRING_HACK else control_bai,
+                normal_reads = control_bam_hack,
+                normal_reads_index = control_bai_hack,
 
                 scatter_count = scatter_count,
-                gnomad = if gnomad == "" then EMPTY_STRING_HACK else gnomad,
-                gnomad_idx = if gnomad == "" then EMPTY_STRING_HACK else gnomad_idx,
-                variants_for_contamination = if select_first([variants_for_contamination, ""]) == "" then EMPTY_STRING_HACK else variants_for_contamination,
-                variants_for_contamination_idx = if select_first([variants_for_contamination, ""]) == "" then EMPTY_STRING_HACK else variants_for_contamination_idx,
+                gnomad = gnomad_hack,
+                gnomad_idx = gnomad_idx_hack,
+                variants_for_contamination = variants_for_contamination_hack,
+                variants_for_contamination_idx = variants_for_contamination_idx_hack,
                 skip_filtering = skip_m2_filtering,
-                realignment_index_bundle = realignment_index_bundle,
+                realignment_index_bundle = realignment_index_bundle_hack,
                 realignment_extra_args = realignment_extra_args,
-                dragstr_model = if dragstr_model == "" then EMPTY_STRING_HACK else dragstr_model,
+                dragstr_model = dragstr_model_hack,
                 run_orientation_bias_mixture_model_filter = run_orientation_bias_mixture_model_filter,
                 m2_extra_args = m2_extra_args,
                 make_bamout = false,
 
                 gatk_docker = gatk_docker,
-                gcs_project_for_requester_pays = if select_first([gcs_project_for_requester_pays, ""]) == "" then EMPTY_STRING_HACK else gcs_project_for_requester_pays,
+                gcs_project_for_requester_pays = gcs_project_for_requester_pays_hack,
                 gatk_override = gatk_override,
                 preemptible = preemptible,
                 max_retries = max_retries
@@ -105,8 +138,8 @@ workflow Permutect {
 
     call SplitMultiallelics {
         input:
-            input_vcf = select_first([Mutect2.output_vcf, cached_mutect2_vcf]),
-            input_vcf_idx = select_first([Mutect2.output_vcf_idx, cached_mutect2_vcf_idx]),
+            input_vcf = select_first([Mutect2.output_vcf, cached_mutect2_vcf_hack]),
+            input_vcf_idx = select_first([Mutect2.output_vcf_idx, cached_mutect2_vcf_idx_hack]),
             ref_fasta = ref_fasta,
             ref_fai = ref_fai,
             ref_dict = ref_dict,
@@ -118,11 +151,11 @@ workflow Permutect {
             mutect2_vcf = SplitMultiallelics.output_vcf,
             mutect2_vcf_idx = SplitMultiallelics.output_vcf_idx,
             artifact_model = artifact_model,
-            test_dataset = select_first([Mutect2.permutect_test_dataset, cached_plain_text_test_dataset]),
-            contigs_table = select_first([Mutect2.permutect_contigs_table, cached_contigs_table]),
-            maf_segments = select_first([Mutect2.maf_segments, cached_maf_segments]),
-            normal_maf_segments = select_first([Mutect2.normal_maf_segments, cached_normal_maf_segments]),
-            mutect_stats = select_first([Mutect2.mutect_stats, cached_mutect_stats]),
+            test_dataset = select_first([Mutect2.permutect_test_dataset, cached_dataset_hack]),
+            contigs_table = select_first([Mutect2.permutect_contigs_table, cached_contigs_table_hack]),
+            maf_segments = select_first([Mutect2.maf_segments, cached_maf_segments_hack]),
+            normal_maf_segments = select_first([Mutect2.normal_maf_segments, cached_normal_maf_segments_hack]),
+            mutect_stats = select_first([Mutect2.mutect_stats, cached_mutect_stats_hack]),
             batch_size = batch_size,
             num_workers = num_workers,
             gpu_count = gpu_count,
@@ -132,13 +165,13 @@ workflow Permutect {
             permutect_docker = permutect_docker,
     }
 
-    if (defined(test_dataset_truth_vcf)){
+    if (defined(test_dataset_truth_vcf_hack)){
         call Concordance as PermutectConcordance {
             input:
-                intervals = intervals,
-                masks = if (select_first([masks,""]) == "") then EMPTY_STRING_HACK else masks,
-                truth_vcf = select_first([test_dataset_truth_vcf]),
-                truth_vcf_idx = select_first([test_dataset_truth_vcf_idx]),
+                intervals = intervals_hack,
+                masks = masks_hack,
+                truth_vcf = select_first([test_dataset_truth_vcf_hack]),
+                truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_hack]),
                 eval_vcf = PermutectFiltering.output_vcf,
                 eval_vcf_idx = PermutectFiltering.output_vcf_idx,
                 gatk_docker = gatk_docker
@@ -146,12 +179,12 @@ workflow Permutect {
 
         call Concordance as M2Concordance {
             input:
-                intervals = intervals,
-                masks = if (select_first([masks,""]) == "") then EMPTY_STRING_HACK else masks,
-                truth_vcf = select_first([test_dataset_truth_vcf]),
-                truth_vcf_idx = select_first([test_dataset_truth_vcf_idx]),
-                eval_vcf = select_first([Mutect2.output_vcf, cached_mutect2_vcf]),
-                eval_vcf_idx = select_first([Mutect2.output_vcf_idx, cached_mutect2_vcf_idx]),
+                intervals = intervals_hack,
+                masks = masks_hack,
+                truth_vcf = select_first([test_dataset_truth_vcf_hack]),
+                truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_hack]),
+                eval_vcf = select_first([Mutect2.output_vcf, cached_mutect2_vcf_hack]),
+                eval_vcf_idx = select_first([Mutect2.output_vcf_idx, cached_mutect2_vcf_idx_hack]),
                 gatk_docker = gatk_docker
         }
     }
@@ -160,13 +193,13 @@ workflow Permutect {
         File output_vcf = PermutectFiltering.output_vcf
         File output_vcf_idx = PermutectFiltering.output_vcf_idx
         File tensorboard_report = PermutectFiltering.tensorboard_report
-        String test_dataset = select_first([Mutect2.permutect_test_dataset, cached_plain_text_test_dataset])
-        String mutect2_vcf = select_first([Mutect2.output_vcf, cached_mutect2_vcf])
-        String mutect2_vcf_idx = select_first([Mutect2.output_vcf_idx, cached_mutect2_vcf_idx])
-        String contigs_table = select_first([Mutect2.permutect_contigs_table, cached_contigs_table])
-        String maf_segments = select_first([Mutect2.maf_segments, cached_maf_segments])
-        String normal_maf_segments = select_first([Mutect2.normal_maf_segments, cached_normal_maf_segments])
-        String mutect_stats = select_first([Mutect2.mutect_stats, cached_mutect_stats])
+        String test_dataset = select_first([Mutect2.permutect_test_dataset, cached_dataset_hack])
+        String mutect2_vcf = select_first([Mutect2.output_vcf, cached_mutect2_vcf_hack])
+        String mutect2_vcf_idx = select_first([Mutect2.output_vcf_idx, cached_mutect2_vcf_idx_hack])
+        String contigs_table = select_first([Mutect2.permutect_contigs_table, cached_contigs_table_hack])
+        String maf_segments = select_first([Mutect2.maf_segments, cached_maf_segments_hack])
+        String normal_maf_segments = select_first([Mutect2.normal_maf_segments, cached_normal_maf_segments_hack])
+        String mutect_stats = select_first([Mutect2.mutect_stats, cached_mutect_stats_hack])
 
         File? fn = PermutectConcordance.fn
         File? fn_idx = PermutectConcordance.fn_idx

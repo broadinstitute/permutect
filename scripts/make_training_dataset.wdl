@@ -52,28 +52,45 @@ workflow MakeTrainingDataset {
 
         # Use as a last resort to increase the disk given to every task in case of ill behaving data
         Int emergency_extra_disk = 0
+
+        # WDL version 1.0 does not have an empty Optional literal
+        # such a literal is very useful because Terra has a bug where whenever a data table is updated, empty values
+        # silently and invisibly get converted to empty strings "".  Thus it is useful to recognize empty strings and
+        # declare empty Optionals.  The only way to do this in WDL 1.0 is to get an empty Optional as a variable from the
+        # workflow inputs.  These inputs should NEVER be filled in!!!!!
+        File? EMPTY_STRING_HACK
     }
+
+    File? intervals_hack = if (select_first([intervals,""]) == "") then EMPTY_STRING_HACK else intervals
+    File? masks_hack = if (select_first([masked_intervals,""]) == "") then EMPTY_STRING_HACK else masked_intervals
+    File? gnomad_hack = if select_first([gnomad, ""]) == "" then EMPTY_STRING_HACK else gnomad
+    File? gnomad_idx_hack = if select_first([gnomad_idx, ""]) == "" then EMPTY_STRING_HACK else gnomad_idx
+    File? dragstr_model_hack = if select_first([dragstr_model, ""]) == "" then EMPTY_STRING_HACK else dragstr_model
+    String? gcs_project_for_requester_pays_hack = if select_first([gcs_project_for_requester_pays, ""]) == "" then EMPTY_STRING_HACK else gcs_project_for_requester_pays
+    File? permutect_training_dataset_truth_vcf_hack = if select_first([permutect_training_dataset_truth_vcf, ""]) == "" then EMPTY_STRING_HACK else permutect_training_dataset_truth_vcf
+    File? permutect_training_dataset_truth_vcf_idx_hack = if select_first([permutect_training_dataset_truth_vcf_idx, ""]) == "" then EMPTY_STRING_HACK else permutect_training_dataset_truth_vcf_idx
+    String? cached_plain_text_dataset_hack = if select_first([cached_plain_text_dataset, ""]) == "" then EMPTY_STRING_HACK else cached_plain_text_dataset
 
     if (!defined(cached_plain_text_dataset)) {
         call m2.Mutect2 {
             input:
-                intervals = intervals,
-                masked_intervals = masked_intervals,
+                intervals = intervals_hack,
+                masked_intervals = masks_hack,
                 ref_fasta = ref_fasta,
                 ref_fai = ref_fai,
                 ref_dict = ref_dict,
                 tumor_reads = reads,
                 tumor_reads_index = reads_index,
-                gnomad = gnomad,
-                gnomad_idx = gnomad_idx,
+                gnomad = gnomad_hack,
+                gnomad_idx = gnomad_idx_hack,
                 pon = blacklist_vcf,
                 pon_idx = blacklist_vcf_idx,
                 m2_extra_args = m2_extra_args,
-                dragstr_model = dragstr_model,
+                dragstr_model = dragstr_model_hack,
                 make_bamout = make_bamout,
                 make_permutect_training_dataset = true,
-                permutect_training_dataset_truth_vcf = permutect_training_dataset_truth_vcf,
-                permutect_training_dataset_truth_vcf_idx = permutect_training_dataset_truth_vcf_idx,
+                permutect_training_dataset_truth_vcf = permutect_training_dataset_truth_vcf_hack,
+                permutect_training_dataset_truth_vcf_idx = permutect_training_dataset_truth_vcf_idx_hack,
                 skip_filtering = true,
                 gatk_docker = gatk_docker,
                 gatk_override = gatk_override,
@@ -84,7 +101,7 @@ workflow MakeTrainingDataset {
                 small_task_mem = small_task_mem,
                 small_task_disk = small_task_disk,
                 boot_disk_size = boot_disk_size,
-                gcs_project_for_requester_pays = gcs_project_for_requester_pays,
+                gcs_project_for_requester_pays = gcs_project_for_requester_pays_hack,
                 emergency_extra_disk = emergency_extra_disk
         }
     }
