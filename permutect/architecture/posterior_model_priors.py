@@ -148,7 +148,7 @@ class PosteriorModelPriors(nn.Module):
                     # initial guess for alpha and beta via method of moments.  This is taken from the scipy.stats.beta.fit code
                     # which we don't use in its entirety because it throws weird errors
                     xbar = torch.mean(nontrivial_priors).item()
-                    fac = xbar * (1 - xbar) / torch.var(nontrivial_priors).item() - 1
+                    fac = xbar * (1 - xbar) / (torch.var(nontrivial_priors).item()+0.0000001) - 1
                     new_alpha = xbar * fac
                     new_beta = (1 - xbar) * fac
                     # since pseudocounts are alpha - 1, beta - 1, we want them alpha and beta to be greater than 1
