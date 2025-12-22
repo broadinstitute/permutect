@@ -22,8 +22,21 @@ task concatenate {
         touch TMP   $ first column is the heading word, second column is the file name
 
         for file in ~{sep=' ' inputs}; do
-            # convert first lione to lowercase and extract first word
+            echo "file is" $file
+
+            echo "first line is"
+            head -n 1 $file
+
+            echo "first line lowercase is"
+            head -n 1 $file | tr '[:upper:]' '[:lower:]'
+
+
+            # convert first line to lowercase and extract first word
             head -n 1 $file | tr '[:upper:]' '[:lower:]' | read -r first_word _
+
+            echo "first word is"
+            echo $first_word
+        
             echo $first_word $file >> TMP
         done
 
