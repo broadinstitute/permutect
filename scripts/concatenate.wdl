@@ -32,12 +32,11 @@ task concatenate {
 
 
             # convert first line to lowercase and extract first word
-            head -n 1 $file | tr '[:upper:]' '[:lower:]' | read -r first_word _
-
-            echo "first word is"
-            echo $first_word
-        
-            echo $first_word $file >> TMP
+            head -n 1 $file | tr '[:upper:]' '[:lower:]' | while read first_word _; do
+                echo "first word is"
+                echo $first_word
+                echo $first_word $file >> TMP
+            done
         done
 
         #debug
