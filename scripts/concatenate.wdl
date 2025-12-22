@@ -44,11 +44,11 @@ task concatenate {
         cat TMP
 
         echo "here are the files in order"
-        sort k1 TMP | while read heading filename; do echo $filename; done
+        sort k1,1 TMP | while read heading filename; do echo $filename; done
 
         # sort by heading word and cat the files in order
         touch result.txt
-        sort k1 TMP | while read heading filename; do cat $filename >> result.txt; echo "" >> result.txt; done
+        sort k1,1 TMP | while read heading filename; do cat $filename >> result.txt; echo "" >> result.txt; done
 	>>>
 
     runtime {
