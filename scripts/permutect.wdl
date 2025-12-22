@@ -359,6 +359,10 @@ task Concordance {
 	}
 
     command {
+        # this shouldn't be necessary but the Terra hacks on top of Terra hacks to deal with all the bugs recently
+        # have reached a breaking point
+        gatk IndexFeatureFile -I ~{eval_vcf}
+
         gatk --java-options "-Xmx2g" Concordance \
             ~{"-L " + intervals} \
             ~{"-XL " + masks} \
