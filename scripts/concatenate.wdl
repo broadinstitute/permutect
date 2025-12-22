@@ -3,10 +3,9 @@ version 1.0
 workflow Concatenate {
 	input {
 		Array[File] inputs
-        Array[String] headings
 	}
 
-	call concatenate { input: inputs = inputs, headings = headings }
+	call concatenate { input: inputs = inputs}
 
 	output {
 		File concatenated = concatenate.concatenated
@@ -16,31 +15,41 @@ workflow Concatenate {
 task concatenate {
 	input {
 		Array[File] inputs
-        Array[String] headings
 		Int? disk_space
 	}
 
-	command {
-        # FOFN, one file per line
-        touch file_names.txt
+	command <<<
+        touch TMP   $ first column is the heading word, second column is the file name
+
         for file in ~{sep=' ' inputs}; do
-            echo $file >> file_names.txt
-		done
+            echo "file is" $file
 
-        touch headings.txt
-        for heading in ~{sep=' ' headings}; do
-            echo $heading >> headings.txt
-		done
+            echo "first line is"
+            head -n 1 $file
 
-        paste file_names.txt headings.txt > tmp.txt
+            echo "first line lowercase is"
+            head -n 1 $file | tr '[:upper:]' '[:lower:]'
 
+
+            # convert first line to lowercase and extract first word
+            head -n 1 $file | tr '[:upper:]' '[:lower:]' | while read first_word _; do
+                echo "first word is"
+                echo $first_word
+                echo $first_word $file >> TMP
+            done
+        done
+
+        #debug
+        echo "here's the sorting file:"
+        cat TMP
+
+        echo "here are the files in order"
+        sort -k1,1 TMP | while read heading filename; do echo $filename; done
+
+        # sort by heading word and cat the files in order
         touch result.txt
-        while read file heading; do
-            echo $heading >> result.txt
-			cat $file >> result.txt
-			echo "" >> result.txt
-        done < tmp.txt
-	}
+        sort -k1,1 TMP | while read heading filename; do cat $filename >> result.txt; echo "" >> result.txt; done
+	>>>
 
     runtime {
         docker: "continuumio/anaconda:latest"
