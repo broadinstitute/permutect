@@ -34,6 +34,7 @@ workflow Permutect {
         Int? gpu_count
         File? test_dataset_truth_vcf    # used for evaluation
         File? test_dataset_truth_vcf_idx
+        String? concordance_header
 
         # These HACKS are required to get around Terra's unreliable call-caching
         # note: defining them as Strings instead of Files is essential because otherwise
@@ -174,7 +175,8 @@ workflow Permutect {
                 truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_hack]),
                 eval_vcf = PermutectFiltering.output_vcf,
                 eval_vcf_idx = PermutectFiltering.output_vcf_idx,
-                gatk_docker = gatk_docker
+                gatk_docker = gatk_docker,
+                concordance_header = concordance_header,
         }
 
         call Concordance as M2Concordance {
@@ -185,7 +187,8 @@ workflow Permutect {
                 truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_hack]),
                 eval_vcf = select_first([Mutect2.output_vcf, cached_mutect2_vcf_hack]),
                 eval_vcf_idx = select_first([Mutect2.output_vcf_idx, cached_mutect2_vcf_idx_hack]),
-                gatk_docker = gatk_docker
+                gatk_docker = gatk_docker,
+                concordance_header = concordance_header
         }
     }
 
@@ -348,6 +351,7 @@ task Concordance {
     	File truth_vcf_idx
     	File eval_vcf
     	File eval_vcf_idx
+        String? concordance_header
 
     	# runtime
     	String gatk_docker = "us.gcr.io/broad-gatk/gatk"
@@ -363,7 +367,10 @@ task Concordance {
             -tpfp "tpfp.vcf" \
             -ftnfn "ftnfn.vcf" \
             -filter-analysis "filter-analysis.txt" \
-            -summary "summary.txt"
+            -summary "summary_no_header.txt"
+
+        echo ~{concordance_header} > TMP
+        cat TMP summary_no_header.txt > summary.txt
 
         grep '#' tpfn.vcf > HEAD
         grep STATUS=FN tpfn.vcf > BODY
