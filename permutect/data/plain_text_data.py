@@ -210,7 +210,7 @@ def make_read_and_info_quantile_transforms(read_end_indices, data_ve, reads_re):
     # for every index in the normalization set, get all the reads of the corresponding datum.  Stack all these reads to
     # obtain the reads normalization array
     reads_for_normalization_re = np.vstack([reads_re[start:end] for start, end in zip(normalization_read_start_indices, normalization_ref_end_indices)])
-    reads_for_normalization_distance_columns_re = reads_for_normalization_re[:, 6:9]
+    reads_for_normalization_distance_columns_re = reads_for_normalization_re[:, 6:7]
     read_quantile_transform = QuantileTransformer(n_quantiles=100, output_distribution='normal')
     read_quantile_transform.fit(reads_for_normalization_distance_columns_re)
 
@@ -306,9 +306,11 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
 
     from_read_ends_columns_re = all_reads_re[:, 4:6]
     from_read_ends_transformed_re = np.tanh(from_read_ends_columns_re / DISTANCE_FROM_END_SATURATION)
-    distance_columns_re = all_reads_re[:, 6:9]
+    from_frag_ends_columns_re = all_reads_re[:, 7:9]
+    from_frag_ends_transformed_re = np.tanh(from_frag_ends_columns_re / DISTANCE_FROM_END_SATURATION)
+    distance_columns_re = all_reads_re[:, 6:7]
     distance_columns_transformed_re = read_quantile_transform.transform(distance_columns_re)
-    float_read_columns_re = np.hstack([from_read_ends_transformed_re, distance_columns_transformed_re])
+    float_read_columns_re = np.hstack([from_read_ends_transformed_re, from_frag_ends_transformed_re, distance_columns_transformed_re])
 
     all_info_transformed_ve = transform_except_for_binary_columns(all_info_ve, info_quantile_transform, binary_info_columns)
 
