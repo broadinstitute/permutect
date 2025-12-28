@@ -295,9 +295,6 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
     # 2D array.  Rows are ref/alt reads, columns are read features
     all_reads_re = np.vstack([datum.reads_re for datum in buffer])
 
-    binary_read_column_mask = np.ones_like(all_reads_re[0])
-    binary_read_column_mask[10:15] = 0
-
     # 2D array.  Rows are read sets, columns are info features
     all_info_ve = np.vstack([datum.get_info_1d() for datum in buffer])
     binary_info_columns = binary_column_indices(all_info_ve)
