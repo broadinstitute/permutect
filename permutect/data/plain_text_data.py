@@ -55,6 +55,8 @@ MIN_NUM_DATA_FOR_NORMALIZATION = 1000
 MAX_NUM_DATA_FOR_NORMALIZATION = 100000
 NUM_RAW_DATA_TO_NORMALIZE_AT_ONCE = 10000
 
+DISTANCE_FROM_END_SATURATION = 20
+
 
 def count_number_of_data_and_reads_in_text_file(dataset_file):
     num_data, num_reads = 0, 0
@@ -208,7 +210,7 @@ def make_read_and_info_quantile_transforms(read_end_indices, data_ve, reads_re):
     # for every index in the normalization set, get all the reads of the corresponding datum.  Stack all these reads to
     # obtain the reads normalization array
     reads_for_normalization_re = np.vstack([reads_re[start:end] for start, end in zip(normalization_read_start_indices, normalization_ref_end_indices)])
-    reads_for_normalization_distance_columns_re = reads_for_normalization_re[:, 4:9]
+    reads_for_normalization_distance_columns_re = reads_for_normalization_re[:, 6:9]
     read_quantile_transform = QuantileTransformer(n_quantiles=100, output_distribution='normal')
     read_quantile_transform.fit(reads_for_normalization_distance_columns_re)
 
@@ -300,17 +302,28 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
     all_info_ve = np.vstack([datum.get_info_1d() for datum in buffer])
     binary_info_columns = binary_column_indices(all_info_ve)
 
-    distance_columns_re = all_reads_re[:, 4:9]
 
+
+    from_read_ends_columns_re = all_reads_re[:, 4:6]
+    from_read_ends_transformed_re = np.tanh(from_read_ends_columns_re / DISTANCE_FROM_END_SATURATION)
+    distance_columns_re = all_reads_re[:, 6:9]
     distance_columns_transformed_re = read_quantile_transform.transform(distance_columns_re)
+    float_read_columns_re = np.hstack([from_read_ends_transformed_re, distance_columns_transformed_re])
+
     all_info_transformed_ve = transform_except_for_binary_columns(all_info_ve, info_quantile_transform, binary_info_columns)
 
     # columns of raw read data are
     # 0 map qual -> 4 categorical columns
     # 1 base qual -> 4 categorical columns
     # 2,3 strand and orientation (binary) -> remain binary
-    # 4,5,6,7,8 distance stuff
+    # 4,5 distance of variant from left and right end of read (including clipped bases)
+    # 6 fragment length
+    # 7,8 distance of variant from left and right end of fragment (including clipped bases)
+    # TODO: combine these to get, on scale of -1 (extreme left of fragment) to +1 (extreme right of fragment),
+    # TODO: the position of the variant within the fragment.
+    # TODO: do the same for the read position.
     # 9 and higher -- SNV/indel error and low BQ counts
+    # TODO: double-check in Mutect2 that these included soft-clipped bases
 
     read_counts = np.array([len(datum.reads_re) for datum in buffer])
     read_index_ranges = np.cumsum(read_counts)
@@ -343,7 +356,9 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
     assert packed_output_array.dtype == np.uint8
     assert packed_output_array.shape[1] == NUMBER_OF_BYTES_IN_PACKED_READ, f"boolean array shape {boolean_output_array_re.shape}, packed shape {packed_output_array.shape}"
 
-    distance_columns_output = convert_quantile_normalized_to_uint8(distance_columns_transformed_re)
+    # the conversion to uint8 maps the range [-4,4] to [0,255].  Anything less than -4 is mapped to 0 and
+    # anything greater than 4 is mapped to 255.
+    distance_columns_output = convert_quantile_normalized_to_uint8(float_read_columns_re)
     assert packed_output_array.dtype == distance_columns_output.dtype
     output_uint8_reads_array = np.hstack((packed_output_array, distance_columns_output))
 
@@ -356,7 +371,7 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
 
         # TODO: maybe we could also have columnwise nonparametric test statistics, like for example we record the
         # TODO: quantiles over all ref reads
-        alt_distance_medians_e = np.median(distance_columns_transformed_re[alt_start_index:alt_end_index, :], axis=0)
+        alt_distance_medians_e = np.median(float_read_columns_re[alt_start_index:alt_end_index, :], axis=0)
         alt_boolean_means_e = np.mean(boolean_output_array_re[alt_start_index:alt_end_index, :], axis=0)
         extra_info_e = np.hstack((alt_distance_medians_e, alt_boolean_means_e))
 
