@@ -57,6 +57,16 @@ NUM_RAW_DATA_TO_NORMALIZE_AT_ONCE = 10000
 
 DISTANCE_FROM_END_SATURATION = 20
 
+def binarize_str_length_column(str_length_column):
+    result = np.full((len(str_length_column), 6), 0, dtype=str_length_column.dtype)
+    result[:, 0] = (str_length_column == 1)
+    result[:, 1] = (str_length_column > 1) & (str_length_column < 4)
+    result[:, 2] = (str_length_column > 3) & (str_length_column < 6)
+    result[:, 3] = (str_length_column > 5) & (str_length_column < 9)
+    result[:, 4] = (str_length_column > 8) & (str_length_column < 13)
+    result[:, 5] = (str_length_column > 12)
+    return result
+
 
 def count_number_of_data_and_reads_in_text_file(dataset_file):
     num_data, num_reads = 0, 0
@@ -306,7 +316,6 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
     # 3 fraction of reads supporting alt allele that support the single best alt haplotype
     # 4 TLOD / alt count
 
-    # BEGIN
     hap_equiv_columns = all_info_ve[:, 0:2]
     hap_equiv_binary_1 = (hap_equiv_columns < 0.1)
     hap_equiv_binary_2 = (hap_equiv_columns >= 0.1) & (hap_equiv_columns < 0.25)
@@ -324,9 +333,37 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
     hap_dom_binary[:, 0] = (hap_dom_column > 0.9)
     hap_dom_binary[:, 1] = (hap_dom_column <= 0.9) & (hap_dom_column > 0.7)
 
-    binary_info_array_ve = np.hstack((hap_equiv_binary_1, hap_equiv_binary_2, hap_equiv_binary_3, edit_dist_binary, hap_dom_binary))
+    # STR INFO features are
+    # 5, 6 insertion_length, deletion_length of variant
+    # 7 STR repeat unit length
+    # 8 number of STR repeat units
+    # 9 repeats before variant
+    # 10 repeats after variant
+
+    indel_lengths_ve = all_info_ve[:, 5:7] / 10
+
+    str_unit_length_col = all_info_ve[:, 7].reshape(-1,1)
+    str_unit_length_binaries = np.hstack([str_unit_length_col == 1, str_unit_length_col == 2, str_unit_length_col == 3,
+                                str_unit_length_col == 4, str_unit_length_col >= 5])
+
+    str_total_length = all_info_ve[:, 7] * all_info_ve[:, 8]
+    str_total_length_binaries = binarize_str_length_column(str_total_length)
+
+    str_length_before = all_info_ve[:, 7] * all_info_ve[:, 9]
+    str_length_before_binaries = binarize_str_length_column(str_length_before)
+
+    str_length_after = all_info_ve[:, 7] * all_info_ve[:, 10]
+    str_length_after_binaries = binarize_str_length_column(str_length_after)
+
+    str_info_array_ve = np.hstack([indel_lengths_ve, str_unit_length_binaries, str_total_length_binaries, str_length_before_binaries, str_length_after_binaries])
+
+    binary_info_array_ve = np.hstack(
+        (hap_equiv_binary_1, hap_equiv_binary_2, hap_equiv_binary_3, edit_dist_binary, hap_dom_binary, str_info_array_ve))
     quantile_transformed_info = info_quantile_transform.transform(all_info_ve)
-    all_info_transformed_ve = np.hstack([binary_info_array_ve, quantile_transformed_info[:,4:]])
+    # only the 4th column of INFO (TLOD / alt count) is quantile transformed
+    all_info_transformed_ve = np.hstack([binary_info_array_ve, quantile_transformed_info[:, 4].reshape(-1,1)])
+
+
     # END
 
     from_read_ends_columns_re = all_reads_re[:, 4:6]
