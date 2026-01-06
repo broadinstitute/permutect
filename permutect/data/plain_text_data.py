@@ -297,9 +297,37 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
 
     # 2D array.  Rows are read sets, columns are info features
     all_info_ve = np.vstack([datum.get_info_1d() for datum in buffer])
-    binary_info_columns = binary_column_indices(all_info_ve)
 
 
+    # INFO features from GATK are
+    # 0, 1 haplotype equivalence share of 2nd and 3rd most supported haplotype groups (among all haplotypes with
+    # the alt allele)
+    # 2 edit distance, excluding variant site, of best alt haplotype vs closest germline haplotype
+    # 3 fraction of reads supporting alt allele that support the single best alt haplotype
+    # 4 TLOD / alt count
+
+    # BEGIN
+    hap_equiv_columns = all_info_ve[:, 0:2]
+    hap_equiv_binary_1 = (hap_equiv_columns < 0.1)
+    hap_equiv_binary_2 = (hap_equiv_columns >= 0.1) & (hap_equiv_columns < 0.25)
+    hap_equiv_binary_3 = (hap_equiv_columns >= 0.25)
+
+    edit_dist_column = all_info_ve[:, 2]
+    edit_dist_binary = np.full((len(all_info_ve), 4), 0, dtype=all_info_ve.dtype)
+    edit_dist_binary[:, 0] = (edit_dist_column == 0)
+    edit_dist_binary[:, 1] = (edit_dist_column == 1)
+    edit_dist_binary[:, 2] = (edit_dist_column == 2)
+    edit_dist_binary[:, 3] = (edit_dist_column >= 3)
+
+    hap_dom_column = all_info_ve[:, 3]
+    hap_dom_binary = np.full((len(all_info_ve), 2), 0, dtype=all_info_ve.dtype)
+    hap_dom_binary[:, 0] = (hap_dom_column > 0.9)
+    hap_dom_binary[:, 1] = (hap_dom_column <= 0.9) & (hap_dom_column > 0.7)
+
+    binary_info_array_ve = np.hstack((hap_equiv_binary_1, hap_equiv_binary_2, hap_equiv_binary_3, edit_dist_binary, hap_dom_binary))
+    quantile_transformed_info = info_quantile_transform.transform(all_info_ve)
+    all_info_transformed_ve = np.hstack([binary_info_array_ve, quantile_transformed_info[:,4:]])
+    # END
 
     from_read_ends_columns_re = all_reads_re[:, 4:6]
     from_read_ends_transformed_re = np.tanh(from_read_ends_columns_re / DISTANCE_FROM_END_SATURATION)
@@ -309,7 +337,6 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
     distance_columns_transformed_re = read_quantile_transform.transform(distance_columns_re)
     float_read_columns_re = np.hstack([from_read_ends_transformed_re, from_frag_ends_transformed_re, distance_columns_transformed_re])
 
-    all_info_transformed_ve = transform_except_for_binary_columns(all_info_ve, info_quantile_transform, binary_info_columns)
 
     # columns of raw read data are
     # 0 map qual -> 4 categorical columns
@@ -404,35 +431,3 @@ def read_integers(line: str):
 
 def read_float(line: str):
     return float(line.strip().split()[0])
-
-
-def is_binary(column_tensor_1d: np.ndarray):
-    assert len(column_tensor_1d.shape) == 1
-    return all(el.item() == 0 or el.item() == 1 for el in column_tensor_1d)
-
-
-def binary_column_indices(tensor_2d: np.ndarray):
-    assert len(tensor_2d.shape) == 2
-    return [n for n in range(tensor_2d.shape[1]) if is_binary(tensor_2d[:, n])]
-
-
-def non_binary_column_indices(tensor_2d: np.ndarray):
-    assert len(tensor_2d.shape) == 2
-    return [n for n in range(tensor_2d.shape[1]) if not is_binary(tensor_2d[:, n])]
-
-
-# copy the unnormalized values of binary features (columns)
-# we modify the normalized values in-place
-def restore_binary_columns(normalized, original, binary_columns):
-    result = normalized
-    if len(normalized.shape) == 2:
-        result[:, binary_columns] = original[:, binary_columns]
-    elif len(normalized.shape) == 1:
-        result[binary_columns] = original[binary_columns]
-    else:
-        raise Exception("This is only for 1D or 2D tensors")
-    return result
-
-
-def transform_except_for_binary_columns(tensor_2d, quantile_transform: QuantileTransformer, binary_column_indices):
-    return restore_binary_columns(quantile_transform.transform(tensor_2d), tensor_2d, binary_column_indices)
