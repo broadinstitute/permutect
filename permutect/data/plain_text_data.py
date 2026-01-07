@@ -35,6 +35,7 @@ from queue import PriorityQueue
 from typing import List, Generator
 
 import numpy as np
+from scipy.special import gammaln
 from sklearn.preprocessing import QuantileTransformer
 
 from permutect.data.count_binning import cap_ref_count, cap_alt_count
@@ -49,6 +50,7 @@ from permutect.utils.enums import Variation, Label
 MAX_VALUE = 10000
 EPSILON = 0.00001
 QUANTILE_DATA_COUNT = 10000
+LOG10_TO_LN = 2.30258509299
 
 RAW_READS_DTYPE = DEFAULT_NUMPY_FLOAT
 MIN_NUM_DATA_FOR_NORMALIZATION = 1000
@@ -186,7 +188,7 @@ def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Read
 
         read_start_idx = 0 if start_idx == 0 else read_end_indices[start_idx - 1]
 
-        read_quantile_transform, info_quantile_transform = make_read_and_info_quantile_transforms(
+        read_quantile_transform = make_read_quantile_transform(
             read_end_indices=(read_end_indices[start_idx:end_idx]-read_start_idx), data_ve=data_mmap_ve[start_idx:end_idx],
             reads_re=reads_mmap_re[read_start_idx:read_end_indices[end_idx - 1]],)
 
@@ -196,11 +198,11 @@ def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Read
             raw_datum = RawUnnormalizedReadsDatum(datum_array=data_mmap_ve[idx], reads_re=reads)
             raw_data_list.append(raw_datum)
 
-        normalized_data_list = normalize_raw_data_list(raw_data_list, read_quantile_transform, info_quantile_transform)
+        normalized_data_list = normalize_raw_data_list(raw_data_list, read_quantile_transform)
         for datum in normalized_data_list:
             yield datum
 
-def make_read_and_info_quantile_transforms(read_end_indices, data_ve, reads_re):
+def make_read_quantile_transform(read_end_indices, data_ve, reads_re):
     read_end_indices = read_end_indices
 
     # indices_for_normalization = get_normalization_set(data_ve)
@@ -211,11 +213,6 @@ def make_read_and_info_quantile_transforms(read_end_indices, data_ve, reads_re):
     normalization_read_start_indices = [read_end_indices[max(idx - 1, 0)] for idx in indices_for_normalization]
     normalization_ref_counts = [Datum(array=data_ve[idx]).get_ref_count() for idx in indices_for_normalization]
     normalization_ref_end_indices = [(start + ref_count) for start, ref_count in zip(normalization_read_start_indices, normalization_ref_counts)]
-
-    # extract the INFO array from all the data arrays in the normalization set
-    info_for_normalization_ve = np.vstack([Datum(array=data_ve[idx]).get_info_1d() for idx in indices_for_normalization])
-    info_quantile_transform = QuantileTransformer(n_quantiles=100, output_distribution='normal')
-    info_quantile_transform.fit(info_for_normalization_ve)
 
     # for every index in the normalization set, get all the reads of the corresponding datum.  Stack all these reads to
     # obtain the reads normalization array
@@ -234,15 +231,7 @@ def make_read_and_info_quantile_transforms(read_end_indices, data_ve, reads_re):
     print(f"90: {read_quantile_transform.quantiles_[90]}")
     print(f"100: {read_quantile_transform.quantiles_[99]}")
 
-    print("Here are the percentiles of the info quantile transform:")
-    print(f"0: {info_quantile_transform.quantiles_[0]}")
-    print(f"10: {info_quantile_transform.quantiles_[10]}")
-    print(f"25: {info_quantile_transform.quantiles_[25]}")
-    print(f"50: {info_quantile_transform.quantiles_[50]}")
-    print(f"75: {info_quantile_transform.quantiles_[75]}")
-    print(f"90: {info_quantile_transform.quantiles_[90]}")
-    print(f"100: {info_quantile_transform.quantiles_[99]}")
-    return read_quantile_transform, info_quantile_transform
+    return read_quantile_transform
 
 
 def make_normalized_mmap_data(dataset_files, sources: List[int]=None) -> MemoryMappedData:
@@ -300,14 +289,12 @@ def get_normalization_set(raw_stacked_data_ve) -> List[int]:
 
 
 # this normalizes the buffer and also prepends new features to the info tensor
-def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quantile_transform,
-                            info_quantile_transform) -> List[ReadsDatum]:
+def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quantile_transform) -> List[ReadsDatum]:
     # 2D array.  Rows are ref/alt reads, columns are read features
     all_reads_re = np.vstack([datum.reads_re for datum in buffer])
 
     # 2D array.  Rows are read sets, columns are info features
     all_info_ve = np.vstack([datum.get_info_1d() for datum in buffer])
-
 
     # INFO features from GATK are
     # 0, 1 haplotype equivalence share of 2nd and 3rd most supported haplotype groups (among all haplotypes with
@@ -359,12 +346,17 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
 
     binary_info_array_ve = np.hstack(
         (hap_equiv_binary_1, hap_equiv_binary_2, hap_equiv_binary_3, edit_dist_binary, hap_dom_binary, str_info_array_ve))
-    quantile_transformed_info = info_quantile_transform.transform(all_info_ve)
-    # only the 4th column of INFO (TLOD / alt count) is quantile transformed
-    all_info_transformed_ve = np.hstack([binary_info_array_ve, quantile_transformed_info[:, 4].reshape(-1,1)])
 
+    tlod_over_nalt = all_info_ve[:, 4]
+    orig_alt_counts = np.array([datum.get_original_alt_count() for datum in buffer])
+    orig_depths = np.array([datum.get_original_depth() for datum in buffer])
+    orig_ref_counts = orig_depths - orig_alt_counts
 
-    # END
+    natural_log_tlod = LOG10_TO_LN * tlod_over_nalt * orig_alt_counts
+    tlod_correction = gammaln(orig_depths + 2) - gammaln(orig_alt_counts + 1) - gammaln(orig_ref_counts + 1)
+    average_qual_feature = ((natural_log_tlod + tlod_correction) / orig_alt_counts)/10
+
+    all_info_transformed_ve = np.hstack([binary_info_array_ve, average_qual_feature.reshape(-1,1)])
 
     from_read_ends_columns_re = all_reads_re[:, 4:6]
     from_read_ends_transformed_re = np.tanh(from_read_ends_columns_re / DISTANCE_FROM_END_SATURATION)
