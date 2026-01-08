@@ -47,4 +47,20 @@ RUN pip install build
 RUN python3 -m build --sdist
 RUN pip install dist/*.tar.gz
 
+# install java for running GATK
+RUN apt-get update && apt-get install -y \
+    openjdk-17-jdk \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+
+# get the GATK launcher Python script from the GATK repo and a GATK jar so that the Permutect docker can emulate
+# a GATK docker
+RUN wget https://storage.googleapis.com/broad-dsp-david-benjamin/gatk-builds/gatk-4-5-2025.jar && \
+    cp gatk-4-5-2025.jar /bin/gatk.jar
+RUN wget https://raw.githubusercontent.com/broadinstitute/gatk/refs/heads/master/gatk && \
+    cp gatk /bin && \
+    chmod +x /bin/gatk
+ENV GATK_LOCAL_JAR=/bin/gatk.jar
+
 CMD ["/bin/sh"]
