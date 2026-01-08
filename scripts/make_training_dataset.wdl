@@ -35,7 +35,6 @@ workflow MakeTrainingDataset {
 
 
         # runtime
-        String gatk_docker
         String permutect_docker
         File? gatk_override
         String basic_bash_docker = "ubuntu:16.04"
@@ -92,7 +91,7 @@ workflow MakeTrainingDataset {
                 permutect_training_dataset_truth_vcf = permutect_training_dataset_truth_vcf_hack,
                 permutect_training_dataset_truth_vcf_idx = permutect_training_dataset_truth_vcf_idx_hack,
                 skip_filtering = true,
-                gatk_docker = gatk_docker,
+                gatk_docker = permutect_docker,
                 gatk_override = gatk_override,
                 scatter_count = scatter_count,
                 preemptible = preemptible,
