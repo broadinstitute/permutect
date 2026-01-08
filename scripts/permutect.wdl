@@ -51,7 +51,6 @@ workflow Permutect {
         String? cached_mutect_stats
 
         String? permutect_filtering_extra_args
-        String gatk_docker
         String? gcs_project_for_requester_pays
         File? gatk_override
         String permutect_docker
@@ -129,7 +128,7 @@ workflow Permutect {
                 m2_extra_args = m2_extra_args,
                 make_bamout = false,
 
-                gatk_docker = gatk_docker,
+                gatk_docker = permutect_docker,
                 gcs_project_for_requester_pays = gcs_project_for_requester_pays_hack,
                 gatk_override = gatk_override,
                 preemptible = preemptible,
@@ -144,7 +143,7 @@ workflow Permutect {
             ref_fasta = ref_fasta,
             ref_fai = ref_fai,
             ref_dict = ref_dict,
-            gatk_docker = gatk_docker
+            gatk_docker = permutect_docker
     }
 
     call PermutectFiltering {
@@ -175,7 +174,7 @@ workflow Permutect {
                 truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_hack]),
                 eval_vcf = PermutectFiltering.output_vcf,
                 eval_vcf_idx = PermutectFiltering.output_vcf_idx,
-                gatk_docker = gatk_docker,
+                gatk_docker = permutect_docker,
                 concordance_header = concordance_header,
         }
 
@@ -187,7 +186,7 @@ workflow Permutect {
                 truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_hack]),
                 eval_vcf = select_first([Mutect2.output_vcf, cached_mutect2_vcf_hack]),
                 eval_vcf_idx = select_first([Mutect2.output_vcf_idx, cached_mutect2_vcf_idx_hack]),
-                gatk_docker = gatk_docker,
+                gatk_docker = permutect_docker,
                 concordance_header = concordance_header
         }
     }
