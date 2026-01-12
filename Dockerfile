@@ -56,7 +56,7 @@ ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 
 # get the GATK launcher Python script from the GATK repo and a GATK jar so that the Permutect docker can emulate
 # a GATK docker
-RUN wget https://storage.googleapis.com/broad-dsp-david-benjamin/gatk-builds/gatk-4-5-2025.jar && \
+RUN wget https://storage.googleapis.com/broad-dsp-david-benjamin/gatk-builds/gatk-permutect-changes.jar && \
     cp gatk-4-5-2025.jar /root/gatk.jar
 RUN wget https://raw.githubusercontent.com/broadinstitute/gatk/refs/heads/master/gatk && \
     cp gatk /bin && \
