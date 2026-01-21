@@ -165,7 +165,7 @@ def make_filtered_vcf(artifact_model_path, initial_log_variant_prior: float, ini
     device = gpu_if_available()
     model, artifact_log_priors, artifact_spectra_state_dict = load_model(artifact_model_path, device=device)
 
-    posterior_model = PosteriorModel(initial_log_variant_prior, initial_log_artifact_prior, no_germline_mode=no_germline_mode, num_base_features=model.pooling_dimension(), het_beta=het_beta)
+    posterior_model = PosteriorModel(initial_log_variant_prior, initial_log_artifact_prior, no_germline_mode=no_germline_mode, het_beta=het_beta)
     posterior_data_loader = make_posterior_data_loader(test_dataset_file, input_vcf, contig_index_to_name_map,
         model, batch_size, num_workers=num_workers, segmentation=segmentation, normal_segmentation=normal_segmentation)
 

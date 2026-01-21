@@ -8,6 +8,7 @@ from torch.nn import Parameter
 from permutect.architecture.monotonic import MonoDense
 from permutect.data.count_binning import MAX_REF_COUNT, MAX_ALT_COUNT
 from permutect.metrics import plotting
+from permutect.sets.ragged_sets import RaggedSets
 from permutect.utils.enums import Variation
 
 
@@ -47,7 +48,7 @@ class FeatureClustering(nn.Module):
         dist_bk = torch.norm(diff_bke, dim=-1) * self.centroid_distance_normalization
         return dist_bk
 
-    def calculate_logits(self, features_be: Tensor, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor):
+    def calculate_logits(self, ref_bre: RaggedSets, alt_bre: RaggedSets, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor):
         batch_size = len(features_be)
         dist_bk = self.centroid_distances(features_be)
 
@@ -84,25 +85,3 @@ class FeatureClustering(nn.Module):
         zero_inputs_be = torch.hstack((torch.zeros_like(distances_b).view(-1, 1), ref_b1, alt_b1, var_type_embeddings_ve))
         result_b1 = self.distance_calibration.forward(monotonic_inputs_be) - self.distance_calibration.forward(zero_inputs_be)
         return result_b1.view(-1)
-
-    def plot_distance_calibration(self, var_type: Variation, device, dtype):
-        alt_counts = [1, 3, 5, 10, 15]
-        ref_counts = [1, 3, 5, 10]
-        distances = torch.arange(start=0, end=10, step=0.1, device=device, dtype=dtype)
-        cal_fig, cal_axes = plt.subplots(len(alt_counts), len(ref_counts), sharex='all', sharey='all',
-                                        squeeze=False, figsize=(10, 6), dpi=100)
-
-        var_types_b = var_type * torch.ones(len(distances), device=device, dtype=torch.long)
-        for row_idx, alt_count in enumerate(alt_counts):
-            alt_counts_b = alt_count * torch.ones_like(distances, device=device, dtype=dtype)
-            for col_idx, ref_count in enumerate(ref_counts):
-                ref_counts_b = ref_count * torch.ones_like(distances, device=device, dtype=dtype)
-
-                # TODO: different function call here
-                calibrated = self.calibrated_distances(distances, ref_counts_b, alt_counts_b, var_types_b)
-                plotting.simple_plot_on_axis(cal_axes[row_idx, col_idx], [(distances.detach().cpu(), calibrated.detach().cpu(), "")], None, None)
-
-        plotting.tidy_subplots(cal_fig, cal_axes, x_label="ref count", y_label="alt count",
-                               row_labels=[str(n) for n in alt_counts], column_labels=[str(n) for n in ref_counts])
-
-        return cal_fig, cal_axes

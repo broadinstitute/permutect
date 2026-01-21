@@ -84,24 +84,21 @@ class ArtifactModel(torch.nn.Module):
 
         embedding_dim = self.read_embedding.output_dimension() + self.info_embedding.output_dimension() + self.haplotypes_cnn.output_dimension()
 
+        # TODO: reduce dimension before sending to the encoder???
         self.ref_alt_reads_encoder = make_gated_ref_alt_mlp_encoder(embedding_dim, params)
 
-        # after encoding alt reads (along with info and ref seq embeddings and with self-attention to ref reads)
-        # aggregate encoded sets in a permutation-invariant way
-        # TODO: hard-coded magic constant!!!!!
-        set_pooling_hidden_layers = [-2, -2]
-        self.set_pooling = SetPooling(input_dim=embedding_dim, mlp_layers=set_pooling_hidden_layers,
-                                      final_mlp_layers=params.aggregation_layers, batch_normalize=params.batch_normalize, dropout_p=params.dropout_p)
+        # reduce dimensionality of reads after gated MLP for better clustering etc
+        self.reducer = MLP([self.ref_alt_reads_encoder.output_dimension()] + params.aggregation_layers, batch_normalize=params.batch_normalize, dropout_p=params.dropout_p)
 
-        self.feature_clustering = FeatureClustering(feature_dimension=self.set_pooling.output_dimension(),
+        self.feature_clustering = FeatureClustering(feature_dimension=self.reducer.output_dimension(),
             num_artifact_clusters=params.num_artifact_clusters, calibration_hidden_layer_sizes=params.calibration_layers)
 
-        self.alt_count_predictor = Adversarial(MLP([self.pooling_dimension()] + [30, -1, -1, -1, 1]), adversarial_strength=0.01)
+        self.alt_count_predictor = Adversarial(MLP([self.reducer.output_dimension()] + [30, -1, -1, -1, 1]), adversarial_strength=0.01)
         self.alt_count_loss_func = torch.nn.MSELoss(reduction='none')
 
         # used for unlabeled domain adaptation -- needs to be reset depending on the number of sources, as well as
         # the particular sources used in training.  Note that we initialize as a trivial model with 1 source
-        self.source_predictor = Adversarial(MLP([self.pooling_dimension()] + [1], batch_normalize=params.batch_normalize,
+        self.source_predictor = Adversarial(MLP([self.reducer.output_dimension()] + [1], batch_normalize=params.batch_normalize,
                 dropout_p=params.dropout_p), adversarial_strength=0.01)
         self.num_sources = 1
 
@@ -109,13 +106,10 @@ class ArtifactModel(torch.nn.Module):
 
     def reset_source_predictor(self, num_sources: int = 1):
         source_prediction_hidden_layers = [] if num_sources == 1 else [-1, -1]
-        layers = [self.pooling_dimension()] + source_prediction_hidden_layers + [num_sources]
+        layers = [self.reducer.output_dimension()] + source_prediction_hidden_layers + [num_sources]
         self.source_predictor = Adversarial(MLP(layers, batch_normalize=self._params.batch_normalize,
             dropout_p=self._params.dropout_p), adversarial_strength=0.01).to(device=self._device, dtype=self._dtype)
         self.num_sources = num_sources
-
-    def pooling_dimension(self) -> int:
-        return self.set_pooling.output_dimension()
 
     def ref_alt_seq_embedding_dimension(self) -> int:
         return self.haplotypes_cnn.output_dimension()
@@ -144,7 +138,7 @@ class ArtifactModel(torch.nn.Module):
     # here 'b' is the batch index, 'r' is the flattened read index, and 'e' means an embedding dimension
     # so, for example, "re" means a 2D tensor with all reads in the batch stacked and "bre" means a 3D tensor indexed
     # first by variant within the batch, then the read within the variant
-    def calculate_features(self, batch: ReadsBatch, weight_range: float = 0) -> Tensor:
+    def calculate_features(self, batch: ReadsBatch, weight_range: float = 0) -> tuple[RaggedSets, RaggedSets, Tensor]:
         ref_counts_b, alt_counts_b = batch.get_ref_counts(), batch.get_alt_counts()
         total_ref, total_alt = torch.sum(ref_counts_b).item(), torch.sum(alt_counts_b).item()
 
@@ -159,7 +153,10 @@ class ArtifactModel(torch.nn.Module):
         # TODO: might be a bug if every datum in batch has zero ref reads?
         ref_bre = RaggedSets.from_flattened_tensor_and_sizes(reads_info_seq_re[:total_ref], ref_counts_b)
         alt_bre = RaggedSets.from_flattened_tensor_and_sizes(reads_info_seq_re[total_ref:], alt_counts_b)
-        _, transformed_alt_bre = self.ref_alt_reads_encoder.forward(ref_bre, alt_bre)
+        transformed_ref_bre, transformed_alt_bre = self.ref_alt_reads_encoder.forward(ref_bre, alt_bre)
+
+        reduced_ref_bre = transformed_ref_bre.apply_elementwise(self.reducer)
+        reduced_alt_bre = transformed_alt_bre.apply_elementwise(self.reducer)
 
         # TODO: this old code has the random weighting logic which might still be valuable
         """
@@ -173,17 +170,16 @@ class ArtifactModel(torch.nn.Module):
 
         alt_means_ve = sums_over_rows(transformed_alt_re * normalized_alt_weights_r[:,None], alt_counts)
         """
-        result_be = self.set_pooling.forward(transformed_alt_bre)
 
-        return result_be, ref_seq_embeddings_be # ref seq embeddings are useful later
+        return reduced_ref_bre, reduced_alt_bre, ref_seq_embeddings_be # ref seq embeddings are useful later
 
     def calculate_logits(self, batch: ReadsBatch):
-        features_be, _ = self.calculate_features(batch)
+        ref_bre, alt_bre, _ = self.calculate_features(batch)    # ragged sets of reduced and transformed reads
 
-        calibrated_logits_b, uncalibrated_logits_b, calibrated_logits_bk = self.feature_clustering.calculate_logits(features_be, ref_counts_b=batch.get_ref_counts(),
+        calibrated_logits_b, uncalibrated_logits_b, calibrated_logits_bk = self.feature_clustering.calculate_logits(ref_bre, alt_bre, ref_counts_b=batch.get_ref_counts(),
             alt_counts_b=batch.get_alt_counts(), var_types_b=batch.get_variant_types())
 
-        return calibrated_logits_b, uncalibrated_logits_b, calibrated_logits_bk, features_be
+        return calibrated_logits_b, uncalibrated_logits_b, calibrated_logits_bk, alt_bre.means_over_sets()
 
     def compute_source_prediction_losses(self, features_be: Tensor, batch: ReadsBatch) -> Tensor:
         if self.num_sources > 1:
@@ -261,9 +257,9 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
 
     batch: ReadsBatch
     for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
-        features_be, ref_alt_seq_embeddings_be = model.calculate_features(batch, weight_range=model._params.reweighting_range)
+        ref_bre, alt_bre, ref_alt_seq_embeddings_be = model.calculate_features(batch, weight_range=model._params.reweighting_range)
 
-        features_be = features_be.cpu()
+        features_be = alt_bre.means_over_sets().cpu()
         ref_alt_seq_embeddings_be = ref_alt_seq_embeddings_be.cpu()
 
         labels = [("artifact" if label > 0.5 else "non-artifact") if is_labeled > 0.5 else "unlabeled" for (label, is_labeled) in

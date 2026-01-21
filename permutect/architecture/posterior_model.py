@@ -21,13 +21,12 @@ class PosteriorModel(torch.nn.Module):
     """
 
     """
-    def __init__(self, variant_log_prior: float, artifact_log_prior: float, num_base_features: int, no_germline_mode: bool = False, device=gpu_if_available(), het_beta: float = None):
+    def __init__(self, variant_log_prior: float, artifact_log_prior: float, no_germline_mode: bool = False, device=gpu_if_available(), het_beta: float = None):
         super(PosteriorModel, self).__init__()
 
         self._device = device
         self._dtype = DEFAULT_GPU_FLOAT if device != torch.device("cpu") else DEFAULT_CPU_FLOAT
         self.no_germline_mode = no_germline_mode
-        self.num_base_features = num_base_features
         self.het_beta = het_beta
 
         self.spectra = PosteriorModelSpectra()
