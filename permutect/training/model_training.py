@@ -97,12 +97,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                 downsampled_batch2 = DownsampledReadsBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
                 batches = [downsampled_batch1, downsampled_batch2]
                 outputs = [model.compute_batch_output(batch, balancer) for batch in batches]
-                parent_output = model.compute_batch_output(parent_batch, balancer)
-
-                # distances to the second-nearest cluster (i.e. nearest wrong cluster, most likely) for normalizing
-                # the unsupervised consistency loss function
-                parent_batch_distances_bk = model.feature_clustering.centroid_distances(parent_output.features_be)
-                second_nearest_dist_b = torch.kthvalue(parent_batch_distances_bk, k=2, dim=-1).values
+                # parent_output = model.compute_batch_output(parent_batch, balancer)
 
                 sources = parent_batch.get_sources()
                 source_mask_b = 1 if (calibration_sources is None or not is_calibration_epoch) else \
@@ -118,16 +113,15 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     alt_count_losses_b = source_mask_b * model.compute_alt_count_losses(output.features_be, batch)
                     supervised_losses_b = source_mask_b * is_labeled_b * bce(output.calibrated_logits_b, labels_b)
 
+                    # unsupervised loss is consistency not just between overall artifact / non-artifact predictions,
+                    # but between the particular cluster predictions.
+                    # TODO: should we detach() torch.sigmoid(other_output...)?
+                    other_output = outputs[1 if n == 0 else 0]
+                    consistency_loss_b = ce(output.calibrated_logits_bk, torch.softmax(other_output.calibrated_logits_bk, dim=-1))
                     # unsupervised loss uses uncalibrated logits because different counts should NOT be the same after calibration,
                     # but should be identical before.  Note that unsupervised losses is used with and without labels
                     # This must be changed if we have more than one downsampled batch
-                    # TODO: should we detach() torch.sigmoid(other_output...)?
-                    other_output = outputs[1 if n == 0 else 0]
 
-                    consistency_dist_b = torch.norm(output.features_be - parent_output.features_be, dim=-1)
-                    consistency_loss_b = torch.square(consistency_dist_b / second_nearest_dist_b)
-
-                    # unsupervised loss: cross-entropy between cluster-resolved predictions
                     unsupervised_losses_b = source_mask_b * consistency_loss_b
                     losses = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + output.source_weights * source_losses_b
                     loss += torch.sum(losses)
