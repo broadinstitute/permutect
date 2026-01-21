@@ -31,11 +31,9 @@ class BatchOutput:
     simple container class for the output of the model over a single batch
     :return:
     """
-    def __init__(self, features_be: Tensor, uncalibrated_logits_b: Tensor, calibrated_logits_b: Tensor, calibrated_logits_bk: Tensor, weights: Tensor, source_weights: Tensor):
+    def __init__(self, features_be: Tensor, calibrated_logits_b: Tensor, weights: Tensor, source_weights: Tensor):
         self.features_be = features_be
-        self.uncalibrated_logits_b = uncalibrated_logits_b
         self.calibrated_logits_b = calibrated_logits_b
-        self.calibrated_logits_bk = calibrated_logits_bk
         self.weights = weights
         self.source_weights = source_weights
 
@@ -93,8 +91,7 @@ class ArtifactModel(torch.nn.Module):
         self.set_pooling = SetPooling(input_dim=embedding_dim, mlp_layers=set_pooling_hidden_layers,
                                       final_mlp_layers=params.aggregation_layers, batch_normalize=params.batch_normalize, dropout_p=params.dropout_p)
 
-        self.feature_clustering = FeatureClustering(feature_dimension=self.set_pooling.output_dimension(),
-            num_artifact_clusters=params.num_artifact_clusters, calibration_hidden_layer_sizes=params.calibration_layers)
+        self.feature_clustering = FeatureClustering(feature_dimension=self.set_pooling.output_dimension(), calibration_hidden_layer_sizes=params.calibration_layers)
 
         self.alt_count_predictor = Adversarial(MLP([self.pooling_dimension()] + [30, -1, -1, -1, 1]), adversarial_strength=0.01)
         self.alt_count_loss_func = torch.nn.MSELoss(reduction='none')
@@ -180,10 +177,10 @@ class ArtifactModel(torch.nn.Module):
     def calculate_logits(self, batch: ReadsBatch):
         features_be, _ = self.calculate_features(batch)
 
-        calibrated_logits_b, uncalibrated_logits_b, calibrated_logits_bk = self.feature_clustering.calculate_logits(features_be, ref_counts_b=batch.get_ref_counts(),
+        calibrated_logits_b = self.feature_clustering.calculate_logits(features_be, ref_counts_b=batch.get_ref_counts(),
             alt_counts_b=batch.get_alt_counts(), var_types_b=batch.get_variant_types())
 
-        return calibrated_logits_b, uncalibrated_logits_b, calibrated_logits_bk, features_be
+        return calibrated_logits_b, features_be
 
     def compute_source_prediction_losses(self, features_be: Tensor, batch: ReadsBatch) -> Tensor:
         if self.num_sources > 1:
@@ -201,9 +198,8 @@ class ArtifactModel(torch.nn.Module):
 
     def compute_batch_output(self, batch: ReadsBatch, balancer: Balancer):
         weights_b, source_weights_b = balancer.process_batch_and_compute_weights(batch)
-        calibrated_logits_b, uncalibrated_logits_b, calibrated_logits_bk, features_be = self.calculate_logits(batch)
-        return BatchOutput(features_be=features_be, uncalibrated_logits_b=uncalibrated_logits_b, calibrated_logits_b=calibrated_logits_b,
-                           calibrated_logits_bk=calibrated_logits_bk,
+        calibrated_logits_b, features_be = self.calculate_logits(batch)
+        return BatchOutput(features_be=features_be, calibrated_logits_b=calibrated_logits_b,
                            weights=weights_b, source_weights=weights_b*source_weights_b)
 
     def make_dict_for_saving(self, artifact_log_priors=None, artifact_spectra=None):

@@ -99,11 +99,6 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                 outputs = [model.compute_batch_output(batch, balancer) for batch in batches]
                 parent_output = model.compute_batch_output(parent_batch, balancer)
 
-                # distances to the second-nearest cluster (i.e. nearest wrong cluster, most likely) for normalizing
-                # the unsupervised consistency loss function
-                parent_batch_distances_bk = model.feature_clustering.centroid_distances(parent_output.features_be)
-                second_nearest_dist_b = torch.kthvalue(parent_batch_distances_bk, k=2, dim=-1).values
-
                 sources = parent_batch.get_sources()
                 source_mask_b = 1 if (calibration_sources is None or not is_calibration_epoch) else \
                     torch.sum(torch.vstack([(sources == source).int() for source in calibration_sources]), dim=-1)
@@ -118,14 +113,14 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     alt_count_losses_b = source_mask_b * model.compute_alt_count_losses(output.features_be, batch)
                     supervised_losses_b = source_mask_b * is_labeled_b * bce(output.calibrated_logits_b, labels_b)
 
-                    # unsupervised loss uses uncalibrated logits because different counts should NOT be the same after calibration,
-                    # but should be identical before.  Note that unsupervised losses is used with and without labels
+                    # unsupervised loss is scaled relative to the decision boundary's distance from the origin in feature space.
+                    # Note that unsupervised losses is used with and without labels
                     # This must be changed if we have more than one downsampled batch
                     # TODO: should we detach() torch.sigmoid(other_output...)?
                     other_output = outputs[1 if n == 0 else 0]
 
                     consistency_dist_b = torch.norm(output.features_be - parent_output.features_be, dim=-1)
-                    consistency_loss_b = torch.square(consistency_dist_b / second_nearest_dist_b)
+                    consistency_loss_b = torch.square(consistency_dist_b / model.feature_clustering.decision_boundary.detach())
 
                     # unsupervised loss: cross-entropy between cluster-resolved predictions
                     unsupervised_losses_b = source_mask_b * consistency_loss_b
@@ -272,7 +267,7 @@ def evaluate_model(model: ArtifactModel, epoch: int, num_sources: int, balancer:
         # now go over just the validation data and generate feature vectors / metadata for tensorboard projectors (UMAP)
         batch: ReadsBatch
         for batch in tqdm(prefetch_generator(valid_loader), mininterval=60, total=len(valid_loader)):
-            logits_b, _, _, features_be = model.calculate_logits(batch)
+            logits_b, features_be = model.calculate_logits(batch)
             pred_b = logits_b.detach().cpu()
             labels_b = batch.get_training_labels().cpu()
             correct_b = ((pred_b > 0) == (labels_b > 0.5)).tolist()
