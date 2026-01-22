@@ -81,6 +81,11 @@ class RaggedSets:
     def __add__(self, other) -> ThisClass:
         return RaggedSets(self.flattened_tensor_nf + other, self.bounds_b)
 
+    # override the - operator for elementwise addition
+    # works for numeric scalars and torch Tensors of compatible shape
+    def __sub__(self, other) -> ThisClass:
+            return RaggedSets(self.flattened_tensor_nf - other, self.bounds_b)
+
     def __radd__(self, other) -> ThisClass:
         return self.__add__(other)
 

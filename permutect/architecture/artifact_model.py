@@ -116,11 +116,8 @@ class ArtifactModel(torch.nn.Module):
     def haplotypes_length(self) -> int:
         return self._haplotypes_length
 
-    def post_pooling_parameters(self):
-        return self.feature_clustering.parameters()
-
     def calibration_parameters(self):
-        return self.feature_clustering.distance_calibration.parameters()
+        return [self.feature_clustering.stdev_pre_exp_k]
 
     def set_epoch_type(self, epoch_type: Epoch):
         if epoch_type == Epoch.TRAIN:
@@ -175,10 +172,10 @@ class ArtifactModel(torch.nn.Module):
     def calculate_logits(self, batch: ReadsBatch):
         ref_bre, alt_bre, _ = self.calculate_features(batch)    # ragged sets of reduced and transformed reads
 
-        calibrated_logits_b, uncalibrated_logits_b, calibrated_logits_bk = self.feature_clustering.calculate_logits(ref_bre, alt_bre, ref_counts_b=batch.get_ref_counts(),
+        logits_b, logits_bk = self.feature_clustering.calculate_logits(ref_bre, alt_bre, ref_counts_b=batch.get_ref_counts(),
             alt_counts_b=batch.get_alt_counts(), var_types_b=batch.get_variant_types())
 
-        return calibrated_logits_b, calibrated_logits_bk, alt_bre.means_over_sets()
+        return logits_b, logits_bk, alt_bre.means_over_sets()
 
     def compute_source_prediction_losses(self, features_be: Tensor, batch: ReadsBatch) -> Tensor:
         if self.num_sources > 1:

@@ -24,21 +24,16 @@ class FeatureClustering(nn.Module):
         self.num_clusters = self.num_artifact_clusters + 1
 
         # num_clusters different centroids, each a vector in feature space.  Initialize even weights.
+        # TODO: perhaps make this depend on variant type?
         self.centroids_ke = Parameter(torch.rand(self.num_clusters, self.feature_dim))
+
+        # cluster standard deviations.  Assume isotropic for now although generalizing would be
+        # very easy.
+        # TODO: perhaps make this depend on variant type as well?
+        self.stdev_pre_exp_k = Parameter(torch.zeros(self.num_clusters))
+
+        # TODO: make this also depend on variant type?
         self.cluster_weights_pre_softmax_k = Parameter(torch.ones(self.num_artifact_clusters))
-        self.centroid_distance_normalization = Parameter(1 / torch.sqrt(torch.tensor(self.feature_dim)), requires_grad=False)
-
-        # calibration takes [distance from centroid, ref count, alt count] as input and maps it to [calibrated distance]
-        # It is monotonically increasing in the input distance.  We don't currently constrain the count dependences, but
-        # it's worth considering.
-
-        # To ensure that zero maps to zero we take f(distance, counts) = g(distance, counts) - g(distance=0, counts),
-        # where g has the desired monotonicity.
-
-        # the input features are distance, ref count, alt count, var_type embedding
-        # calibration is increasing in distance.
-        self.distance_calibration = MonoDense(3 + FeatureClustering.VAR_TYPE_EMBEDDING_DIM, calibration_hidden_layer_sizes + [1], 1, 0)
-        self.var_type_embeddings_ve = Parameter(torch.rand(len(Variation), FeatureClustering.VAR_TYPE_EMBEDDING_DIM))
 
     def centroid_distances(self, features_be: Tensor) -> Tensor:
         batch_size = len(features_be)
@@ -49,36 +44,29 @@ class FeatureClustering(nn.Module):
         return dist_bk
 
     def calculate_logits(self, ref_bre: RaggedSets, alt_bre: RaggedSets, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor):
-        batch_size = len(features_be)
-        dist_bk = self.centroid_distances(features_be)
+        stdev_k = torch.exp(self.stdev_pre_exp_k)
 
-        # flatten b,k indices to a single pseudo-batch index, then unflatten
-        cal_dist_bk = self.calibrated_distances(dist_bk.view(-1), repeat_interleave(ref_counts_b, self.num_clusters),
-            repeat_interleave(alt_counts_b, self.num_clusters), repeat_interleave(var_types_b, self.num_clusters)).view(batch_size, self.num_clusters)
+        ref_rke, alt_rke = ref_bre.flattened_tensor_nf[:, None, :], alt_bre.flattened_tensor_nf[:, None, :]
+        centroids_rke = self.centroids_ke[None, :, :]
 
-        uncal_logits_bk = -dist_bk
-        cal_logits_bk = -cal_dist_bk
+        ref_dist_rk = torch.norm(ref_rke - centroids_rke, dim=-1)
+        alt_dist_rk = torch.norm(alt_rke - centroids_rke, dim=-1)
+        stdev_rk = torch.exp(self.stdev_pre_exp_k)[None, :]
+
+        # TODO: maybe include ref reads as well in the generative modeling?
+        log_lks_rk = -(self.feature_dim/2) * torch.log(stdev_rk) - torch.square(alt_dist_rk) / (2 * torch.square(stdev_rk))
+        log_lks_brk = RaggedSets.from_flattened_tensor_and_sizes(log_lks_rk, alt_counts_b)
+        log_lks_bk = log_lks_brk.sums_over_sets()
+
 
         # these are the log of weights that sum to 1
         log_artifact_cluster_weights_k = torch.log_softmax(self.cluster_weights_pre_softmax_k, dim=-1)
-        log_artifact_cluster_weights_bk = log_artifact_cluster_weights_k.view(1, -1)    # dummy batch dimension for broadcasting
+        log_artifact_cluster_weights_bk = log_artifact_cluster_weights_k[None, :]
+        log_lks_bk[:, 1:] += log_artifact_cluster_weights_bk
 
-        weighted_cal_logits_bk = cal_logits_bk
-        weighted_cal_logits_bk[:, 1:] += log_artifact_cluster_weights_bk
-        calibrated_logits_b = torch.logsumexp(weighted_cal_logits_bk[:, 1:], dim=-1) - cal_logits_bk[:, 0]
-        return calibrated_logits_b, weighted_cal_logits_bk
+        logits_b = torch.logsumexp(log_lks_bk[:, 1:], dim=-1) - log_lks_bk[:, 0]
+        return logits_b, log_lks_bk
 
     # avoid implicit forward calls because PyCharm doesn't recognize them
     def forward(self, features: Tensor):
         pass
-
-    def calibrated_distances(self, distances_b: Tensor, ref_counts_b: Tensor, alt_counts_b: Tensor, var_types_b: IntTensor):
-        # indices: 'b' for batch, 3 for logit, ref, alt
-        ref_b1 = ref_counts_b.view(-1, 1) / MAX_REF_COUNT
-        alt_b1 = alt_counts_b.view(-1, 1) / MAX_ALT_COUNT
-        var_type_embeddings_ve = self.var_type_embeddings_ve[var_types_b]
-
-        monotonic_inputs_be = torch.hstack((distances_b.view(-1, 1), ref_b1, alt_b1, var_type_embeddings_ve))
-        zero_inputs_be = torch.hstack((torch.zeros_like(distances_b).view(-1, 1), ref_b1, alt_b1, var_type_embeddings_ve))
-        result_b1 = self.distance_calibration.forward(monotonic_inputs_be) - self.distance_calibration.forward(zero_inputs_be)
-        return result_b1.view(-1)
