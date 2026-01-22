@@ -23,45 +23,39 @@ class FeatureClustering(nn.Module):
         # the 0th cluster is non-artifact
         self.num_clusters = self.num_artifact_clusters + 1
 
-        # num_clusters different centroids, each a vector in feature space.  Initialize even weights.
-        # TODO: perhaps make this depend on variant type?
-        self.centroids_ke = Parameter(torch.rand(self.num_clusters, self.feature_dim))
+        # num_clusters different centroids for each variant type, each a vector in feature space.  Initialize even weights.
+        self.centroids_vke = Parameter(torch.rand(len(Variation), self.num_clusters, self.feature_dim))
 
         # cluster standard deviations.  Assume isotropic for now although generalizing would be
         # very easy.
         # TODO: perhaps make this depend on variant type as well?
-        self.stdev_pre_exp_k = Parameter(torch.zeros(self.num_clusters))
+        self.stdev_pre_exp_vk = Parameter(torch.zeros(len(Variation), self.num_clusters))
 
         # TODO: make this also depend on variant type?
-        self.cluster_weights_pre_softmax_k = Parameter(torch.ones(self.num_artifact_clusters))
+        self.cluster_weights_pre_softmax_vk = Parameter(torch.ones(len(Variation), self.num_artifact_clusters))
 
-    def centroid_distances(self, features_be: Tensor) -> Tensor:
-        batch_size = len(features_be)
-        centroids_bke = self.centroids_ke.view(1, self.num_clusters, self.feature_dim)
-        features_bke = features_be.view(batch_size, 1, self.feature_dim)
-        diff_bke = centroids_bke - features_bke
-        dist_bk = torch.norm(diff_bke, dim=-1) * self.centroid_distance_normalization
-        return dist_bk
 
     def calculate_logits(self, ref_bre: RaggedSets, alt_bre: RaggedSets, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor):
-        stdev_k = torch.exp(self.stdev_pre_exp_k)
+        stdev_bk = torch.exp(self.stdev_pre_exp_vk[var_types_b])
 
         ref_rke, alt_rke = ref_bre.flattened_tensor_nf[:, None, :], alt_bre.flattened_tensor_nf[:, None, :]
-        centroids_rke = self.centroids_ke[None, :, :]
+        centroids_bke = self.centroids_vke[var_types_b]
 
-        ref_dist_rk = torch.norm(ref_rke - centroids_rke, dim=-1)
-        alt_dist_rk = torch.norm(alt_rke - centroids_rke, dim=-1)
-        stdev_rk = torch.exp(self.stdev_pre_exp_k)[None, :]
+        alt_centroids_rke = torch.repeat_interleave(centroids_bke, repeats=alt_counts_b, dim=0)
+        alt_dist_rk = torch.norm(alt_rke - alt_centroids_rke, dim=-1)
+
+        stdev_bk = torch.exp(self.stdev_pre_exp_vk)[var_types_b]
+        alt_stdev_rk = torch.repeat_interleave(stdev_bk, repeats=alt_counts_b, dim=0)
 
         # TODO: maybe include ref reads as well in the generative modeling?
-        log_lks_rk = -(self.feature_dim/2) * torch.log(stdev_rk) - torch.square(alt_dist_rk) / (2 * torch.square(stdev_rk))
+        log_lks_rk = -(self.feature_dim/2) * torch.log(alt_stdev_rk) - torch.square(alt_dist_rk) / (2 * torch.square(alt_stdev_rk))
         log_lks_brk = RaggedSets.from_flattened_tensor_and_sizes(log_lks_rk, alt_counts_b)
         log_lks_bk = log_lks_brk.sums_over_sets()
 
 
         # these are the log of weights that sum to 1
-        log_artifact_cluster_weights_k = torch.log_softmax(self.cluster_weights_pre_softmax_k, dim=-1)
-        log_artifact_cluster_weights_bk = log_artifact_cluster_weights_k[None, :]
+        log_artifact_cluster_weights_vk = torch.log_softmax(self.cluster_weights_pre_softmax_vk, dim=-1)
+        log_artifact_cluster_weights_bk = log_artifact_cluster_weights_vk[var_types_b]
         log_lks_bk[:, 1:] += log_artifact_cluster_weights_bk
 
         logits_b = torch.logsumexp(log_lks_bk[:, 1:], dim=-1) - log_lks_bk[:, 0]
