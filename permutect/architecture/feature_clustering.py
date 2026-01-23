@@ -27,21 +27,22 @@ class FeatureClustering(nn.Module):
         self.alt_centroids_vke = Parameter(torch.rand(len(Variation), self.num_clusters, self.feature_dim))
         self.ref_centroids_vke = Parameter(torch.rand(len(Variation), self.num_clusters, self.feature_dim))
 
-        # cluster standard deviations.  Assume isotropic for now although generalizing would be
-        # very easy.
-        self.alt_stdev_pre_exp_vk = Parameter(torch.zeros(len(Variation), self.num_clusters))
-        self.ref_stdev_pre_exp_vk = Parameter(torch.zeros(len(Variation), self.num_clusters))
+        # cluster standard deviations.  Isotropic diagonal
+        self.alt_log_stdev_vk = Parameter(torch.zeros(len(Variation), self.num_clusters))
+        self.ref_log_stdev_vk = Parameter(torch.zeros(len(Variation), self.num_clusters))
 
         self.cluster_weights_pre_softmax_vk = Parameter(torch.ones(len(Variation), self.num_artifact_clusters))
 
-    def log_likelihoods(self, reads_bre: RaggedSets, centroids_vke, stdev_pre_exp_vk, counts_b: IntTensor, var_types_b: IntTensor):
+    def log_likelihoods(self, reads_bre: RaggedSets, centroids_vke, log_stdev_vk, counts_b: IntTensor, var_types_b: IntTensor):
         reads_rke = reads_bre.flattened_tensor_nf[:, None, :]
         centroids_bke = centroids_vke[var_types_b]
         centroids_rke = torch.repeat_interleave(centroids_bke, repeats=counts_b, dim=0)
-        dist_rk = torch.norm(reads_rke - centroids_rke, dim=-1)
-        stdev_bk = torch.exp(stdev_pre_exp_vk)[var_types_b]
-        stdev_rk = torch.repeat_interleave(stdev_bk, repeats=counts_b, dim=0)
-        log_lks_rk = -(self.feature_dim / 2) * torch.log(stdev_rk) - torch.square(dist_rk) / (2 * torch.square(stdev_rk))
+        diff_rke = reads_rke - centroids_rke
+        log_stdev_bk = log_stdev_vk[var_types_b]
+        log_stdev_rk = torch.repeat_interleave(log_stdev_bk, repeats=counts_b, dim=0)
+        stdev_rk = torch.exp(log_stdev_rk)
+
+        log_lks_rk = -self.feature_dim * log_stdev_rk  - torch.sum(torch.square(diff_rke), dim=-1) / (2 * torch.square(stdev_rk))
         log_lks_brk = RaggedSets.from_flattened_tensor_and_sizes(log_lks_rk, counts_b)
         log_lks_bk = log_lks_brk.sums_over_sets()
         return log_lks_bk
@@ -49,10 +50,10 @@ class FeatureClustering(nn.Module):
     def calculate_logits(self, ref_bre: RaggedSets, alt_bre: RaggedSets, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor):
 
         alt_log_lks_bk = self.log_likelihoods(reads_bre=alt_bre, centroids_vke=self.alt_centroids_vke,
-            stdev_pre_exp_vk=self.alt_stdev_pre_exp_vk, counts_b=alt_counts_b, var_types_b=var_types_b)
+                                              log_stdev_vk=self.alt_log_stdev_vk, counts_b=alt_counts_b, var_types_b=var_types_b)
 
         ref_log_lks_bk = self.log_likelihoods(reads_bre=ref_bre, centroids_vke=self.ref_centroids_vke,
-                                              stdev_pre_exp_vk=self.ref_stdev_pre_exp_vk, counts_b=ref_counts_b,
+                                              log_stdev_vk=self.ref_log_stdev_vk, counts_b=ref_counts_b,
                                               var_types_b=var_types_b)
 
         log_lks_bk = alt_log_lks_bk + ref_log_lks_bk
