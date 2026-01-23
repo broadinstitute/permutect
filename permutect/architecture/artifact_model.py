@@ -117,7 +117,7 @@ class ArtifactModel(torch.nn.Module):
         return self._haplotypes_length
 
     def calibration_parameters(self):
-        return [self.feature_clustering.stdev_pre_exp_vk]
+        return [self.feature_clustering.alt_stdev_pre_exp_vk]
 
     def set_epoch_type(self, epoch_type: Epoch):
         if epoch_type == Epoch.TRAIN:
