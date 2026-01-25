@@ -117,17 +117,17 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     # but between the particular cluster predictions.
                     # TODO: should we detach() torch.sigmoid(other_output...)?
                     other_output = outputs[1 if n == 0 else 0]
-                    consistency_loss_b = ce(output.calibrated_logits_bk, torch.softmax(other_output.calibrated_logits_bk, dim=-1))
+                    #consistency_loss_b = ce(output.calibrated_logits_bk, torch.softmax(other_output.calibrated_logits_bk, dim=-1))
                     # unsupervised loss uses uncalibrated logits because different counts should NOT be the same after calibration,
                     # but should be identical before.  Note that unsupervised losses is used with and without labels
                     # This must be changed if we have more than one downsampled batch
 
-                    unsupervised_losses_b = source_mask_b * consistency_loss_b
-                    losses = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + output.source_weights * source_losses_b
+                    #unsupervised_losses_b = source_mask_b * consistency_loss_b
+                    losses = output.weights * (supervised_losses_b + alt_count_losses_b) + output.source_weights * source_losses_b
                     loss += torch.sum(losses)
 
                     loss_metrics.record(batch, supervised_losses_b, is_labeled_b * output.weights)
-                    loss_metrics.record(batch, unsupervised_losses_b, output.weights)
+                    #loss_metrics.record(batch, unsupervised_losses_b, output.weights)
                     source_prediction_loss_metrics.record(batch, source_losses_b, output.source_weights)
                     alt_count_loss_metrics.record(batch, alt_count_losses_b, output.weights)
 
