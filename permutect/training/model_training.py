@@ -120,14 +120,11 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
 
                     # note the detach() -- this term encourages max likelihood by improving the clustering but
                     # it does not encourage "cheating" wherein the featurization collapses toward trivial values
-                    log_clustering_evidence_b = torch.logsumexp(output.detached_logits_bk, dim=-1)
+                    probs_bk = torch.softmax(output.detached_logits_bk, dim=-1)
+                    log_probs_bk = torch.log_softmax(output.detached_logits_bk, dim=-1)
+                    clustering_entropy_b = - torch.sum(probs_bk * log_probs_bk, dim=-1)
 
-                    #consistency_loss_b = ce(output.calibrated_logits_bk, torch.softmax(other_output.calibrated_logits_bk, dim=-1))
-                    # unsupervised loss uses uncalibrated logits because different counts should NOT be the same after calibration,
-                    # but should be identical before.  Note that unsupervised losses is used with and without labels
-                    # This must be changed if we have more than one downsampled batch
-
-                    unsupervised_losses_b = -source_mask_b * log_clustering_evidence_b
+                    unsupervised_losses_b = source_mask_b * clustering_entropy_b
 
                     losses = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + output.source_weights * source_losses_b
                     loss += torch.sum(losses)
