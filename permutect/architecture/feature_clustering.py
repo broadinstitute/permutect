@@ -47,7 +47,7 @@ class FeatureClustering(nn.Module):
         log_lks_bk = log_lks_brk.sums_over_sets()
         return log_lks_bk
 
-    def calculate_logits(self, ref_bre: RaggedSets, alt_bre: RaggedSets, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor):
+    def weighted_log_likelihoods_bk(self, ref_bre: RaggedSets, alt_bre: RaggedSets, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor):
 
         alt_log_lks_bk = self.log_likelihoods(reads_bre=alt_bre, centroids_vke=self.alt_centroids_vke,
                                               log_stdev_vk=self.alt_log_stdev_vk, counts_b=alt_counts_b, var_types_b=var_types_b)
@@ -62,8 +62,16 @@ class FeatureClustering(nn.Module):
         log_artifact_cluster_weights_vk = torch.log_softmax(self.cluster_weights_pre_softmax_vk, dim=-1)
         log_artifact_cluster_weights_bk = log_artifact_cluster_weights_vk[var_types_b]
         log_lks_bk[:, 1:] += log_artifact_cluster_weights_bk
+        return log_lks_bk
 
-        logits_b = torch.logsumexp(log_lks_bk[:, 1:], dim=-1) - log_lks_bk[:, 0]
+    def calculate_logits(self, ref_bre: RaggedSets, alt_bre: RaggedSets, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor):
+        log_lks_bk = self.weighted_log_likelihoods_bk(ref_bre=ref_bre, alt_bre=alt_bre, ref_counts_b=ref_counts_b,
+            alt_counts_b=alt_counts_b, var_types_b=var_types_b)
+
+        artifact_log_lk_b = torch.logsumexp(log_lks_bk[:, 1:], dim=-1)
+        non_artifact_log_lk_b = log_lks_bk[:, 0]
+
+        logits_b = artifact_log_lk_b - non_artifact_log_lk_b
         return logits_b, log_lks_bk
 
     # avoid implicit forward calls because PyCharm doesn't recognize them
