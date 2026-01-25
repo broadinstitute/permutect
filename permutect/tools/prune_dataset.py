@@ -36,7 +36,7 @@ def calculate_pruning_thresholds(labeled_only_pruning_loader, model: ArtifactMod
         for batch in tqdm(prefetch_generator(labeled_only_pruning_loader), mininterval=60, total=len(labeled_only_pruning_loader)):
             # TODO: should we use likelihoods as in evaluation or posteriors as in training???
             # TODO: does it even matter??
-            art_logits_b, _, _ = model.calculate_logits(batch)
+            art_logits_b, _, _, _ = model.calculate_logits(batch)
             art_probs_b = torch.sigmoid(art_logits_b.detach())
 
             labels_b = batch.get_training_labels()
@@ -57,7 +57,7 @@ def calculate_pruning_thresholds(labeled_only_pruning_loader, model: ArtifactMod
         art_conf_threshold = average_artifact_confidence.get()
         nonart_conf_threshold = average_nonartifact_confidence.get()
         for batch in tqdm(prefetch_generator(labeled_only_pruning_loader), mininterval=60, total=len(labeled_only_pruning_loader)):
-            predicted_artifact_logits, _, _ = model.calculate_logits(batch)
+            predicted_artifact_logits, _, _, _ = model.calculate_logits(batch)
             predicted_artifact_probs = torch.sigmoid(predicted_artifact_logits.detach())
 
             conf_art_mask = predicted_artifact_probs >= art_conf_threshold
@@ -106,7 +106,7 @@ def generated_pruned_data_for_fold(art_threshold: float, nonart_threshold: float
     print("pruning the dataset")
     reads_batch: ReadsBatch
     for reads_batch in tqdm(prefetch_generator(pruning_base_data_loader), mininterval=60, total=len(pruning_base_data_loader)):
-        art_logits_b, _, _ = model.calculate_logits(reads_batch)
+        art_logits_b, _, _, _ = model.calculate_logits(reads_batch)
         art_probs_b = torch.sigmoid(art_logits_b.detach())
         art_label_mask = (reads_batch.get_training_labels() > 0.5)
         is_labeled_mask = (reads_batch.get_is_labeled_mask() > 0.5)

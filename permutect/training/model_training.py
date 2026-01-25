@@ -120,9 +120,9 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
 
                     # note the detach() -- this term encourages max likelihood by improving the clustering but
                     # it does not encourage "cheating" wherein the featurization collapses toward trivial values
-                    log_clustering_evidence_b = torch.logsumexp(output.calibrated_logits_bk.detach(), dim=-1)
+                    log_clustering_evidence_b = torch.logsumexp(output.detached_logits_bk, dim=-1)
 
-                    consistency_loss_b = ce(output.calibrated_logits_bk, torch.softmax(other_output.calibrated_logits_bk, dim=-1))
+                    #consistency_loss_b = ce(output.calibrated_logits_bk, torch.softmax(other_output.calibrated_logits_bk, dim=-1))
                     # unsupervised loss uses uncalibrated logits because different counts should NOT be the same after calibration,
                     # but should be identical before.  Note that unsupervised losses is used with and without labels
                     # This must be changed if we have more than one downsampled batch
@@ -272,7 +272,7 @@ def evaluate_model(model: ArtifactModel, epoch: int, num_sources: int, balancer:
         # now go over just the validation data and generate feature vectors / metadata for tensorboard projectors (UMAP)
         batch: ReadsBatch
         for batch in tqdm(prefetch_generator(valid_loader), mininterval=60, total=len(valid_loader)):
-            logits_b, _, features_be = model.calculate_logits(batch)
+            logits_b, _, _, features_be = model.calculate_logits(batch)
             pred_b = logits_b.detach().cpu()
             labels_b = batch.get_training_labels().cpu()
             correct_b = ((pred_b > 0) == (labels_b > 0.5)).tolist()

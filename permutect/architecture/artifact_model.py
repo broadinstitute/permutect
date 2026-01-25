@@ -31,10 +31,11 @@ class BatchOutput:
     simple container class for the output of the model over a single batch
     :return:
     """
-    def __init__(self, features_be: Tensor, calibrated_logits_b: Tensor, calibrated_logits_bk: Tensor, weights: Tensor, source_weights: Tensor):
+    def __init__(self, features_be: Tensor, calibrated_logits_b: Tensor, calibrated_logits_bk: Tensor, detached_logits_bk: Tensor, weights: Tensor, source_weights: Tensor):
         self.features_be = features_be
         self.calibrated_logits_b = calibrated_logits_b
         self.calibrated_logits_bk = calibrated_logits_bk
+        self.detached_logits_bk = detached_logits_bk
         self.weights = weights
         self.source_weights = source_weights
 
@@ -175,7 +176,13 @@ class ArtifactModel(torch.nn.Module):
         logits_b, logits_bk = self.feature_clustering.calculate_logits(ref_bre, alt_bre, ref_counts_b=batch.get_ref_counts(),
             alt_counts_b=batch.get_alt_counts(), var_types_b=batch.get_variant_types())
 
-        return logits_b, logits_bk, alt_bre.means_over_sets()
+        # these are logits with the gated-MLP transformed reads detached.  We use these in loss functions that only
+        # pertain to clustering.
+        _, detached_logits_bk = self.feature_clustering.calculate_logits(ref_bre, alt_bre,
+            ref_counts_b=batch.get_ref_counts(), alt_counts_b=batch.get_alt_counts(),
+            var_types_b=batch.get_variant_types(), detach_reads=True)
+
+        return logits_b, logits_bk, detached_logits_bk, alt_bre.means_over_sets()
 
     def compute_source_prediction_losses(self, features_be: Tensor, batch: ReadsBatch) -> Tensor:
         if self.num_sources > 1:
@@ -193,9 +200,9 @@ class ArtifactModel(torch.nn.Module):
 
     def compute_batch_output(self, batch: ReadsBatch, balancer: Balancer):
         weights_b, source_weights_b = balancer.process_batch_and_compute_weights(batch)
-        calibrated_logits_b, calibrated_logits_bk, features_be = self.calculate_logits(batch)
+        calibrated_logits_b, calibrated_logits_bk, detached_logits_bk, features_be = self.calculate_logits(batch)
         return BatchOutput(features_be=features_be, calibrated_logits_b=calibrated_logits_b,
-                           calibrated_logits_bk=calibrated_logits_bk,
+                           calibrated_logits_bk=calibrated_logits_bk, detached_logits_bk=detached_logits_bk,
                            weights=weights_b, source_weights=weights_b*source_weights_b)
 
     def make_dict_for_saving(self, artifact_log_priors=None, artifact_spectra=None):
