@@ -24,7 +24,7 @@ class FeatureClustering(nn.Module):
         self.num_clusters = self.num_artifact_clusters + 1
 
         # num_clusters different centroids for each variant type, each a vector in feature space.  Initialize even weights.
-        self.nonartifact_centroids_vke = Parameter(torch.rand(len(Variation), 1, self.feature_dim))
+        self.nonartifact_centroids_vke = Parameter(torch.zeros(len(Variation), 1, self.feature_dim), requires_grad=False)
         self.artifact_alt_centroids_vke = Parameter(torch.rand(len(Variation), self.num_artifact_clusters, self.feature_dim))
         self.artifact_ref_centroids_vke = Parameter(torch.rand(len(Variation), self.num_artifact_clusters, self.feature_dim))
 
