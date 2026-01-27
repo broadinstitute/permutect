@@ -24,12 +24,14 @@ class FeatureClustering(nn.Module):
         self.num_clusters = self.num_artifact_clusters + 1
 
         # num_clusters different centroids for each variant type, each a vector in feature space.  Initialize even weights.
-        self.alt_centroids_vke = Parameter(torch.rand(len(Variation), self.num_clusters, self.feature_dim))
-        self.ref_centroids_vke = Parameter(torch.rand(len(Variation), self.num_clusters, self.feature_dim))
+        self.nonartifact_centroids_vke = Parameter(torch.rand(len(Variation), 1, self.feature_dim))
+        self.artifact_alt_centroids_vke = Parameter(torch.rand(len(Variation), self.num_artifact_clusters, self.feature_dim))
+        self.artifact_ref_centroids_vke = Parameter(torch.rand(len(Variation), self.num_artifact_clusters, self.feature_dim))
 
         # cluster standard deviations.  Isotropic diagonal
-        self.alt_log_stdev_vk = Parameter(torch.zeros(len(Variation), self.num_clusters))
-        self.ref_log_stdev_vk = Parameter(torch.zeros(len(Variation), self.num_clusters))
+        self.nonartifact_log_stdev_vk = Parameter(torch.zeros(len(Variation), 1))
+        self.artifact_alt_log_stdev_vk = Parameter(torch.zeros(len(Variation), self.num_artifact_clusters))
+        self.artifact_ref_log_stdev_vk = Parameter(torch.zeros(len(Variation), self.num_artifact_clusters))
 
         self.cluster_weights_pre_softmax_vk = Parameter(torch.ones(len(Variation), self.num_artifact_clusters))
 
@@ -49,12 +51,16 @@ class FeatureClustering(nn.Module):
         return log_lks_bk
 
     def weighted_log_likelihoods_bk(self, ref_bre: RaggedSets, alt_bre: RaggedSets, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor, detach_reads: bool = False):
+        alt_centroids_vke = torch.cat((self.nonartifact_centroids_vke, self.artifact_alt_centroids_vke), dim=-2)
+        ref_centroids_vke = torch.cat((self.nonartifact_centroids_vke, self.artifact_ref_centroids_vke), dim=-2)
+        alt_log_stdev_vk = torch.cat((self.nonartifact_log_stdev_vk, self.artifact_alt_log_stdev_vk), dim=-1)
+        ref_log_stdev_vk = torch.cat((self.nonartifact_log_stdev_vk, self.artifact_ref_log_stdev_vk), dim=-1)
 
-        alt_log_lks_bk = self.log_likelihoods(reads_bre=alt_bre, centroids_vke=self.alt_centroids_vke,
-                                              log_stdev_vk=self.alt_log_stdev_vk, counts_b=alt_counts_b, var_types_b=var_types_b, detach_reads=detach_reads)
+        alt_log_lks_bk = self.log_likelihoods(reads_bre=alt_bre, centroids_vke=alt_centroids_vke,
+                                              log_stdev_vk=alt_log_stdev_vk, counts_b=alt_counts_b, var_types_b=var_types_b, detach_reads=detach_reads)
 
-        ref_log_lks_bk = self.log_likelihoods(reads_bre=ref_bre, centroids_vke=self.ref_centroids_vke,
-                                              log_stdev_vk=self.ref_log_stdev_vk, counts_b=ref_counts_b,
+        ref_log_lks_bk = self.log_likelihoods(reads_bre=ref_bre, centroids_vke=ref_centroids_vke,
+                                              log_stdev_vk=ref_log_stdev_vk, counts_b=ref_counts_b,
                                               var_types_b=var_types_b, detach_reads=detach_reads)
 
         log_lks_bk = alt_log_lks_bk + ref_log_lks_bk
