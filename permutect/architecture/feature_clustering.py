@@ -65,9 +65,10 @@ class FeatureClustering(nn.Module):
         log_lks_bk[:, 1:] += log_artifact_cluster_weights_bk
         return log_lks_bk
 
-    def calculate_logits(self, ref_bre: RaggedSets, alt_bre: RaggedSets, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor, detach_reads: bool = False):
+    def calculate_logits(self, ref_bre: RaggedSets, alt_bre: RaggedSets, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor, info_and_seq_log_lks_bk: Tensor, detach_reads: bool = False):
         log_lks_bk = self.weighted_log_likelihoods_bk(ref_bre=ref_bre, alt_bre=alt_bre, ref_counts_b=ref_counts_b,
-            alt_counts_b=alt_counts_b, var_types_b=var_types_b, detach_reads=detach_reads)
+            alt_counts_b=alt_counts_b, var_types_b=var_types_b, detach_reads=detach_reads) + \
+                     (info_and_seq_log_lks_bk.detach() if detach_reads else info_and_seq_log_lks_bk)
 
         artifact_log_lk_b = torch.logsumexp(log_lks_bk[:, 1:], dim=-1)
         non_artifact_log_lk_b = log_lks_bk[:, 0]

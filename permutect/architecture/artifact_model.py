@@ -79,19 +79,19 @@ class ArtifactModel(torch.nn.Module):
 
         # embeddings of reads, info, and reference sequence prior to the transformer layers
         self.read_embedding = MLP([num_read_features] + params.read_layers, batch_normalize=params.batch_normalize, dropout_p=params.dropout_p)
-        self.info_embedding = MLP([num_info_features] + params.info_layers, batch_normalize=params.batch_normalize, dropout_p=params.dropout_p)
-        self.haplotypes_cnn = DNASequenceConvolution(params.ref_seq_layer_strings, haplotypes_length // 2)
-
-        embedding_dim = self.read_embedding.output_dimension() + self.info_embedding.output_dimension() + self.haplotypes_cnn.output_dimension()
-
-        # TODO: reduce dimension before sending to the encoder???
-        self.ref_alt_reads_encoder = make_gated_ref_alt_mlp_encoder(embedding_dim, params)
+        self.ref_alt_reads_encoder = make_gated_ref_alt_mlp_encoder(self.read_embedding.output_dimension(), params)
 
         # reduce dimensionality of reads after gated MLP for better clustering etc
         self.reducer = MLP([self.ref_alt_reads_encoder.output_dimension()] + params.aggregation_layers, batch_normalize=params.batch_normalize, dropout_p=params.dropout_p)
 
         self.feature_clustering = FeatureClustering(feature_dimension=self.reducer.output_dimension(),
             num_artifact_clusters=params.num_artifact_clusters, calibration_hidden_layer_sizes=params.calibration_layers)
+
+        self.info_embedding = MLP([num_info_features] + params.info_layers, batch_normalize=params.batch_normalize,
+                                  dropout_p=params.dropout_p)
+        self.haplotypes_cnn = DNASequenceConvolution(params.ref_seq_layer_strings, haplotypes_length // 2)
+        info_haplotype_dim = self.info_embedding.output_dimension() + self.haplotypes_cnn.output_dimension()
+        self.info_and_haplotypes_combiner = torch.nn.Linear(in_features=info_haplotype_dim, out_features=self.feature_clustering.num_clusters)
 
         self.alt_count_predictor = Adversarial(MLP([self.reducer.output_dimension()] + [30, -1, -1, -1, 1]), adversarial_strength=0.01)
         self.alt_count_loss_func = torch.nn.MSELoss(reduction='none')
@@ -135,21 +135,15 @@ class ArtifactModel(torch.nn.Module):
     # here 'b' is the batch index, 'r' is the flattened read index, and 'e' means an embedding dimension
     # so, for example, "re" means a 2D tensor with all reads in the batch stacked and "bre" means a 3D tensor indexed
     # first by variant within the batch, then the read within the variant
-    def calculate_features(self, batch: ReadsBatch, weight_range: float = 0) -> tuple[RaggedSets, RaggedSets, Tensor]:
+    def calculate_features(self, batch: ReadsBatch, weight_range: float = 0) -> tuple[RaggedSets, RaggedSets, Tensor, Tensor]:
         ref_counts_b, alt_counts_b = batch.get_ref_counts(), batch.get_alt_counts()
         total_ref, total_alt = torch.sum(ref_counts_b).item(), torch.sum(alt_counts_b).item()
 
         read_embeddings_re = self.read_embedding.forward(batch.get_reads_re().to(dtype=self._dtype))
-        info_embeddings_be = self.info_embedding.forward(batch.get_info_be().to(dtype=self._dtype))
-        ref_seq_embeddings_be = self.haplotypes_cnn(batch.get_one_hot_haplotypes_bcs().to(dtype=self._dtype))
-        info_and_seq_be = torch.hstack((info_embeddings_be, ref_seq_embeddings_be))
-        info_and_seq_re = torch.vstack((torch.repeat_interleave(info_and_seq_be, repeats=ref_counts_b, dim=0),
-                                       torch.repeat_interleave(info_and_seq_be, repeats=alt_counts_b, dim=0)))
-        reads_info_seq_re = torch.hstack((read_embeddings_re, info_and_seq_re))
 
         # TODO: might be a bug if every datum in batch has zero ref reads?
-        ref_bre = RaggedSets.from_flattened_tensor_and_sizes(reads_info_seq_re[:total_ref], ref_counts_b)
-        alt_bre = RaggedSets.from_flattened_tensor_and_sizes(reads_info_seq_re[total_ref:], alt_counts_b)
+        ref_bre = RaggedSets.from_flattened_tensor_and_sizes(read_embeddings_re[:total_ref], ref_counts_b)
+        alt_bre = RaggedSets.from_flattened_tensor_and_sizes(read_embeddings_re[total_ref:], alt_counts_b)
         transformed_ref_bre, transformed_alt_bre = self.ref_alt_reads_encoder.forward(ref_bre, alt_bre)
 
         reduced_ref_bre = transformed_ref_bre.apply_elementwise(self.reducer)
@@ -168,19 +162,24 @@ class ArtifactModel(torch.nn.Module):
         alt_means_ve = sums_over_rows(transformed_alt_re * normalized_alt_weights_r[:,None], alt_counts)
         """
 
-        return reduced_ref_bre, reduced_alt_bre, ref_seq_embeddings_be # ref seq embeddings are useful later
+        info_embeddings_be = self.info_embedding.forward(batch.get_info_be().to(dtype=self._dtype))
+        ref_seq_embeddings_be = self.haplotypes_cnn(batch.get_one_hot_haplotypes_bcs().to(dtype=self._dtype))
+        info_and_seq_be = torch.hstack((info_embeddings_be, ref_seq_embeddings_be))
+        info_and_seq_log_lks_bk = self.info_and_haplotypes_combiner.forward(info_and_seq_be)
+
+        return reduced_ref_bre, reduced_alt_bre, info_and_seq_log_lks_bk, ref_seq_embeddings_be # ref seq embeddings are useful later
 
     def calculate_logits(self, batch: ReadsBatch):
-        ref_bre, alt_bre, _ = self.calculate_features(batch)    # ragged sets of reduced and transformed reads
+        ref_bre, alt_bre, info_and_seq_log_lks_bk, _ = self.calculate_features(batch)    # ragged sets of reduced and transformed reads
 
         logits_b, logits_bk = self.feature_clustering.calculate_logits(ref_bre, alt_bre, ref_counts_b=batch.get_ref_counts(),
-            alt_counts_b=batch.get_alt_counts(), var_types_b=batch.get_variant_types())
+            alt_counts_b=batch.get_alt_counts(), var_types_b=batch.get_variant_types(), info_and_seq_log_lks_bk=info_and_seq_log_lks_bk)
 
         # these are logits with the gated-MLP transformed reads detached.  We use these in loss functions that only
         # pertain to clustering.
         _, detached_logits_bk = self.feature_clustering.calculate_logits(ref_bre, alt_bre,
             ref_counts_b=batch.get_ref_counts(), alt_counts_b=batch.get_alt_counts(),
-            var_types_b=batch.get_variant_types(), detach_reads=True)
+            var_types_b=batch.get_variant_types(), info_and_seq_log_lks_bk=info_and_seq_log_lks_bk, detach_reads=True)
 
         return logits_b, logits_bk, detached_logits_bk, alt_bre.means_over_sets()
 
@@ -260,7 +259,7 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
 
     batch: ReadsBatch
     for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
-        ref_bre, alt_bre, ref_alt_seq_embeddings_be = model.calculate_features(batch, weight_range=model._params.reweighting_range)
+        ref_bre, alt_bre, _, ref_alt_seq_embeddings_be = model.calculate_features(batch, weight_range=model._params.reweighting_range)
 
         features_be = alt_bre.means_over_sets().cpu()
         ref_alt_seq_embeddings_be = ref_alt_seq_embeddings_be.cpu()
