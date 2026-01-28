@@ -200,7 +200,7 @@ workflow Permutect {
         String mutect2_vcf_idx = select_first([Mutect2.output_vcf_idx, cached_mutect2_vcf_idx_hack])
         String contigs_table = select_first([Mutect2.permutect_contigs_table, cached_contigs_table_hack])
         String maf_segments = select_first([Mutect2.maf_segments, cached_maf_segments_hack])
-        String normal_maf_segments = if(defined(Mutect2.normal_maf_segments)) then Mutect2.normal_maf_segments else cached_normal_maf_segments_hack
+        String? normal_maf_segments = if(defined(Mutect2.normal_maf_segments)) then Mutect2.normal_maf_segments else cached_normal_maf_segments_hack
         String mutect_stats = select_first([Mutect2.mutect_stats, cached_mutect_stats_hack])
 
         File? fn = PermutectConcordance.fn
