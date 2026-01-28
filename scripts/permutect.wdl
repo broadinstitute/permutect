@@ -154,7 +154,7 @@ workflow Permutect {
             test_dataset = select_first([Mutect2.permutect_test_dataset, cached_dataset_hack]),
             contigs_table = select_first([Mutect2.permutect_contigs_table, cached_contigs_table_hack]),
             maf_segments = select_first([Mutect2.maf_segments, cached_maf_segments_hack]),
-            normal_maf_segments = select_first([Mutect2.normal_maf_segments, cached_normal_maf_segments_hack]),
+            normal_maf_segments = if(defined(Mutect2.normal_maf_segments)) then Mutect2.normal_maf_segments else cached_normal_maf_segments_hack,
             mutect_stats = select_first([Mutect2.mutect_stats, cached_mutect_stats_hack]),
             batch_size = batch_size,
             num_workers = num_workers,
