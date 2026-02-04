@@ -172,7 +172,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
 
             if not is_calibration_epoch and epoch_type == Epoch.TRAIN:
                 mean_over_labels = torch.mean(loss_metrics.get_marginal(BatchProperty.LABEL))
-                isnan = torch.isnan(mean_over_labels)
+                isnan = torch.isnan(mean_over_labels).any()
 
                 # If this is the lowest loss so far, overwrite the checkpoint state.
                 # If training has gone terribly awry due to an exploding gradient or some other freak occurrence, restore
@@ -183,7 +183,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                                  constants.OPTIMIZER_STATE_DICT_NAME: train_optimizer.state_dict()}
                     torch.save(save_data, checkpoint_file.name)
                     best_checkpoint = {'epoch': epoch, 'loss': mean_over_labels.item()}
-                elif mean_over_labels > 2 * best_checkpoint['loss']:
+                elif isnan or mean_over_labels > 2 * best_checkpoint['loss']:
                     print(f"Anomalously large mean loss: {mean_over_labels.item():.1f}, loading checkpoint.")
                     saved = torch.load(checkpoint_file.name, map_location=device)
                     model.load_state_dict(saved[constants.STATE_DICT_NAME])
