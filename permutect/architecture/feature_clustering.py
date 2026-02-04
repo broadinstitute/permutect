@@ -10,6 +10,7 @@ from permutect.sets.ragged_sets import RaggedSets
 
 LOG2 = torch.log(torch.tensor(2.0))
 SQRT2 = torch.sqrt(torch.tensor(2.0))
+MAX_LOGIT = 20
 
 def parallel_and_orthogonal_projections(vectors_re: Tensor, direction_vectors_ke) -> Tuple[Tensor, Tensor]:
     unit_vectors_ke = direction_vectors_ke / torch.norm(direction_vectors_ke, dim=-1, keepdim=True)
@@ -118,7 +119,11 @@ class FeatureClustering(nn.Module):
         non_artifact_log_lk_b = log_lks_bk[:, 0]
 
         logits_b = artifact_log_lk_b - non_artifact_log_lk_b
-        return logits_b, log_lks_bk
+
+        # the generative model can yield extremely certain results, leading to potentially exploding gradients
+        # here we cap the certainty of the output logits
+        capped_logits_b = MAX_LOGIT * torch.tanh(logits_b / MAX_LOGIT)
+        return capped_logits_b, log_lks_bk
 
     # avoid implicit forward calls because PyCharm doesn't recognize them
     def forward(self, features: Tensor):
