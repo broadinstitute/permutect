@@ -4,6 +4,7 @@ import torch
 from torch import nn, Tensor, IntTensor
 from torch.nn import Parameter
 from torch.nn.utils import parametrize
+from torch.nn.utils.parametrizations import orthogonal
 
 from permutect.architecture.parameterizations import BoundedNumber, UnitVector
 from permutect.sets.ragged_sets import RaggedSets
@@ -44,8 +45,11 @@ class FeatureClustering(nn.Module):
         self.num_artifact_clusters = num_artifact_clusters
 
 
-        # nonartifact reads are posited to have an isotropic Gaussian in F-dimensional space
+        # nonartifact reads are posited to have a Gaussian in F-dimensional space
+        # we shift and rotate so that the Gaussian is zero-centered and has diagonal covariance
         self.read_translation_e = Parameter(torch.rand(self.feature_dim))
+        self.read_rotation_ee = orthogonal(torch.nn.Linear(self.feature_dim, self.feature_dim, bias=False))
+
         self.nonartifact_stdev = Parameter(torch.tensor(1.0))
         parametrize.register_parametrization(self, "nonartifact_stdev", BoundedNumber(min_val=MIN_STDEV, max_val=MAX_STDEV))
 
@@ -76,7 +80,7 @@ class FeatureClustering(nn.Module):
         self.cluster_weights_pre_softmax_k = Parameter(torch.ones(self.num_artifact_clusters))
 
     def transform_reads(self, reads_bre: RaggedSets) -> RaggedSets:
-        return reads_bre.apply_elementwise(lambda reads_re: reads_re + self.read_translation_e[None, :])
+        return reads_bre.apply_elementwise(lambda reads_re: self.read_rotation_ee(reads_re + self.read_translation_e[None, :]))
 
 
     def weighted_log_likelihoods_bk(self, ref_bre: RaggedSets, alt_bre: RaggedSets, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor, detach_reads: bool = False):
