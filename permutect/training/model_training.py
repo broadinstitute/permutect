@@ -272,7 +272,7 @@ def evaluate_model(model: ArtifactModel, epoch: int, num_sources: int, balancer:
         # now go over just the validation data and generate feature vectors / metadata for tensorboard projectors
         batch: ReadsBatch
         for batch in tqdm(prefetch_generator(valid_loader), mininterval=60, total=len(valid_loader)):
-            logits_b, _, _, features_be = model.calculate_logits(batch)
+            logits_b, _, _, alt_means_be, ref_means_be = model.calculate_logits(batch)
             pred_b = logits_b.detach().cpu()
             labels_b = batch.get_training_labels().cpu()
             correct_b = ((pred_b > 0) == (labels_b > 0.5)).tolist()
@@ -288,8 +288,7 @@ def evaluate_model(model: ArtifactModel, epoch: int, num_sources: int, balancer:
             embedding_metrics.correct_metadata.extend(correct_strings)
             embedding_metrics.type_metadata.extend([Variation(idx).name for idx in batch.get_variant_types().cpu().tolist()])
             embedding_metrics.truncated_count_metadata.extend([alt_count_bin_name(alt_count_bin_index(alt_count)) for alt_count in batch.get_alt_counts().cpu().tolist()])
-            embedding_metrics.features.append(features_be.detach().cpu())
-            embedding_metrics.ref_features.append(ref_features_be.detach().cpu())
-            # TODO: WE NEED REF FEATURES!!!
+            embedding_metrics.features.append(alt_means_be.detach().cpu())
+            embedding_metrics.ref_features.append(ref_means_be.detach().cpu())
         embedding_metrics.output_to_summary_writer(summary_writer, epoch=epoch)
     # done collecting data

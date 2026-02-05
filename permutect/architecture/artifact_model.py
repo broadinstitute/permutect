@@ -184,7 +184,8 @@ class ArtifactModel(torch.nn.Module):
 
         # feature clustering shifts reads to be centered around the origin
         recentered_alt_bre = self.feature_clustering.transform_reads(alt_bre)
-        return logits_b, logits_bk, detached_logits_bk, recentered_alt_bre.means_over_sets()
+        recentered_ref_bre = self.feature_clustering.transform_reads(ref_bre)
+        return logits_b, logits_bk, detached_logits_bk, recentered_alt_bre.means_over_sets(), recentered_ref_bre.means_over_sets()
 
     def compute_source_prediction_losses(self, features_be: Tensor, batch: ReadsBatch) -> Tensor:
         if self.num_sources > 1:
@@ -202,8 +203,8 @@ class ArtifactModel(torch.nn.Module):
 
     def compute_batch_output(self, batch: ReadsBatch, balancer: Balancer):
         weights_b, source_weights_b = balancer.process_batch_and_compute_weights(batch)
-        calibrated_logits_b, calibrated_logits_bk, detached_logits_bk, features_be = self.calculate_logits(batch)
-        return BatchOutput(features_be=features_be, calibrated_logits_b=calibrated_logits_b,
+        calibrated_logits_b, calibrated_logits_bk, detached_logits_bk, alt_means_be, ref_means_be = self.calculate_logits(batch)
+        return BatchOutput(features_be=alt_means_be, calibrated_logits_b=calibrated_logits_b,
                            calibrated_logits_bk=calibrated_logits_bk, detached_logits_bk=detached_logits_bk,
                            weights=weights_b, source_weights=weights_b*source_weights_b)
 
@@ -264,19 +265,25 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
     for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
         ref_bre, alt_bre, ref_alt_seq_embeddings_be = model.calculate_features(batch, weight_range=model._params.reweighting_range)
 
-        features_be = alt_bre.means_over_sets().cpu()
+        recentered_alt_bre = model.feature_clustering.transform_reads(alt_bre)
+        recentered_ref_bre = model.feature_clustering.transform_reads(ref_bre)
+        # TODO: TRANSFORM or use logits or something
+
+        alt_means_be = recentered_alt_bre.means_over_sets().cpu()
+        ref_means_be = recentered_ref_bre.means_over_sets().cpu()
         ref_alt_seq_embeddings_be = ref_alt_seq_embeddings_be.cpu()
 
         labels = [("artifact" if label > 0.5 else "non-artifact") if is_labeled > 0.5 else "unlabeled" for (label, is_labeled) in
                   zip(batch.get_training_labels().tolist(), batch.get_is_labeled_mask().tolist())]
-        for (metrics, embeddings) in [(embedding_metrics, features_be), (ref_alt_seq_metrics, ref_alt_seq_embeddings_be)]:
+        for (metrics, embeddings, ref_features_be) in [(embedding_metrics, alt_means_be, ref_means_be), (ref_alt_seq_metrics, ref_alt_seq_embeddings_be, None)]:
             metrics.label_metadata.extend(labels)
             metrics.correct_metadata.extend(["unknown"] * batch.size())
             metrics.type_metadata.extend([Variation(idx).name for idx in batch.get_variant_types().tolist()])
             alt_count_strings = [alt_count_bin_name(alt_count_bin_index(ac)) for ac in batch.get_alt_counts().tolist()]
             metrics.truncated_count_metadata.extend(alt_count_strings)
             metrics.features.append(embeddings)
-            metrics.ref_features.append(# TODO: ref features go here!!!)
+            if ref_features_be is not None:
+                metrics.ref_features.append(ref_features_be)
     embedding_metrics.output_to_summary_writer(summary_writer)
     ref_alt_seq_metrics.output_to_summary_writer(summary_writer, prefix="ref and alt allele context")
 
