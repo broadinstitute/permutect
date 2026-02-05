@@ -45,7 +45,7 @@ class FeatureClustering(nn.Module):
 
 
         # nonartifact reads are posited to have an isotropic Gaussian in F-dimensional space
-        self.nonartifact_centroid_e = Parameter(torch.rand(self.feature_dim))
+        self.read_translation_e = Parameter(torch.rand(self.feature_dim))
         self.nonartifact_stdev = Parameter(torch.tensor(1.0))
         parametrize.register_parametrization(self, "nonartifact_stdev", BoundedNumber(min_val=MIN_STDEV, max_val=MAX_STDEV))
 
@@ -75,17 +75,21 @@ class FeatureClustering(nn.Module):
 
         self.cluster_weights_pre_softmax_k = Parameter(torch.ones(self.num_artifact_clusters))
 
+    def transform_reads(self, reads_bre: RaggedSets) -> RaggedSets:
+        return reads_bre.apply_elementwise(lambda reads_re: reads_re + self.read_translation_e[None, :])
+
 
     def weighted_log_likelihoods_bk(self, ref_bre: RaggedSets, alt_bre: RaggedSets, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor, detach_reads: bool = False):
-        alt_re = alt_bre.flattened_tensor_nf
-        delta_re = alt_re - self.nonartifact_centroid_e[None, :]
+        # recenter reads so that Gaussian's centroid is the origin
+        shifted_alt_bre, shifted_ref_bre = self.transform_reads(alt_bre), self.transform_reads(ref_bre)
+        alt_re = shifted_alt_bre.flattened_tensor_nf
 
         # distance from centroid in F dimensions for purpose of nonartifact Gaussian
-        nonartifact_dist_r = torch.norm(delta_re, dim=-1)
+        nonartifact_dist_r = torch.norm(alt_re, dim=-1)
         nonartifact_log_lks_r = -self.feature_dim * torch.log(self.nonartifact_stdev) - torch.square(nonartifact_dist_r) / (
                     2 * torch.square(self.nonartifact_stdev))
 
-        parallel_projections_rk, orthogonal_projections_rke = parallel_and_orthogonal_projections(vectors_re=delta_re,
+        parallel_projections_rk, orthogonal_projections_rke = parallel_and_orthogonal_projections(vectors_re=alt_re,
             direction_vectors_ke=self.artifact_directions_ke)
         orthogonal_dist_rk = torch.norm(orthogonal_projections_rke, dim=-1)
 

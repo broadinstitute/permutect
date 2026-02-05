@@ -182,7 +182,9 @@ class ArtifactModel(torch.nn.Module):
             ref_counts_b=batch.get_ref_counts(), alt_counts_b=batch.get_alt_counts(),
             var_types_b=batch.get_variant_types(), detach_reads=True)
 
-        return logits_b, logits_bk, detached_logits_bk, alt_bre.means_over_sets()
+        # feature clustering shifts reads to be centered around the origin
+        recentered_alt_bre = self.feature_clustering.transform_reads(alt_bre)
+        return logits_b, logits_bk, detached_logits_bk, recentered_alt_bre.means_over_sets()
 
     def compute_source_prediction_losses(self, features_be: Tensor, batch: ReadsBatch) -> Tensor:
         if self.num_sources > 1:

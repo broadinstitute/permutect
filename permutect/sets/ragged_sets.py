@@ -57,7 +57,7 @@ class RaggedSets:
         """
         return torch.repeat_interleave(tensor_bf, dim=0, repeats=self.get_sizes())
 
-    def apply_elementwise(self, func: torch.nn.Module) -> ThisClass:
+    def apply_elementwise(self, func) -> ThisClass:
         """
         conceptually, transform each vector element X_bs to func(X_bs).  In practice, transform each vector element
         X_n to func(X_n).
@@ -66,7 +66,7 @@ class RaggedSets:
         For example, a Pytorch linear layer or my MLP class work in this way.
         :return: the elementwise-transformed RaggedSets
         """
-        return RaggedSets(func.forward(self.flattened_tensor_nf), self.bounds_b)
+        return RaggedSets(func(self.flattened_tensor_nf), self.bounds_b)
 
     # override the * operator for elementwise multiplication
     # works for numeric scalars and torch Tensors of compatible shape
