@@ -54,7 +54,7 @@ class FeatureClustering(nn.Module):
 
         # anisotropic, diagonal stdev of nonartifact Gaussian.  Due to the rotation above the covariance is, WLOG, diagonal
         self.nonartifact_stdev_e = Parameter(torch.ones(self.feature_dim))
-        parametrize.register_parametrization(self, "nonartifact_stdev", BoundedNumber(min_val=MIN_STDEV, max_val=MAX_STDEV))
+        parametrize.register_parametrization(self, "nonartifact_stdev_e", BoundedNumber(min_val=MIN_STDEV, max_val=MAX_STDEV))
 
         # artifact clusters each have a characteristic direction vector of deviation away from the
         # nonartifact centroid.
