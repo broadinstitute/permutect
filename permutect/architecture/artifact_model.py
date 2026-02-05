@@ -276,6 +276,7 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
             alt_count_strings = [alt_count_bin_name(alt_count_bin_index(ac)) for ac in batch.get_alt_counts().tolist()]
             metrics.truncated_count_metadata.extend(alt_count_strings)
             metrics.features.append(embeddings)
+            metrics.ref_features.append(# TODO: ref features go here!!!)
     embedding_metrics.output_to_summary_writer(summary_writer)
     ref_alt_seq_metrics.output_to_summary_writer(summary_writer, prefix="ref and alt allele context")
 
