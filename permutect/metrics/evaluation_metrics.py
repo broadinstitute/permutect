@@ -208,7 +208,7 @@ class EmbeddingMetrics:
 '''
 
         stacked_features = torch.vstack(self.features)
-        stacked_ref_features = torch.vstack(self.ref_features)
+        stacked_ref_features = torch.vstack(self.ref_features) if self.ref_features else None
 
         # read average embeddings stratified by variant type
         for variant_type in Variation:
@@ -225,11 +225,11 @@ class EmbeddingMetrics:
                                          metadata=[all_metadata[round(n)] for n in idx.tolist()],
                                          metadata_header=["Labels", "Correctness", "Types", "Counts"],
                                          tag=prefix+"embedding for variant type " + variant_name, global_step=epoch)
-
-            summary_writer.add_embedding(stacked_ref_features[idx],
-                                         metadata=[all_metadata[round(n)] for n in idx.tolist()],
-                                         metadata_header=["Labels", "Correctness", "Types", "Counts"],
-                                         tag=prefix + "ref embedding for variant type " + variant_name, global_step=epoch)
+            if self.ref_features:
+                summary_writer.add_embedding(stacked_ref_features[idx],
+                                             metadata=[all_metadata[round(n)] for n in idx.tolist()],
+                                             metadata_header=["Labels", "Correctness", "Types", "Counts"],
+                                             tag=prefix + "ref embedding for variant type " + variant_name, global_step=epoch)
 
         # read average embeddings stratified by alt count
         for count_bin in range(NUM_ALT_COUNT_BINS):
@@ -247,7 +247,8 @@ class EmbeddingMetrics:
                                         metadata_header=["Labels", "Correctness", "Types", "Counts"],
                                         tag=prefix+"embedding for alt count " + str(count), global_step=epoch)
 
-                summary_writer.add_embedding(stacked_ref_features[idx],
+                if self.ref_features:
+                    summary_writer.add_embedding(stacked_ref_features[idx],
                                              metadata=[all_metadata[round(n)] for n in idx.tolist()],
                                              metadata_header=["Labels", "Correctness", "Types", "Counts"],
                                              tag=prefix + "ref embedding for alt count " + str(count), global_step=epoch)

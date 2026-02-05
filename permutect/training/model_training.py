@@ -289,5 +289,7 @@ def evaluate_model(model: ArtifactModel, epoch: int, num_sources: int, balancer:
             embedding_metrics.type_metadata.extend([Variation(idx).name for idx in batch.get_variant_types().cpu().tolist()])
             embedding_metrics.truncated_count_metadata.extend([alt_count_bin_name(alt_count_bin_index(alt_count)) for alt_count in batch.get_alt_counts().cpu().tolist()])
             embedding_metrics.features.append(features_be.detach().cpu())
+            embedding_metrics.ref_features.append(ref_features_be.detach().cpu())
+            # TODO: WE NEED REF FEATURES!!!
         embedding_metrics.output_to_summary_writer(summary_writer, epoch=epoch)
     # done collecting data

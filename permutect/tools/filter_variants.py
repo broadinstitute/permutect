@@ -363,6 +363,7 @@ def apply_filtering_to_vcf(input_vcf, output_vcf, contig_index_to_name_map, erro
             embedding_metrics.type_metadata.append(variant_type.name)
             embedding_metrics.truncated_count_metadata.append(alt_count_bin_name(alt_count_bin_index(min(MAX_ALT_COUNT, posterior_result.alt_count))))
             embedding_metrics.features.append(posterior_result.embedding)
+            # TODO: we don't yet record ref features but we could eventually. . .
 
             correctness_label = "unknown"
             if label != Label.UNLABELED:
