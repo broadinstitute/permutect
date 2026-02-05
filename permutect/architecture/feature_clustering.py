@@ -50,7 +50,8 @@ class FeatureClustering(nn.Module):
         self.read_translation_e = Parameter(torch.rand(self.feature_dim))
         self.read_rotation_ee = orthogonal(torch.nn.Linear(self.feature_dim, self.feature_dim, bias=False))
 
-        self.nonartifact_stdev = Parameter(torch.tensor(1.0))
+        # anisotropic, diagonal stdev of nonartifact Gaussian.  Due to the rotation above the covariance is, WLOG, diagonal
+        self.nonartifact_stdev_e = Parameter(torch.ones(self.feature_dim))
         parametrize.register_parametrization(self, "nonartifact_stdev", BoundedNumber(min_val=MIN_STDEV, max_val=MAX_STDEV))
 
         # artifact clusters each have a characteristic direction vector of deviation away from the
@@ -88,10 +89,8 @@ class FeatureClustering(nn.Module):
         shifted_alt_bre, shifted_ref_bre = self.transform_reads(alt_bre), self.transform_reads(ref_bre)
         alt_re = shifted_alt_bre.flattened_tensor_nf
 
-        # distance from centroid in F dimensions for purpose of nonartifact Gaussian
-        nonartifact_dist_r = torch.norm(alt_re, dim=-1)
-        nonartifact_log_lks_r = -self.feature_dim * torch.log(self.nonartifact_stdev) - torch.square(nonartifact_dist_r) / (
-                    2 * torch.square(self.nonartifact_stdev))
+        # nonartifact Gaussian in F dimensions
+        nonartifact_log_lks_r = -torch.sum(torch.log(self.nonartifact_stdev_e)) - torch.sum(torch.square(alt_re / self.nonartifact_stdev_e[None, :]), dim=-1)/2
 
         parallel_projections_rk, orthogonal_projections_rke = parallel_and_orthogonal_projections(vectors_re=alt_re,
             direction_vectors_ke=self.artifact_directions_ke)
