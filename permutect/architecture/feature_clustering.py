@@ -1,3 +1,4 @@
+import math
 from typing import List, Tuple
 
 import torch
@@ -10,6 +11,7 @@ from permutect.architecture.parameterizations import BoundedNumber, UnitVector
 from permutect.sets.ragged_sets import RaggedSets
 
 LOG2 = torch.log(torch.tensor(2.0))
+LOG2PI = torch.log(torch.tensor(2.0 * math.pi))
 SQRT2 = torch.sqrt(torch.tensor(2.0))
 MAX_LOGIT = 20
 
@@ -90,14 +92,15 @@ class FeatureClustering(nn.Module):
         alt_re = shifted_alt_bre.flattened_tensor_nf
 
         # nonartifact Gaussian in F dimensions
-        nonartifact_log_lks_r = -torch.sum(torch.log(self.nonartifact_stdev_e)) - torch.sum(torch.square(alt_re / self.nonartifact_stdev_e[None, :]), dim=-1)/2
+        nonartifact_log_lks_r = -(self.feature_dim/2)*LOG2PI -torch.sum(torch.log(self.nonartifact_stdev_e)) - \
+                                torch.sum(torch.square(alt_re / self.nonartifact_stdev_e[None, :]), dim=-1)/2
 
         parallel_projections_rk, orthogonal_projections_rke = parallel_and_orthogonal_projections(vectors_re=alt_re,
             direction_vectors_ke=self.artifact_directions_ke)
         orthogonal_dist_rk = torch.norm(orthogonal_projections_rke, dim=-1)
 
         # the orthogonal (F-1)-dimensional Gaussian component of the artifact log likelihoods
-        orthogonal_log_lks_rk = -(self.feature_dim - 1) * torch.log(self.artifact_stdev_k)[None, :] - torch.square(orthogonal_dist_rk) / (
+        orthogonal_log_lks_rk = -((self.feature_dim-1)/2)*LOG2PI -(self.feature_dim - 1) * torch.log(self.artifact_stdev_k)[None, :] - torch.square(orthogonal_dist_rk) / (
                 2 * torch.square(self.artifact_stdev_k[None, :]))
 
         parallel_log_lks_rk = emg_log_likelihood(x=parallel_projections_rk, mu=self.mu_k[None, :],
