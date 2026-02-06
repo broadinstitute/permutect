@@ -46,7 +46,15 @@ def logerfc(z: Tensor) -> Tensor:
 
     asymptotic = -z_squared - torch.log(z * SQRTPI) + torch.log1p(-1 / (2 * z_squared) + 3 / (4 * z_fourth) - 15 / (8 * z_sixth))
     built_in = torch.log(torch.erfc(z))
-    return torch.where(use_asymptotic, asymptotic, built_in)
+
+    asymptotic_is_nan = asymptotic.isnan() | asymptotic.isinf()
+    built_in_is_nan = built_in.isnan() | built_in.isinf()
+
+    genuine_nan = ((asymptotic_is_nan & use_asymptotic) | (built_in_is_nan & torch.logical_not(use_asymptotic))).any().item()
+    assert not genuine_nan, "Our logerfc implementation has a bug"
+
+    # If one branch of torch.where is a NaN, backpropagation yields a NaN regardless of whether that branch is used!!
+    return torch.where(use_asymptotic, torch.nan_to_num(asymptotic, nan=0, posinf=0, neginf=0), torch.nan_to_num(built_in, nan=0, posinf=0, neginf=0))
 
 
 # P(x) = (lambda / 2) * [1 - erf((mu + lambda*sigma^2 - x)/(sqrt(2)*sigma))] * \
