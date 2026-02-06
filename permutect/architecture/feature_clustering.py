@@ -2,6 +2,7 @@ import math
 from typing import List, Tuple
 
 import torch
+from pytensor.printing import use_ascii
 from torch import nn, Tensor, IntTensor
 from torch.nn import Parameter
 from torch.nn.utils import parametrize
@@ -12,6 +13,7 @@ from permutect.sets.ragged_sets import RaggedSets
 
 LOG2 = torch.log(torch.tensor(2.0))
 LOG2PI = torch.log(torch.tensor(2.0 * math.pi))
+SQRTPI = torch.sqrt(torch.tensor(math.pi))
 SQRT2 = torch.sqrt(torch.tensor(2.0))
 MAX_LOGIT = 20
 
@@ -24,13 +26,30 @@ def parallel_and_orthogonal_projections(vectors_re: Tensor, direction_vectors_ke
 
     return dot_products_rk, orthogonal_projections_rke
 
+"""
+Pytorch has no built-in logerfc, and erfc(z) decays so fast (faster than exp(-z^2)!) that it underflows to zero
+leading to NaNs when its log is taken.  Here for large arguments we use the asymptotic expansion:
+
+erfc(z) ~ [exp(-z^2)/(z sqrt(pi))] * [1 - 1/(2z^2) + 3/(4z^4) - 15/(8z^6) . . .]
+"""
+def logerfc(z: Tensor) -> Tensor:
+    use_asymptotic = z > 5
+
+    z_squared = z*z
+    z_fourth = z_squared * z_squared
+    z_sixth = z_squared * z_fourth
+
+    asymptotic = -z_squared - torch.log(z * SQRTPI) + torch.log1p(-1 / (2 * z_squared) + 3 / (4 * z_fourth) - 15 / (8 * z_sixth))
+    built_in = torch.log(torch.erfc(z))
+    return torch.where(use_asymptotic, asymptotic, built_in)
+
 
 # P(x) = (lambda / 2) * [1 - erf((mu + lambda*sigma^2 - x)/(sqrt(2)*sigma))] * \
 #   exp[(lambda/2) * (2*mu + lambda*sigma^2 - 2*x)]
 def emg_log_likelihood(x: Tensor, mu: Tensor, sigma: Tensor, lambd: Tensor) -> Tensor:
     variance = torch.square(sigma)
 
-    return torch.log(lambd/2) + torch.log(torch.erfc((mu + lambd * variance - x) / (SQRT2 * sigma))) + \
+    return torch.log(lambd/2) + logerfc((mu + lambd * variance - x) / (SQRT2 * sigma)) + \
         (lambd/2) * (2*mu + lambd * variance - 2*x)
 
 MIN_STDEV = 0.0001
