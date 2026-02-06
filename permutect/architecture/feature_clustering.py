@@ -2,7 +2,6 @@ import math
 from typing import List, Tuple
 
 import torch
-from pytensor.printing import use_ascii
 from torch import nn, Tensor, IntTensor
 from torch.nn import Parameter
 from torch.nn.utils import parametrize

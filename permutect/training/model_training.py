@@ -147,6 +147,15 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                         print(f"Very large batch loss {average_loss:.2f}.")
 
                     backpropagate(train_optimizer, loss, params_to_clip=model.parameters())
+
+                    nan_found = False
+                    for name, param in model.named_parameters():
+                        if param.grad is not None:
+                            if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                                print(f"Invalid gradient (NaN or Inf) found in parameter: {name}")
+                                nan_found = True
+                    assert not nan_found
+
                 # done with this batch
             # done with one epoch type -- training or validation -- for this epoch
             if epoch_type == Epoch.TRAIN:
