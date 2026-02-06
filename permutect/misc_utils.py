@@ -120,5 +120,5 @@ class Timer:
 def backpropagate(optimizer: torch.optim.Optimizer, loss: Tensor, params_to_clip: Iterator[Parameter] = []):
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
-    nn.utils.clip_grad_norm_(params_to_clip, max_norm=0.01)
+    nn.utils.clip_grad_norm_(params_to_clip, max_norm=1.0)
     optimizer.step()
