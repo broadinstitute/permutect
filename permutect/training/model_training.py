@@ -130,17 +130,23 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     losses = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + output.source_weights * source_losses_b
                     loss += torch.sum(losses)
 
-                    loss_metrics.record(batch, supervised_losses_b, is_labeled_b * output.weights)
-                    loss_metrics.record(batch, unsupervised_losses_b, output.weights)
-                    source_prediction_loss_metrics.record(batch, source_losses_b, output.source_weights)
-                    alt_count_loss_metrics.record(batch, alt_count_losses_b, output.weights)
+                    if not loss.isnan().any().item():
+                        loss_metrics.record(batch, supervised_losses_b, is_labeled_b * output.weights)
+                        loss_metrics.record(batch, unsupervised_losses_b, output.weights)
+                        source_prediction_loss_metrics.record(batch, source_losses_b, output.source_weights)
+                        alt_count_loss_metrics.record(batch, alt_count_losses_b, output.weights)
 
                 if epoch_type == Epoch.TRAIN:
-                    average_loss = loss.item() / batch.size()
-                    if epoch > 1 and average_loss > 100.0:
-                        print(f"Very large batch loss {average_loss:.2f}.")
+                    if loss.isnan().any().item():
+                        print("Loss is NaN.  Skipping backpropagation for this batch.")
+                        print(f"There are {torch.sum(losses.isnan()).item()} with NaN loss out of {batch.size()} data in the batch.")
 
-                    backpropagate(train_optimizer, loss, params_to_clip=model.parameters())
+                    else:
+                        average_loss = loss.item() / batch.size()
+                        if epoch > 1 and average_loss > 100.0:
+                            print(f"Very large batch loss {average_loss:.2f}.")
+
+                        backpropagate(train_optimizer, loss, params_to_clip=model.parameters())
                 # done with this batch
             # done with one epoch type -- training or validation -- for this epoch
             if epoch_type == Epoch.TRAIN:
