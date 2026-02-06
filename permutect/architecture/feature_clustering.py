@@ -40,21 +40,25 @@ erfc(z) ~ [exp(-z^2)/(z sqrt(pi))] * [1 - 1/(2z^2) + 3/(4z^4) - 15/(8z^6) . . .]
 def logerfc(z: Tensor) -> Tensor:
     use_asymptotic = z > 5
 
-    z_squared = z*z
+    z_clip = torch.min(z, 2)
+    z_squared = z_clip*z_clip
     z_fourth = z_squared * z_squared
     z_sixth = z_squared * z_fourth
 
-    asymptotic = -z_squared - torch.log(z * SQRTPI) + torch.log1p(-1 / (2 * z_squared) + 3 / (4 * z_fourth) - 15 / (8 * z_sixth))
-    built_in = torch.log(torch.erfc(z))
+    # asymptotic produces NaN when z is <= 2 or so.  Since only z > 5 is ever used, we can cap z at 2
+    asymptotic = -z_squared - torch.log(z_clip * SQRTPI) + torch.log1p(-1 / (2 * z_squared) + 3 / (4 * z_fourth) - 15 / (8 * z_sixth))
 
-    asymptotic_is_nan = asymptotic.isnan() | asymptotic.isinf()
-    built_in_is_nan = built_in.isnan() | built_in.isinf()
+    # when z = 5.0, torch.erfc(z) is 1.5375e-12.  since only z < 5 is ever used, we can cap erfc(z) at 1.0 e-12
+    built_in = torch.log(torch.clip(torch.erfc(z), min=1.0e-12))
 
-    genuine_nan = ((asymptotic_is_nan & use_asymptotic) | (built_in_is_nan & torch.logical_not(use_asymptotic))).any().item()
-    assert not genuine_nan, "Our logerfc implementation has a bug"
+    #asymptotic_is_nan = asymptotic.isnan() | asymptotic.isinf()
+    #built_in_is_nan = built_in.isnan() | built_in.isinf()
+
+    #genuine_nan = ((asymptotic_is_nan & use_asymptotic) | (built_in_is_nan & torch.logical_not(use_asymptotic))).any().item()
+    #assert not genuine_nan, "Our logerfc implementation has a bug"
 
     # If one branch of torch.where is a NaN, backpropagation yields a NaN regardless of whether that branch is used!!
-    return torch.where(use_asymptotic, torch.nan_to_num(asymptotic, nan=0, posinf=0, neginf=0), torch.nan_to_num(built_in, nan=0, posinf=0, neginf=0))
+    return torch.where(use_asymptotic, asymptotic, built_in)
 
 
 # P(x) = (lambda / 2) * [1 - erf((mu + lambda*sigma^2 - x)/(sqrt(2)*sigma))] * \
