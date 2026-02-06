@@ -125,8 +125,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     log_probs_bk = torch.log_softmax(output.detached_logits_bk, dim=-1)
                     clustering_entropy_b = - torch.sum(probs_bk * log_probs_bk, dim=-1)
 
-                    #unsupervised_losses_b = (1 - is_labeled_b) * source_mask_b * clustering_entropy_b
-                    unsupervised_losses_b = (1 - is_labeled_b) * source_mask_b * 0
+                    unsupervised_losses_b = (1 - is_labeled_b) * source_mask_b * clustering_entropy_b
 
                     losses = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + output.source_weights * source_losses_b
                     loss += torch.sum(losses)
