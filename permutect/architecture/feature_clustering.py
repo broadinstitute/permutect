@@ -40,7 +40,7 @@ erfc(z) ~ [exp(-z^2)/(z sqrt(pi))] * [1 - 1/(2z^2) + 3/(4z^4) - 15/(8z^6) . . .]
 def logerfc(z: Tensor) -> Tensor:
     use_asymptotic = z > 5
 
-    z_clip = torch.min(z, 2)
+    z_clip = torch.clip(z, min=2)
     z_squared = z_clip*z_clip
     z_fourth = z_squared * z_squared
     z_sixth = z_squared * z_fourth
