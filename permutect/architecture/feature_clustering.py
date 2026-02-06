@@ -52,10 +52,10 @@ def emg_log_likelihood(x: Tensor, mu: Tensor, sigma: Tensor, lambd: Tensor) -> T
     return torch.log(lambd/2) + logerfc((mu + lambd * variance - x) / (SQRT2 * sigma)) + \
         (lambd/2) * (2*mu + lambd * variance - 2*x)
 
-MIN_STDEV = 0.0001
+MIN_STDEV = 0.01
 MAX_STDEV = 100
 
-MIN_LAMBDA = 0.0001
+MIN_LAMBDA = 0.01
 MAX_LAMBDA = 100
 
 class FeatureClustering(nn.Module):
