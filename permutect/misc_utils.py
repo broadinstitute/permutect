@@ -13,7 +13,7 @@ def report_memory_usage(message: str = ""):
     print(f"{message}  Memory usage: {psutil.virtual_memory().percent:.1f}%")
 
 def check_nan(x: Tensor, name: str):
-    assert not (torch.isnan(x).any() or torch.isinf(x).any()), f"NaN or inf found in {name}."
+    assert not (torch.isnan(x).any().item() or torch.isinf(x).any().item()), f"NaN or inf found in {name}."
 
 class ConsistentValue:
     """
@@ -120,5 +120,5 @@ class Timer:
 def backpropagate(optimizer: torch.optim.Optimizer, loss: Tensor, params_to_clip: Iterator[Parameter] = []):
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
-    nn.utils.clip_grad_norm_(params_to_clip, max_norm=1.0)
+    nn.utils.clip_grad_norm_(params_to_clip, max_norm=0.01)
     optimizer.step()
