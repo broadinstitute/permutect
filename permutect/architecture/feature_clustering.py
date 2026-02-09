@@ -54,6 +54,18 @@ def logerfc(z: Tensor) -> Tensor:
     # If one branch of torch.where is a NaN, backpropagation yields a NaN regardless of whether that branch is used!!
     return torch.where(use_asymptotic, asymptotic, built_in)
 
+"""
+The -1 (last) dimension is the vector feature dimension.  Preceding dimensions can be batch or whatever.
+Here b stands not for a single batch dimension but for an arbitrary number of leading dimensions and 'f'
+stand for "features".
+
+Returns a tensor indexed by whatever dimensions 'b' represented i.e. the -1 dimension is summed over and gone.
+"""
+def diagonal_covariance_gaussian_log_likelihood(vectors_bf: Tensor, stdev_bf: Tensor) -> Tensor
+    feature_dim = vectors_bf.shape[0]
+    normalization_part = -(feature_dim/2)*LOG2PI - torch.sum(torch.log(stdev_bf), dim=-1)
+    exponential_part = -torch.sum(torch.square(vectors_bf / stdev_bf), dim=-1)/2
+    return normalization_part + exponential_part
 
 # P(x) = (lambda / 2) * [1 - erf((mu + lambda*sigma^2 - x)/(sqrt(2)*sigma))] * \
 #   exp[(lambda/2) * (2*mu + lambda*sigma^2 - 2*x)]
@@ -122,8 +134,7 @@ class FeatureClustering(nn.Module):
         alt_re = shifted_alt_bre.flattened_tensor_nf
 
         # nonartifact Gaussian in F dimensions
-        nonartifact_log_lks_r = -(self.feature_dim/2)*LOG2PI -torch.sum(torch.log(self.nonartifact_stdev_e)) - \
-                                torch.sum(torch.square(alt_re / self.nonartifact_stdev_e[None, :]), dim=-1)/2
+        nonartifact_log_lks_r = diagonal_covariance_gaussian_log_likelihood(vectors_bf=alt_re, stdev_bf=self.nonartifact_stdev_e[None, :])
 
         parallel_projections_rk, orthogonal_projections_rke = parallel_and_orthogonal_projections(vectors_re=alt_re,
             direction_vectors_ke=self.artifact_directions_ke)
