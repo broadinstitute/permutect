@@ -210,7 +210,7 @@ def generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model:
     print("creating posterior data...")
     batch: ReadsBatch
     for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
-        artifact_logits_b, _, _, alt_means_be, _ = model.calculate_logits(batch)
+        artifact_logits_b, _, alt_means_be, _ = model.calculate_logits(batch)
 
         for datum_array, logit, embedding in zip(batch.get_data_be(), artifact_logits_b.detach().tolist(), alt_means_be.cpu()):
             datum = Datum(datum_array)

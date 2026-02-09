@@ -12,6 +12,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange, tqdm
 
 from permutect import constants
+from permutect.architecture.feature_clustering import MAX_LOGIT
 from permutect.training.balancer import Balancer
 from permutect.training.downsampler import Downsampler
 from permutect.architecture.artifact_model import ArtifactModel, record_embeddings
@@ -119,13 +120,25 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     # TODO: should we detach() torch.sigmoid(other_output...)?
                     other_output = outputs[1 if n == 0 else 0]
 
-                    # note the detach() -- this term encourages max likelihood by improving the clustering but
-                    # it does not encourage "cheating" wherein the featurization collapses toward trivial values
-                    probs_bk = torch.softmax(output.detached_logits_bk, dim=-1)
-                    log_probs_bk = torch.log_softmax(output.detached_logits_bk, dim=-1)
-                    clustering_entropy_b = - torch.sum(probs_bk * log_probs_bk, dim=-1)
+                    # note that columns of output.calibrated_logits_bk are nonartifact, then outlier, then all the
+                    # different artifact clusters.
+                    nonart_logits_bk = output.calibrated_logits_bk[:,0][:,None]
+                    art_logits_bk = output.calibrated_logits_bk[:, 2:]
+                    nonoutlier_logits_bk = torch.cat((nonart_logits_bk, art_logits_bk), dim=-1)
+                    nonoutlier_logits_b = torch.logsumexp(nonoutlier_logits_bk, dim=-1)
+                    outlier_logits_b = output.calibrated_logits_bk[:, 1]
 
-                    unsupervised_losses_b = (1 - is_labeled_b) * source_mask_b * clustering_entropy_b
+                    # this is a binary logit representing the probability that the datum was classified as an outlier
+                    # i.e. not in the nonartifact Gaussian nor the artifact distributions
+                    outlier_binary_logits_b = outlier_logits_b - nonoutlier_logits_b
+
+                    # in our unsupervised loss, we want as little data as possible to be considered outlier, so the loss
+                    # is a binary cross entropy loss versus targets that are all "not-outlier" (i.e. 0).  However, since
+                    # some genuione outlier data does exist, such as rare or unmodeled artifacts, we clip the outlier
+                    # logit to avert unduly strong influence.
+                    outlier_losses_b = bce(torch.clip(outlier_binary_logits_b, max=MAX_LOGIT/2), torch.zeros_like(outlier_binary_logits_b))
+
+                    unsupervised_losses_b = (1 - is_labeled_b) * source_mask_b * outlier_losses_b
 
                     losses = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + output.source_weights * source_losses_b
                     loss += torch.sum(losses)
@@ -287,7 +300,7 @@ def evaluate_model(model: ArtifactModel, epoch: int, num_sources: int, balancer:
         # now go over just the validation data and generate feature vectors / metadata for tensorboard projectors
         batch: ReadsBatch
         for batch in tqdm(prefetch_generator(valid_loader), mininterval=60, total=len(valid_loader)):
-            logits_b, _, _, alt_means_be, ref_means_be = model.calculate_logits(batch)
+            logits_b, _, alt_means_be, ref_means_be = model.calculate_logits(batch)
             pred_b = logits_b.detach().cpu()
             labels_b = batch.get_training_labels().cpu()
             correct_b = ((pred_b > 0) == (labels_b > 0.5)).tolist()

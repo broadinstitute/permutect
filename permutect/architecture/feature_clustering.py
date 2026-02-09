@@ -61,7 +61,7 @@ stand for "features".
 
 Returns a tensor indexed by whatever dimensions 'b' represented i.e. the -1 dimension is summed over and gone.
 """
-def diagonal_covariance_gaussian_log_likelihood(vectors_bf: Tensor, stdev_bf: Tensor) -> Tensor
+def diagonal_covariance_gaussian_log_likelihood(vectors_bf: Tensor, stdev_bf: Tensor) -> Tensor:
     feature_dim = vectors_bf.shape[0]
     normalization_part = -(feature_dim/2)*LOG2PI - torch.sum(torch.log(stdev_bf), dim=-1)
     exponential_part = -torch.sum(torch.square(vectors_bf / stdev_bf), dim=-1)/2
@@ -128,13 +128,18 @@ class FeatureClustering(nn.Module):
         return reads_bre.apply_elementwise(lambda reads_re: self.read_rotation_ee(reads_re + self.read_translation_e[None, :]))
 
 
-    def weighted_log_likelihoods_bk(self, ref_bre: RaggedSets, alt_bre: RaggedSets, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor, detach_reads: bool = False):
+    def weighted_log_likelihoods_bk(self, ref_bre: RaggedSets, alt_bre: RaggedSets, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor):
         # recenter reads so that Gaussian's centroid is the origin
         shifted_alt_bre, shifted_ref_bre = self.transform_reads(alt_bre), self.transform_reads(ref_bre)
         alt_re = shifted_alt_bre.flattened_tensor_nf
 
         # nonartifact Gaussian in F dimensions
         nonartifact_log_lks_r = diagonal_covariance_gaussian_log_likelihood(vectors_bf=alt_re, stdev_bf=self.nonartifact_stdev_e[None, :])
+
+        # outliers are modeled by a Gaussian with same shape and tice as dispersed as the nonartifact Gaussian.
+        # Unsupervised loss tries to minimize probability assigned to this "pseudocluster", which is akin to
+        # assigning data to areas of high probability density.
+        outlier_log_lks_r = diagonal_covariance_gaussian_log_likelihood(vectors_bf=alt_re, stdev_bf=2*self.nonartifact_stdev_e[None, :])
 
         parallel_projections_rk, orthogonal_projections_rke = parallel_and_orthogonal_projections(vectors_re=alt_re,
             direction_vectors_ke=self.artifact_directions_ke)
@@ -148,9 +153,11 @@ class FeatureClustering(nn.Module):
                                                  sigma=self.sigma_k[None, :], lambd=self.lambda_k[None, :])
 
         nonartifact_log_lks_rk = nonartifact_log_lks_r[:, None]
+        outlier_log_lks_rk = outlier_log_lks_r[:, None]
         artifact_log_lks_rk = orthogonal_log_lks_rk + parallel_log_lks_rk
 
         nonartifact_log_lks_bk = RaggedSets.from_flattened_tensor_and_sizes(nonartifact_log_lks_rk, alt_counts_b).sums_over_sets()
+        outlier_log_lks_bk = RaggedSets.from_flattened_tensor_and_sizes(outlier_log_lks_rk, alt_counts_b).sums_over_sets()
         artifact_log_lks_bk = RaggedSets.from_flattened_tensor_and_sizes(artifact_log_lks_rk, alt_counts_b).sums_over_sets()
 
 
@@ -159,14 +166,17 @@ class FeatureClustering(nn.Module):
         log_artifact_cluster_weights_bk = log_artifact_cluster_weights_k[None:, ]
         artifact_log_lks_bk += log_artifact_cluster_weights_bk
 
-        # the first column is nonartifact; other columns are different artifact clusters
-        return torch.cat((nonartifact_log_lks_bk, artifact_log_lks_bk), dim=-1)
+        # the first column is nonartifact; next is outlier; other columns are different artifact clusters
+        return torch.cat((nonartifact_log_lks_bk, outlier_log_lks_bk, artifact_log_lks_bk), dim=-1)
 
-    def calculate_logits(self, ref_bre: RaggedSets, alt_bre: RaggedSets, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor, detach_reads: bool = False):
+    def calculate_logits(self, ref_bre: RaggedSets, alt_bre: RaggedSets, ref_counts_b: IntTensor, alt_counts_b: IntTensor, var_types_b: IntTensor):
+        # order is 0) nonartifact; 1) outlier; 2 and up) artifact clusters
         log_lks_bk = self.weighted_log_likelihoods_bk(ref_bre=ref_bre, alt_bre=alt_bre, ref_counts_b=ref_counts_b,
-            alt_counts_b=alt_counts_b, var_types_b=var_types_b, detach_reads=detach_reads)
+            alt_counts_b=alt_counts_b, var_types_b=var_types_b)
 
-        artifact_log_lk_b = torch.logsumexp(log_lks_bk[:, 1:], dim=-1)
+        # outliers are simply ignored for classification.  They are onky used for the unsupervised loss.
+        # TODO: perhaps outliers should count as artifacts?
+        artifact_log_lk_b = torch.logsumexp(log_lks_bk[:, 2:], dim=-1)
         non_artifact_log_lk_b = log_lks_bk[:, 0]
 
         logits_b = artifact_log_lk_b - non_artifact_log_lk_b
