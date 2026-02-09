@@ -8,7 +8,6 @@ from torch.nn.utils import parametrize
 from torch.nn.utils.parametrizations import orthogonal
 
 from permutect.architecture.parameterizations import BoundedNumber, UnitVector
-from permutect.misc_utils import check_nan
 from permutect.sets.ragged_sets import RaggedSets
 
 LOG2 = torch.log(torch.tensor(2.0))
@@ -23,11 +22,6 @@ def parallel_and_orthogonal_projections(vectors_re: Tensor, direction_vectors_ke
 
     parallel_projections_rke = dot_products_rk[:, :, None] * unit_vectors_ke[None, :, :]
     orthogonal_projections_rke = vectors_re[:, None, :] - parallel_projections_rke
-
-    check_nan(unit_vectors_ke, "unit_vectors_ke")
-    check_nan(dot_products_rk, "dot_products_rk")
-    check_nan(parallel_projections_rke, "parallel_projections_rke")
-    check_nan(orthogonal_projections_rke, "orthogonal_projections_rke")
 
     return dot_products_rk, orthogonal_projections_rke
 
@@ -142,10 +136,6 @@ class FeatureClustering(nn.Module):
         parallel_log_lks_rk = emg_log_likelihood(x=parallel_projections_rk, mu=self.mu_k[None, :],
                                                  sigma=self.sigma_k[None, :], lambd=self.lambda_k[None, :])
 
-        check_nan(orthogonal_log_lks_rk, "orthogonal_log_lks_rk")
-        check_nan(parallel_log_lks_rk, "parallel_log_lks_rk")
-        check_nan(nonartifact_log_lks_r, "nonartifact_log_lks_r")
-
         nonartifact_log_lks_rk = nonartifact_log_lks_r[:, None]
         artifact_log_lks_rk = orthogonal_log_lks_rk + parallel_log_lks_rk
 
@@ -157,8 +147,6 @@ class FeatureClustering(nn.Module):
         log_artifact_cluster_weights_k = torch.log_softmax(self.cluster_weights_pre_softmax_k, dim=-1)
         log_artifact_cluster_weights_bk = log_artifact_cluster_weights_k[None:, ]
         artifact_log_lks_bk += log_artifact_cluster_weights_bk
-
-        check_nan(artifact_log_lks_bk, "artifact_log_lks_bk")
 
         # the first column is nonartifact; other columns are different artifact clusters
         return torch.cat((nonartifact_log_lks_bk, artifact_log_lks_bk), dim=-1)
@@ -175,7 +163,6 @@ class FeatureClustering(nn.Module):
         # the generative model can yield extremely certain results, leading to potentially exploding gradients
         # here we cap the certainty of the output logits
         capped_logits_b = MAX_LOGIT * torch.tanh(logits_b / MAX_LOGIT)
-        check_nan(capped_logits_b, "capped_logits_b")
         return capped_logits_b, log_lks_bk
 
     # avoid implicit forward calls because PyCharm doesn't recognize them
