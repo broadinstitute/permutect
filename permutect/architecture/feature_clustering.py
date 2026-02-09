@@ -62,7 +62,7 @@ stand for "features".
 Returns a tensor indexed by whatever dimensions 'b' represented i.e. the -1 dimension is summed over and gone.
 """
 def diagonal_covariance_gaussian_log_likelihood(vectors_bf: Tensor, stdev_bf: Tensor) -> Tensor:
-    feature_dim = vectors_bf.shape[0]
+    feature_dim = vectors_bf.shape[-1]
     normalization_part = -(feature_dim/2)*LOG2PI - torch.sum(torch.log(stdev_bf), dim=-1)
     exponential_part = -torch.sum(torch.square(vectors_bf / stdev_bf), dim=-1)/2
     return normalization_part + exponential_part
