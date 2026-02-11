@@ -245,6 +245,13 @@ class GatedRefAltMLP(nn.Module):
         super(GatedRefAltMLP, self).__init__()
 
         self.blocks = nn.ModuleList([GatedRefAltMLPBlock(d_model, d_ffn) for _ in range(num_blocks)])
+        self.dimension = d_model
+
+    def input_dimension(self) -> int:
+        return self.dimension
+
+    def output_dimension(self) -> int:
+        return self.dimension
 
     def forward(self, ref_brf: RaggedSets, alt_brf: RaggedSets) -> tuple[RaggedSets, RaggedSets]:
         """

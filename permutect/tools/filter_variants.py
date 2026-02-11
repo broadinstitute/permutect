@@ -165,7 +165,7 @@ def make_filtered_vcf(artifact_model_path, initial_log_variant_prior: float, ini
     device = gpu_if_available()
     model, artifact_log_priors, artifact_spectra_state_dict = load_model(artifact_model_path, device=device)
 
-    posterior_model = PosteriorModel(initial_log_variant_prior, initial_log_artifact_prior, no_germline_mode=no_germline_mode, num_base_features=model.pooling_dimension(), het_beta=het_beta)
+    posterior_model = PosteriorModel(initial_log_variant_prior, initial_log_artifact_prior, no_germline_mode=no_germline_mode, het_beta=het_beta)
     posterior_data_loader = make_posterior_data_loader(test_dataset_file, input_vcf, contig_index_to_name_map,
         model, batch_size, num_workers=num_workers, segmentation=segmentation, normal_segmentation=normal_segmentation)
 
@@ -210,9 +210,9 @@ def generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model:
     print("creating posterior data...")
     batch: ReadsBatch
     for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
-        artifact_logits_b, _, _, features_be = model.calculate_logits(batch)
+        artifact_logits_b, _, alt_means_be, _ = model.calculate_logits(batch)
 
-        for datum_array, logit, embedding in zip(batch.get_data_be(), artifact_logits_b.detach().tolist(), features_be.cpu()):
+        for datum_array, logit, embedding in zip(batch.get_data_be(), artifact_logits_b.detach().tolist(), alt_means_be.cpu()):
             datum = Datum(datum_array)
             contig_name = contig_index_to_name_map[datum.get_contig()]
             position = datum.get_position()
@@ -363,6 +363,7 @@ def apply_filtering_to_vcf(input_vcf, output_vcf, contig_index_to_name_map, erro
             embedding_metrics.type_metadata.append(variant_type.name)
             embedding_metrics.truncated_count_metadata.append(alt_count_bin_name(alt_count_bin_index(min(MAX_ALT_COUNT, posterior_result.alt_count))))
             embedding_metrics.features.append(posterior_result.embedding)
+            # TODO: we don't yet record ref features but we could eventually. . .
 
             correctness_label = "unknown"
             if label != Label.UNLABELED:

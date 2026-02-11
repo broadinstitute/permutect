@@ -93,10 +93,6 @@ def main_without_parsing(args):
 
     train_artifact_model(model, train_dataset, valid_dataset, training_params, summary_writer, epochs_per_evaluation=10, calibration_sources=calibration_sources)
 
-    for var_type in Variation:
-        cal_fig, cal_axes = model.feature_clustering.plot_distance_calibration(var_type=var_type, device=model._device, dtype=model._dtype)
-        summary_writer.add_figure("distance calibration by count for " + var_type.name, cal_fig)
-
     report_memory_usage("Finished training.")
 
     artifact_log_priors, artifact_spectra = learn_artifact_priors_and_spectra(train_dataset, genomic_span) if learn_artifact_spectra else (None, None)

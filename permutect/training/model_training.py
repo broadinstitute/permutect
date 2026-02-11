@@ -12,6 +12,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange, tqdm
 
 from permutect import constants
+from permutect.architecture.feature_clustering import MAX_LOGIT
 from permutect.training.balancer import Balancer
 from permutect.training.downsampler import Downsampler
 from permutect.architecture.artifact_model import ArtifactModel, record_embeddings
@@ -32,6 +33,7 @@ WORST_OFFENDERS_QUEUE_SIZE = 100
 
 def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, valid_dataset: ReadsDataset, training_params: TrainingParameters, summary_writer: SummaryWriter,
                          epochs_per_evaluation: int = None, calibration_sources: List[int] = None, embedding_dataset: ReadsDataset = None):
+    #torch.autograd.set_detect_anomaly(True)
     device, dtype = model._device, model._dtype
     bce = nn.BCEWithLogitsLoss(reduction='none')  # no reduction because we may want to first multiply by weights for unbalanced data
     ce = nn.CrossEntropyLoss(reduction='none')  # likewise
@@ -97,12 +99,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                 downsampled_batch2 = DownsampledReadsBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
                 batches = [downsampled_batch1, downsampled_batch2]
                 outputs = [model.compute_batch_output(batch, balancer) for batch in batches]
-                parent_output = model.compute_batch_output(parent_batch, balancer)
-
-                # distances to the second-nearest cluster (i.e. nearest wrong cluster, most likely) for normalizing
-                # the unsupervised consistency loss function
-                parent_batch_distances_bk = model.feature_clustering.centroid_distances(parent_output.features_be)
-                second_nearest_dist_b = torch.kthvalue(parent_batch_distances_bk, k=2, dim=-1).values
+                # parent_output = model.compute_batch_output(parent_batch, balancer)
 
                 sources = parent_batch.get_sources()
                 source_mask_b = 1 if (calibration_sources is None or not is_calibration_epoch) else \
@@ -118,31 +115,60 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     alt_count_losses_b = source_mask_b * model.compute_alt_count_losses(output.features_be, batch)
                     supervised_losses_b = source_mask_b * is_labeled_b * bce(output.calibrated_logits_b, labels_b)
 
-                    # unsupervised loss uses uncalibrated logits because different counts should NOT be the same after calibration,
-                    # but should be identical before.  Note that unsupervised losses is used with and without labels
-                    # This must be changed if we have more than one downsampled batch
+                    # unsupervised loss is consistency not just between overall artifact / non-artifact predictions,
+                    # but between the particular cluster predictions.
                     # TODO: should we detach() torch.sigmoid(other_output...)?
                     other_output = outputs[1 if n == 0 else 0]
 
-                    consistency_dist_b = torch.norm(output.features_be - parent_output.features_be, dim=-1)
-                    consistency_loss_b = torch.square(consistency_dist_b / second_nearest_dist_b)
+                    # note that columns of output.calibrated_logits_bk are nonartifact, then outlier, then all the
+                    # different artifact clusters.
+                    nonart_logits_bk = output.calibrated_logits_bk[:,0][:,None]
+                    art_logits_bk = output.calibrated_logits_bk[:, 2:]
+                    nonoutlier_logits_bk = torch.cat((nonart_logits_bk, art_logits_bk), dim=-1)
+                    nonoutlier_logits_b = torch.logsumexp(nonoutlier_logits_bk, dim=-1)
+                    outlier_logits_b = output.calibrated_logits_bk[:, 1]
 
-                    # unsupervised loss: cross-entropy between cluster-resolved predictions
-                    unsupervised_losses_b = source_mask_b * consistency_loss_b
+                    # this is a binary logit representing the probability that the datum was classified as an outlier
+                    # i.e. not in the nonartifact Gaussian nor the artifact distributions
+                    outlier_binary_logits_b = outlier_logits_b - nonoutlier_logits_b
+
+                    # in our unsupervised loss, we want as little data as possible to be considered outlier, so the loss
+                    # is a binary cross entropy loss versus targets that are all "not-outlier" (i.e. 0).  However, since
+                    # some genuione outlier data does exist, such as rare or unmodeled artifacts, we clip the outlier
+                    # logit to avert unduly strong influence.
+                    outlier_losses_b = bce(torch.clip(outlier_binary_logits_b, max=MAX_LOGIT/2), torch.zeros_like(outlier_binary_logits_b))
+
+                    unsupervised_losses_b = (1 - is_labeled_b) * source_mask_b * outlier_losses_b
+
                     losses = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + output.source_weights * source_losses_b
                     loss += torch.sum(losses)
 
+                    #if not loss.isnan().any().item():
                     loss_metrics.record(batch, supervised_losses_b, is_labeled_b * output.weights)
                     loss_metrics.record(batch, unsupervised_losses_b, output.weights)
                     source_prediction_loss_metrics.record(batch, source_losses_b, output.source_weights)
                     alt_count_loss_metrics.record(batch, alt_count_losses_b, output.weights)
 
                 if epoch_type == Epoch.TRAIN:
+                    #if loss.isnan().any().item():
+                    #    print("Loss is NaN.  Skipping backpropagation for this batch.")
+                    #    print(f"There are {torch.sum(losses.isnan()).item()} with NaN loss out of {batch.size()} data in the batch.")
+
+                    #else:
                     average_loss = loss.item() / batch.size()
                     if epoch > 1 and average_loss > 100.0:
                         print(f"Very large batch loss {average_loss:.2f}.")
 
                     backpropagate(train_optimizer, loss, params_to_clip=model.parameters())
+
+                    nan_found = False
+                    for name, param in model.named_parameters():
+                        if param.grad is not None:
+                            if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                                print(f"Invalid gradient (NaN or Inf) found in parameter: {name}")
+                                nan_found = True
+                    assert not nan_found
+
                 # done with this batch
             # done with one epoch type -- training or validation -- for this epoch
             if epoch_type == Epoch.TRAIN:
@@ -173,7 +199,9 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     evaluate_model(model, epoch, num_sources, balancer, downsampler, train_loader, valid_loader, summary_writer, collect_embeddings=False, report_worst=False)
 
             if not is_calibration_epoch and epoch_type == Epoch.TRAIN:
-                mean_over_labels = torch.mean(loss_metrics.get_marginal(BatchProperty.LABEL)).item()
+                mean_over_labels = torch.mean(loss_metrics.get_marginal(BatchProperty.LABEL))
+                isnan = torch.isnan(mean_over_labels).any()
+                mean_over_labels = mean_over_labels.item()
 
                 # If this is the lowest loss so far, overwrite the checkpoint state.
                 # If training has gone terribly awry due to an exploding gradient or some other freak occurrence, restore
@@ -184,7 +212,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                                  constants.OPTIMIZER_STATE_DICT_NAME: train_optimizer.state_dict()}
                     torch.save(save_data, checkpoint_file.name)
                     best_checkpoint = {'epoch': epoch, 'loss': mean_over_labels}
-                elif mean_over_labels > 2 * best_checkpoint['loss']:
+                elif isnan or mean_over_labels > 2 * best_checkpoint['loss']:
                     print(f"Anomalously large mean loss: {mean_over_labels:.1f}, loading checkpoint.")
                     saved = torch.load(checkpoint_file.name, map_location=device)
                     model.load_state_dict(saved[constants.STATE_DICT_NAME])
@@ -269,10 +297,10 @@ def evaluate_model(model: ArtifactModel, epoch: int, num_sources: int, balancer:
     if collect_embeddings:
         embedding_metrics = EmbeddingMetrics()
 
-        # now go over just the validation data and generate feature vectors / metadata for tensorboard projectors (UMAP)
+        # now go over just the validation data and generate feature vectors / metadata for tensorboard projectors
         batch: ReadsBatch
         for batch in tqdm(prefetch_generator(valid_loader), mininterval=60, total=len(valid_loader)):
-            logits_b, _, _, features_be = model.calculate_logits(batch)
+            logits_b, _, alt_means_be, ref_means_be = model.calculate_logits(batch)
             pred_b = logits_b.detach().cpu()
             labels_b = batch.get_training_labels().cpu()
             correct_b = ((pred_b > 0) == (labels_b > 0.5)).tolist()
@@ -284,11 +312,11 @@ def evaluate_model(model: ArtifactModel, epoch: int, num_sources: int, balancer:
             correct_strings = [str(correctness) if is_labeled > 0.5 else "-1"
                              for (correctness, is_labeled) in zip(correct_b, is_labeled_list)]
 
-            for (metrics, features_e) in [(embedding_metrics, features_be.detach().cpu())]:
-                metrics.label_metadata.extend(label_strings)
-                metrics.correct_metadata.extend(correct_strings)
-                metrics.type_metadata.extend([Variation(idx).name for idx in batch.get_variant_types().cpu().tolist()])
-                metrics.truncated_count_metadata.extend([alt_count_bin_name(alt_count_bin_index(alt_count)) for alt_count in batch.get_alt_counts().cpu().tolist()])
-                metrics.features_be.append(features_e)
+            embedding_metrics.label_metadata.extend(label_strings)
+            embedding_metrics.correct_metadata.extend(correct_strings)
+            embedding_metrics.type_metadata.extend([Variation(idx).name for idx in batch.get_variant_types().cpu().tolist()])
+            embedding_metrics.truncated_count_metadata.extend([alt_count_bin_name(alt_count_bin_index(alt_count)) for alt_count in batch.get_alt_counts().cpu().tolist()])
+            embedding_metrics.features.append(alt_means_be.detach().cpu())
+            embedding_metrics.ref_features.append(ref_means_be.detach().cpu())
         embedding_metrics.output_to_summary_writer(summary_writer, epoch=epoch)
     # done collecting data

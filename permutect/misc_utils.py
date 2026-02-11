@@ -12,7 +12,6 @@ from torch.nn import Parameter
 def report_memory_usage(message: str = ""):
     print(f"{message}  Memory usage: {psutil.virtual_memory().percent:.1f}%")
 
-
 class ConsistentValue:
     """
     Tracks a value that once initialized, is consistent among eg all members of a dataset.  For example, all tensors
