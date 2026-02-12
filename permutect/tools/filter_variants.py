@@ -30,7 +30,7 @@ from permutect.utils.allele_utils import trim_alleles_on_right, find_variant_typ
 from permutect.utils.enums import Variation, Call, Epoch, Label
 from permutect.utils.math_utils import prob_to_logit, inverse_sigmoid
 
-TRUSTED_M2_FILTERS = {'contamination'}
+TRUSTED_M2_FILTERS = {'contamination', 'slippage'}
 
 POST_PROB_INFO_KEY = 'POST'
 ARTIFACT_LOD_INFO_KEY = 'ARTLOD'
