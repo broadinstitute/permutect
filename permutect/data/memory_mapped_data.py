@@ -58,7 +58,7 @@ class MemoryMappedData:
             if folds_to_use is None or (idx % num_folds in folds_set):
                 data_array = self.data_mmap[idx]
                 reads_array = self.reads_mmap[0 if idx == 0 else self.read_end_indices[idx - 1]:self.read_end_indices[idx]]
-                datum = ReadsDatum(datum_array=data_array, compressed_reads_re=reads_array)
+                datum = ReadsDatum(int16_array=data_array, compressed_reads_re=reads_array)
                 if keep_probs_by_label_l is None or random.random() < keep_probs_by_label_l[datum.get(Data.LABEL)]:
                     yield datum
                     count += 1
@@ -168,7 +168,7 @@ class MemoryMappedData:
 
         datum: ReadsDatum
         for datum in reads_datum_source:
-            data_array = datum.get_array_1d()
+            data_array = datum.get_int16_array()
             reads_array = datum.get_reads_array_re()    # this works both for raw unnormalized data and the compressed reads of ReadsDatum
 
             num_data += 1

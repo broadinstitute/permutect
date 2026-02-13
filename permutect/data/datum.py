@@ -178,8 +178,11 @@ class Datum:
         self.float16_array = np.hstack((self.float16_array[:Data.INFO_START_IDX], new_info))
         self.set(Data.INFO_LENGTH, len(new_info))
 
-    def get_array_1d(self) -> np.ndarray:
+    def get_int16_array(self) -> np.ndarray:
         return self.int16_array
+
+    def get_float16_array(self) -> np.ndarray:
+        return self.float16_array
 
     def get_nbytes(self) -> int:
         return self.int16_array.nbytes + self.float16_array.nbytes

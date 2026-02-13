@@ -212,8 +212,9 @@ def generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model:
     for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
         artifact_logits_b, _, alt_means_be, _ = model.calculate_logits(batch)
 
-        for datum_array, logit, embedding in zip(batch.get_data_be(), artifact_logits_b.detach().tolist(), alt_means_be.cpu()):
-            datum = Datum(datum_array)
+        for int16_array, float16_array, logit, embedding in zip(batch.get_int16_data_be(), batch.get_float16_data_be(),
+                artifact_logits_b.detach().tolist(), alt_means_be.cpu()):
+            datum = Datum(int16_array, float16_array)
             contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
             position = datum.get(Data.POSITION)
             encoding = encode(contig_name, position, datum.get_ref_allele(), datum.get_alt_allele())
@@ -227,7 +228,7 @@ def generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model:
                 maf = list(segmentation_overlaps)[0].data if segmentation_overlaps else 0.5
                 normal_maf = list(normal_segmentation_overlaps)[0].data if normal_segmentation_overlaps else 0.5
 
-                posterior_datum = PosteriorDatum.create(datum_array, allele_frequency, logit, maf, normal_maf, embedding.numpy())
+                posterior_datum = PosteriorDatum.create(int16_array, float16_array, allele_frequency, logit, maf, normal_maf, embedding.numpy())
                 yield posterior_datum
 
 @torch.inference_mode()
@@ -282,7 +283,7 @@ def apply_filtering_to_vcf(input_vcf, output_vcf, contig_index_to_name_map, erro
             sources_override=most_confident_calls_b, logits=batch.get_artifact_logits())
 
         artifact_logits = batch.get_artifact_logits().cpu().tolist()
-        data = [Datum(datum_array) for datum_array in batch.get_data_be()]
+        data = [Datum(datum_array) for datum_array in batch.get_int16_data_be()]
         for datum, post_probs, logit, log_prior, log_spec, log_normal, embedding in zip(data, posterior_probs_bc, artifact_logits, log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, batch.embeddings):
             encoding = encode_datum(datum, contig_index_to_name_map)
             encoding_to_posterior_results[encoding] = PosteriorResult(artifact_logit=logit, posterior_probabilities=post_probs.tolist(),

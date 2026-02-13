@@ -85,7 +85,7 @@ class PosteriorDataset(IterableDataset):
             random.shuffle(indices)
 
             for idx in indices:
-                datum = PosteriorDatum(datum_array=chunk_data_ve[idx], float_array=chunk_floats_ve[idx], embedding=chunk_embeddings_ve[idx])
+                datum = PosteriorDatum(int16_array=chunk_data_ve[idx], extra_float_array=chunk_floats_ve[idx], embedding=chunk_embeddings_ve[idx])
                 yield datum
 
             # we have finished yielding all the data in this chunk.  Because this is such a large amount of data,

@@ -195,7 +195,7 @@ def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Read
         raw_data_list = []
         for idx in range(start_idx, end_idx):
             reads = reads_mmap_re[0 if idx == 0 else read_end_indices[idx - 1]:read_end_indices[idx]]
-            raw_datum = RawUnnormalizedReadsDatum(datum_array=data_mmap_ve[idx], reads_re=reads)
+            raw_datum = RawUnnormalizedReadsDatum(int16_array=data_mmap_ve[idx], reads_re=reads)
             raw_data_list.append(raw_datum)
 
         normalized_data_list = normalize_raw_data_list(raw_data_list, read_quantile_transform)
@@ -431,7 +431,7 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
         extra_info_e = np.hstack((alt_distance_medians_e, alt_boolean_means_e))
 
         output_reads_re = output_uint8_reads_array[ref_start_index:alt_end_index]
-        output_datum: ReadsDatum = ReadsDatum(datum_array=raw_datum.int16_array, compressed_reads_re=output_reads_re)
+        output_datum: ReadsDatum = ReadsDatum(int16_array=raw_datum.int16_array, compressed_reads_re=output_reads_re)
 
         output_datum.set_info_1d(np.hstack((all_info_transformed_ve[n], extra_info_e)))
         normalized_result.append(output_datum)

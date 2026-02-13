@@ -44,8 +44,8 @@ class MemoryMappedPosteriorData:
 
         datum: PosteriorDatum
         for datum in posterior_datum_source:
-            data_array = datum.get_array_1d()
-            float_array = datum.float_array
+            data_array = datum.get_int16_array()
+            float_array = datum.extra_float_array
             embedding_array = datum.embedding
 
             num_data += 1

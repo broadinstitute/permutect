@@ -250,7 +250,7 @@ def collect_evaluation_data(model: ArtifactModel, num_sources: int, balancer: Ba
                 evaluation_metrics.record_batch(epoch_type, batch, logits=output.calibrated_logits_b, weights=output.weights)
 
                 if report_worst:
-                    for datum_array, predicted_logit in zip(batch.get_data_be(), output.calibrated_logits_b.detach().cpu().tolist()):
+                    for datum_array, predicted_logit in zip(batch.get_int16_data_be(), output.calibrated_logits_b.detach().cpu().tolist()):
                         datum = Datum(datum_array)
                         wrong_call = (datum.get(Data.LABEL) == Label.ARTIFACT and predicted_logit < 0) or \
                                      (datum.get(Data.LABEL) == Label.VARIANT and predicted_logit > 0)

@@ -60,7 +60,7 @@ class ReadsBatch(Batch):
         is_cuda = device.type == 'cuda'
         new_batch = copy.copy(self)
         new_batch.reads_re = self.reads_re.to(device=device, dtype=dtype, non_blocking=is_cuda)
-        new_batch.data = self.data.to(device, non_blocking=is_cuda)  # don't cast dtype -- needs to stay integral!
+        new_batch.int16_data = self.int16_data.to(device, non_blocking=is_cuda)  # don't cast dtype -- needs to stay integral!
         return new_batch
 
     def get_reads_re(self) -> Tensor:
@@ -103,10 +103,11 @@ class DownsampledReadsBatch(ReadsBatch):
         """
         This is delicate.  We're constructing it without calling super().__init__
         """
-        self.data = original_batch.data
-        self.device = self.data.device
+        self.int16_data = original_batch.int16_data # note: no copy -- we never modify it!!!
+        self.float16_data = original_batch.float16_data # note: no copy -- we never modify it!!!
+        self.device = self.int16_data.device
         self.reads_re = original_batch.reads_re
-        self._finish_initializiation_from_data_array()
+        self._finish_initializiation_from_arrays()
         # at this point all member variables needed by the parent class are available
 
         old_ref_counts, old_alt_counts = original_batch.get(Data.REF_COUNT), original_batch.get(Data.ALT_COUNT)
@@ -155,8 +156,8 @@ class DownsampledReadsBatch(ReadsBatch):
             return super().get(data_field)
 
     # override
-    def get_data_be(self) -> np.ndarray:
-        result = self.data.cpu().numpy(force=True)  # force it to make a copy because we modify it
+    def get_int16_data_be(self) -> np.ndarray:
+        result = self.int16_data.cpu().numpy(force=True)  # force it to make a copy because we modify it
         result[:, Data.REF_COUNT.idx] = self.ref_counts.cpu().numpy()
         result[:, Data.ALT_COUNT.idx] = self.alt_counts.cpu().numpy()
         return result

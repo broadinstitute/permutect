@@ -18,17 +18,12 @@ from permutect.utils.enums import Label, Variation
 
 class Batch:
     def __init__(self, data: List[Datum]):
-        self.data = torch.from_numpy(np.vstack([d.get_array_1d() for d in data])).to(torch.long)
-        self._finish_initializiation_from_data_array()
+        self.int16_data = torch.from_numpy(np.vstack([d.get_int16_array() for d in data])).to(torch.long)
+        self.float16_data = torch.from_numpy(np.vstack([d.get_float16_array() for d in data])).to(torch.float)
+        self._finish_initializiation_from_arrays()
 
-    def _finish_initializiation_from_data_array(self):
-        self._size = len(self.data)
-        first_datum = Datum(self.data[0].numpy())
-        self.haplotypes_start = Data.HAPLOTYPES_START_IDX
-        self.haplotypes_end = Data.HAPLOTYPES_START_IDX + first_datum.get(Data.HAPLOTYPES_LENGTH)
-        self.info_start = self.haplotypes_end
-        info_length = first_datum.get(Data.INFO_LENGTH)
-        self.info_end = self.info_start + info_length
+    def _finish_initializiation_from_arrays(self):
+        self._size = len(self.int16_data)
         self.lazy_batch_indices = None
 
     def batch_indices(self) -> BatchIndices:
@@ -42,11 +37,11 @@ class Batch:
     def get(self, data_field: Data):
         index = data_field.idx
         if data_field.dtype == np.uint16:
-            return self.data[:, index]
+            return self.int16_data[:, index]
         elif data_field.dtype == np.uint32:
-            return uint32_from_two_int16s(self.data[:, index], self.data[:, index + 1])
+            return uint32_from_two_int16s(self.int16_data[:, index], self.int16_data[:, index + 1])
         elif data_field.dtype == np.float16:
-            return int16_to_float(self.data[:, index])
+            return self.float16_data[:, index]
         else:
             assert False, "Unsupported data type"
 
@@ -61,19 +56,23 @@ class Batch:
         return (int_enum_labels != Label.UNLABELED).int()
 
     def get_info_be(self) -> Tensor:
-        return int16_to_float(self.data[:, self.info_start:self.info_end])
+        return self.float16_data[:, Data.INFO_START_IDX:]
 
     def get_haplotypes_bs(self) -> IntTensor:
         # each row is 1D array of integer array reference and alt haplotypes concatenated -- A, C, G, T, deletion = 0, 1, 2, 3, 4
-        return self.data[:, self.haplotypes_start:self.haplotypes_end]
+        return self.int16_data[:, Data.HAPLOTYPES_START_IDX:]
 
     # pin memory for all tensors that are sent to the GPU
     def pin_memory(self):
-        self.data = self.data.pin_memory()
+        self.int16_data = self.int16_data.pin_memory()
+        self.float16_data = self.float16_data.pin_memory()
         return self
 
-    def get_data_be(self) -> np.ndarray:
-        return self.data.cpu().numpy()
+    def get_int16_data_be(self) -> np.ndarray:
+        return self.int16_data.cpu().numpy()
+
+    def get_float16_data_be(self) -> np.ndarray:
+        return self.float16_data.cpu().numpy()
 
     def size(self) -> int:
         return self._size
