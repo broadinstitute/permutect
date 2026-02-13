@@ -20,8 +20,8 @@ class PosteriorDataset(IterableDataset):
 
         available_memory = psutil.virtual_memory().available
         print(f"Posterior data occupy {posterior_mmap.size_in_bytes() // 1000000} Mb and the system has {available_memory // 1000000} Mb of RAM available.")
-        self._stacked_data_ve = self.memory_map.data_mmap
-        self._stacked_floats_ve = self.memory_map.float_mmap
+        self._stacked_data_ve = self.memory_map.int16_mmap
+        self._stacked_floats_ve = self.memory_map.extra_float_mmap
         self._stacked_embeddings_ve = self.memory_map.embedding_mmap
 
     def __len__(self) -> int:
