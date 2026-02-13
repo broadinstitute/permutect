@@ -109,7 +109,7 @@ class DownsampledReadsBatch(ReadsBatch):
         self._finish_initializiation_from_data_array()
         # at this point all member variables needed by the parent class are available
 
-        old_ref_counts, old_alt_counts = self.data[:, Datum.REF_COUNT_IDX], self.data[:, Datum.ALT_COUNT_IDX]
+        old_ref_counts, old_alt_counts = original_batch.get(Data.REF_COUNT), original_batch.get(Data.ALT_COUNT)
         old_total_ref, old_total_alt = torch.sum(old_ref_counts), torch.sum(old_alt_counts)
 
         ref_probs_r = torch.repeat_interleave(ref_fracs_b, dim=0, repeats=old_ref_counts)
@@ -144,6 +144,15 @@ class DownsampledReadsBatch(ReadsBatch):
         kept_alt_indices = torch.nonzero(keep_alt_mask).view(-1)
 
         self.read_indices = torch.hstack((kept_ref_indices, kept_alt_indices))
+
+    #override for downsampled counts
+    def get(self, data_field: Data):
+        if data_field == Data.REF_COUNT:
+            return self.ref_counts
+        elif data_field == Data.ALT_COUNT:
+            return self.alt_counts
+        else:
+            return super().get(data_field)
 
     # override
     def get_ref_counts(self) -> IntTensor:
