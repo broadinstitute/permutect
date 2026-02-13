@@ -23,15 +23,6 @@ DEFAULT_NUMPY_FLOAT = np.float16
 DEFAULT_GPU_FLOAT = torch.float32
 DEFAULT_CPU_FLOAT = torch.float32
 
-def float_to_clipped_int16(float_number: float) -> int:
-    unbounded_int = round(float_number * FLOAT_TO_LONG_MULTIPLIER)
-    return max(min(unbounded_int, BIGGEST_INT16), -BIGGEST_INT16)
-
-
-def int16_to_float(int16_number_or_tensor):
-    return int16_number_or_tensor / FLOAT_TO_LONG_MULTIPLIER
-
-
 def uint32_to_two_int16s(num: int):
     uint16_1, uint16_2 = num // BIGGEST_UINT16, num % BIGGEST_UINT16
     return uint16_1 - (BIGGEST_INT16 + 1), uint16_2 - (BIGGEST_INT16 + 1)

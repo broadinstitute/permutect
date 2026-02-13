@@ -10,7 +10,7 @@ import numpy as np
 from permutect.data.count_binning import ref_count_bin_name, NUM_REF_COUNT_BINS, alt_count_bin_name, NUM_ALT_COUNT_BINS, \
     logit_bin_name, NUM_LOGIT_BINS, ref_count_bin_indices, alt_count_bin_indices, logit_bin_indices, \
     ref_count_bin_index, alt_count_bin_index
-from permutect.data.datum import Datum, int16_to_float, Data, uint32_from_two_int16s
+from permutect.data.datum import Datum, Data, uint32_from_two_int16s
 from permutect.misc_utils import gpu_if_available
 from permutect.utils.array_utils import flattened_indices
 from permutect.utils.enums import Label, Variation

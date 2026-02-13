@@ -1,14 +1,7 @@
 from __future__ import annotations
 from tempfile import NamedTemporaryFile
-from traceback import extract_tb, extract_stack
 
 import numpy as np
-from jinja2.ext import extract_from_ast
-from joblib.memory import extract_first_line
-from tensorboard.compat.tensorflow_stub.dtypes import int16_ref
-from torchgen.executorch.parse import extract_kernel_fields
-
-from permutect.data.datum import int16_to_float
 from permutect.data.posterior_data import PosteriorDatum
 
 SUFFIX_FOR_INT16_MMAP = ".int16_data_mmap.npy"

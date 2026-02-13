@@ -8,10 +8,8 @@ from typing import Generator, List
 
 import numpy as np
 import torch
-from sympy.codegen.ast import int16
-from tensorboard.compat.tensorflow_stub.dtypes import int16_ref
 
-from permutect.data.datum import Datum, DATUM_ARRAY_DTYPE, Data, int16_to_float
+from permutect.data.datum import Datum, Data
 from permutect.data.reads_datum import ReadsDatum, READS_ARRAY_DTYPE
 from permutect.misc_utils import Timer
 
