@@ -50,7 +50,7 @@ class ReadsDataset(IterableDataset):
         print(f"Data occupy {memory_mapped_data.size_in_bytes() // 1000000} Mb and the system has {available_memory // 1000000} Mb of RAM available.")
 
         self._stacked_reads_re = self.memory_mapped_data.reads_mmap
-        self._stacked_data_ve = self.memory_mapped_data.data_mmap
+        self._stacked_data_ve = self.memory_mapped_data.int16_mmap
 
         self._num_read_features, self._num_info_features, self._haplotypes_length = ConsistentValue(), ConsistentValue(), ConsistentValue()
         data_recording_timer = Timer("Recording data counts. . .")

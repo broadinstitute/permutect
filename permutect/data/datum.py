@@ -71,6 +71,7 @@ Data.NUM_SCALAR_INT16_ELEMENTS = 16    # in Python 3.11+ can use enum.nonmember
 Data.HAPLOTYPES_START_IDX = 16          # in Python 3.11+ can use enum.nonmember
 Data.NUM_SCALAR_FLOAT16_ELEMENTS = 2    # in Python 3.11+ can use enum.nonmember
 Data.INFO_START_IDX = 2          # in Python 3.11+ can use enum.nonmember
+
 class Datum:
     """
     contains data that apply to a candidate mutation as a whole i.e. not the read sets.  These are organized into a single

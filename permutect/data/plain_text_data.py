@@ -175,7 +175,7 @@ def write_raw_unnormalized_data_to_memory_maps(dataset_files, sources: List[int]
 
 
 def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[ReadsDatum, None, None]:
-    data_mmap_ve = raw_mmap_data.data_mmap
+    data_mmap_ve = raw_mmap_data.int16_mmap
     reads_mmap_re = raw_mmap_data.reads_mmap
     read_end_indices = raw_mmap_data.read_end_indices
 
