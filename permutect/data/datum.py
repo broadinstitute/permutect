@@ -48,8 +48,15 @@ class Data(enum.Enum):
     # after this, at the end of the int16 array comes the sub-array containing the ref sequence haplotype
 
     # float16 array elements
+    # allele frequency, maf, normal maf, and cached artifact logit ar enot used until the posterior model
     SEQ_ERROR_LOG_LK = (np.float16, 0)
     NORMAL_SEQ_ERROR_LOG_LK = (np.float16, 1)
+    ALLELE_FREQUENCY = (np.float16, 2)
+    MAF = (np.float16, 3)
+    NORMAL_MAF = (np.float16, 4)
+    CACHED_ARTIFACT_LOGIT = (np.float16, 5)
+    # TODO: left off here -- I added these constants to the enum but haven't yet initialized them in the constructor
+    # TODO: nor have I cleaned up how they interact with the posterior datum
     # after this, at the end of the float16 array comes the sub-array containing the INFO vector
 
     def __init__(self, dtype: np.dtype, idx: int):
