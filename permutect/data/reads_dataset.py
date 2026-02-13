@@ -50,7 +50,8 @@ class ReadsDataset(IterableDataset):
         print(f"Data occupy {memory_mapped_data.size_in_bytes() // 1000000} Mb and the system has {available_memory // 1000000} Mb of RAM available.")
 
         self._stacked_reads_re = self.memory_mapped_data.reads_mmap
-        self._stacked_data_ve = self.memory_mapped_data.int16_mmap
+        self._int16_data_ve = self.memory_mapped_data.int16_mmap
+        self._float16_data_ve = self.memory_mapped_data.float16_mmap
 
         self._num_read_features, self._num_info_features, self._haplotypes_length = ConsistentValue(), ConsistentValue(), ConsistentValue()
         data_recording_timer = Timer("Recording data counts. . .")
@@ -135,26 +136,28 @@ class ReadsDataset(IterableDataset):
             ram_timer = Timer(f"Worker {worker_id} loading chunk [{chunk_start_idx}, {chunk_end_idx}) into RAM.")
             # TODO: I think the .copy() is necessary to copy the slice of the memory-map from disk into RAM
             # these operations should be really fast because it's all sequential access
-            chunk_data_ve = self._stacked_data_ve[chunk_start_idx:chunk_end_idx].copy()
+            chunk_int16_data_ve = self._int16_data_ve[chunk_start_idx:chunk_end_idx].copy()
+            chunk_float16_data_ve = self._float16_data_ve[chunk_start_idx:chunk_end_idx].copy()
             chunk_reads_re = self._stacked_reads_re[chunk_read_start_idx:chunk_read_end_idx].copy()
             chunk_read_end_indices = self._read_end_indices[chunk_start_idx:chunk_end_idx] - chunk_read_start_idx
             ram_timer.report("Time to load chunk data into RAM")
             report_memory_usage("Chunk data loaded into RAM.")
 
             # now that it's all in RAM, we can yield in randomly-accessed order
-            indices = list(range(len(chunk_data_ve)))
+            indices = list(range(len(chunk_int16_data_ve)))
             random.shuffle(indices)
 
             for idx in indices:
                 read_start_idx = 0 if idx == 0 else chunk_read_end_indices[idx - 1]
                 read_end_idx = chunk_read_end_indices[idx]
-                datum = ReadsDatum(int16_array=chunk_data_ve[idx], compressed_reads_re=chunk_reads_re[read_start_idx:read_end_idx])
+                datum = ReadsDatum(int16_array=chunk_int16_data_ve[idx], float16_array=chunk_float16_data_ve[idx], compressed_reads_re=chunk_reads_re[read_start_idx:read_end_idx])
                 #assert datum.get_ref_count() + datum.get_alt_count() == len(datum.get_reads_array_re())
                 yield datum
 
             # we have finished yielding all the data in this chunk.  Because this is such a large amount of data,
             # we explicitly free memory (delete objects and garbage collect) before loading the next chunk
-            del chunk_data_ve
+            del chunk_int16_data_ve
+            del chunk_float16_data_ve
             del chunk_reads_re
             del indices
             gc.collect()
