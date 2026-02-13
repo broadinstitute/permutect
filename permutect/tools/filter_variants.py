@@ -283,7 +283,7 @@ def apply_filtering_to_vcf(input_vcf, output_vcf, contig_index_to_name_map, erro
             sources_override=most_confident_calls_b, logits=batch.get_artifact_logits())
 
         artifact_logits = batch.get_artifact_logits().cpu().tolist()
-        data = [Datum(datum_array) for datum_array in batch.get_int16_data_be()]
+        data = [Datum(int16_array, float16_array) for (int16_array, float16_array) in zip(batch.get_int16_data_be(), batch.get_float16_data_be())]
         for datum, post_probs, logit, log_prior, log_spec, log_normal, embedding in zip(data, posterior_probs_bc, artifact_logits, log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, batch.embeddings):
             encoding = encode_datum(datum, contig_index_to_name_map)
             encoding_to_posterior_results[encoding] = PosteriorResult(artifact_logit=logit, posterior_probabilities=post_probs.tolist(),

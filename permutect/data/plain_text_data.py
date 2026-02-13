@@ -37,6 +37,7 @@ from typing import List, Generator
 import numpy as np
 from scipy.special import gammaln
 from sklearn.preprocessing import QuantileTransformer
+from sympy.codegen.ast import int16
 
 from permutect.data.count_binning import cap_ref_count, cap_alt_count
 from permutect.data.memory_mapped_data import MemoryMappedData
@@ -175,7 +176,8 @@ def write_raw_unnormalized_data_to_memory_maps(dataset_files, sources: List[int]
 
 
 def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[ReadsDatum, None, None]:
-    data_mmap_ve = raw_mmap_data.int16_mmap
+    int16_mmap_ve = raw_mmap_data.int16_mmap
+    float16_mmap_ve = raw_mmap_data.float16_mmap
     reads_mmap_re = raw_mmap_data.reads_mmap
     read_end_indices = raw_mmap_data.read_end_indices
 
@@ -189,29 +191,31 @@ def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Read
         read_start_idx = 0 if start_idx == 0 else read_end_indices[start_idx - 1]
 
         read_quantile_transform = make_read_quantile_transform(
-            read_end_indices=(read_end_indices[start_idx:end_idx]-read_start_idx), data_ve=data_mmap_ve[start_idx:end_idx],
+            read_end_indices=(read_end_indices[start_idx:end_idx]-read_start_idx),
+            int16_data_ve=int16_mmap_ve[start_idx:end_idx],
+            float16_data_ve=float16_mmap_ve[start_idx:end_idx],
             reads_re=reads_mmap_re[read_start_idx:read_end_indices[end_idx - 1]],)
 
         raw_data_list = []
         for idx in range(start_idx, end_idx):
             reads = reads_mmap_re[0 if idx == 0 else read_end_indices[idx - 1]:read_end_indices[idx]]
-            raw_datum = RawUnnormalizedReadsDatum(int16_array=data_mmap_ve[idx], reads_re=reads)
+            raw_datum = RawUnnormalizedReadsDatum(int16_array=int16_mmap_ve[idx], float16_array=float16_mmap_ve[idx], reads_re=reads)
             raw_data_list.append(raw_datum)
 
         normalized_data_list = normalize_raw_data_list(raw_data_list, read_quantile_transform)
         for datum in normalized_data_list:
             yield datum
 
-def make_read_quantile_transform(read_end_indices, data_ve, reads_re):
+def make_read_quantile_transform(read_end_indices, int16_data_ve, float16_data_ve, reads_re):
     read_end_indices = read_end_indices
 
     # indices_for_normalization = get_normalization_set(data_ve)
     # revert to old behavior: use all ref data for normalization
-    indices_for_normalization = list(range(len(data_ve)))
+    indices_for_normalization = list(range(len(int16_data_ve)))
 
     # define ref read ranges for each datum in the normalization set
     normalization_read_start_indices = [read_end_indices[max(idx - 1, 0)] for idx in indices_for_normalization]
-    normalization_ref_counts = [Datum(int16_array=data_ve[idx]).get(Data.REF_COUNT) for idx in indices_for_normalization]
+    normalization_ref_counts = [Datum(int16_array=int16_data_ve[idx], float16_array=float16_data_ve[idx]).get(Data.REF_COUNT) for idx in indices_for_normalization]
     normalization_ref_end_indices = [(start + ref_count) for start, ref_count in zip(normalization_read_start_indices, normalization_ref_counts)]
 
     # for every index in the normalization set, get all the reads of the corresponding datum.  Stack all these reads to
@@ -220,16 +224,6 @@ def make_read_quantile_transform(read_end_indices, data_ve, reads_re):
     reads_for_normalization_distance_columns_re = reads_for_normalization_re[:, 6:7]
     read_quantile_transform = QuantileTransformer(n_quantiles=100, output_distribution='normal')
     read_quantile_transform.fit(reads_for_normalization_distance_columns_re)
-
-    # print out quantiles for debugging
-    print("Here are the percentiles of the read quantile transform:")
-    print(f"0: {read_quantile_transform.quantiles_[0]}")
-    print(f"10: {read_quantile_transform.quantiles_[10]}")
-    print(f"25: {read_quantile_transform.quantiles_[25]}")
-    print(f"50: {read_quantile_transform.quantiles_[50]}")
-    print(f"75: {read_quantile_transform.quantiles_[75]}")
-    print(f"90: {read_quantile_transform.quantiles_[90]}")
-    print(f"100: {read_quantile_transform.quantiles_[99]}")
 
     return read_quantile_transform
 
@@ -249,7 +243,7 @@ def make_normalized_mmap_data(dataset_files, sources: List[int]=None) -> MemoryM
         estimated_num_data=raw_memory_mapped_data.num_data, estimated_num_reads=raw_memory_mapped_data.num_reads)
 
 
-def get_normalization_set(raw_stacked_data_ve) -> List[int]:
+def get_normalization_set(raw_int16_data_ve, raw_float16_data_ve) -> List[int]:
     """
     # we need a set of data that are pretty reliably not artifacts for the quantile normalization.  If we don't do this
     # and naively use the quantiles from the data as a whole we create a nasty domain shift where the artifact/non-artifact
@@ -262,8 +256,8 @@ def get_normalization_set(raw_stacked_data_ve) -> List[int]:
     """
 
     indices_for_normalization_queue = PriorityQueue(maxsize=MAX_NUM_DATA_FOR_NORMALIZATION)
-    for n, raw_data_array in enumerate(raw_stacked_data_ve):
-        raw_datum = Datum(int16_array=raw_data_array)
+    for n in range(len(raw_int16_data_ve)):
+        raw_datum = Datum(int16_array=raw_int16_data_ve[n], float16_array=raw_float16_data_ve[n])
 
         if indices_for_normalization_queue.full():
             indices_for_normalization_queue.get()  # pop the lowest-priority element i.e. the worst-suited for normalization
@@ -431,12 +425,10 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
         extra_info_e = np.hstack((alt_distance_medians_e, alt_boolean_means_e))
 
         output_reads_re = output_uint8_reads_array[ref_start_index:alt_end_index]
-        output_datum: ReadsDatum = ReadsDatum(int16_array=raw_datum.int16_array, compressed_reads_re=output_reads_re)
+        output_datum: ReadsDatum = ReadsDatum(int16_array=raw_datum.int16_array, float16_array=raw_datum.float16_array, compressed_reads_re=output_reads_re)
 
         output_datum.set_info_1d(np.hstack((all_info_transformed_ve[n], extra_info_e)))
         normalized_result.append(output_datum)
-        if len(output_datum.get_reads_array_re()) == 0:
-            j = 90
 
     return normalized_result
 
