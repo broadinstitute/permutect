@@ -8,7 +8,7 @@ import torch
 from torch import IntTensor, Tensor
 
 from permutect.data.batch import Batch
-from permutect.data.datum import Datum
+from permutect.data.datum import Datum, Data
 
 
 class PosteriorDatum(Datum):
@@ -72,6 +72,6 @@ class PosteriorBatch(Batch):
         return self.float_tensor[:, PosteriorDatum.NORMAL_MAF]
 
     def get_original_normal_ref_counts(self) -> IntTensor:
-        return self.get_original_normal_depths() - self.get_original_normal_alt_counts()
+        return self.get(Data.ORIGINAL_NORMAL_DEPTH) - self.get(Data.ORIGINAL_NORMAL_ALT_COUNT)
 
 

@@ -35,7 +35,7 @@ def uint32_to_two_int16s(num: int):
     return uint16_1 - (BIGGEST_INT16 + 1), uint16_2 - (BIGGEST_INT16 + 1)
 
 
-def uint32_from_two_int16s(int16_1: int, int16_2: int) -> int:
+def uint32_from_two_int16s(int16_1, int16_2):
     shifted1, shifted2 = int16_1 + (BIGGEST_INT16 + 1), int16_2 + (BIGGEST_INT16 + 1)
     return BIGGEST_UINT16 * shifted1 + shifted2
 
@@ -139,8 +139,8 @@ class Datum:
         result.set(Data.POSITION, position)
         result.set(Data.REF_ALLELE_AS_BASE_5, bases_as_base5_int(ref_allele))
         result.set(Data.ALT_ALLELE_AS_BASE_5, bases_as_base5_int(alt_allele))
-        result.set(Data.SEQ_ERROR_LOG_LK, seq_error_log_lk)
-        result.set(Data.NORMAL_SEQ_ERROR_LOG_LK, normal_seq_error_log_lk)
+        result.set(Data.SEQ_ERROR_LOG_LK, seq_error_log_lk)    # this is -log10ToLog(TLOD) - log(tumorDepth + 1)
+        result.set(Data.NORMAL_SEQ_ERROR_LOG_LK, normal_seq_error_log_lk)       # this is -log10ToLog(NALOD) - log(normalDepth + 1)
 
         haplotypes_start = Data.HAPLOTYPES_START_IDX
         haplotypes_end = haplotypes_start + haplotypes_length
@@ -156,7 +156,7 @@ class Datum:
             return self.array[index]
         elif data_field.dtype == np.uint32:
             return uint32_from_two_int16s(self.array[index], self.array[index + 1])
-        elif data_field.dtype == np.float32:
+        elif data_field.dtype == np.float16:
             return int16_to_float(self.array[index])
         else:
             assert False, "Unsupported data type"

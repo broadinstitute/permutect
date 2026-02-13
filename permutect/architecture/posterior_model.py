@@ -8,7 +8,7 @@ from tqdm.autonotebook import trange, tqdm
 
 from permutect.architecture.posterior_model_priors import PosteriorModelPriors
 from permutect.architecture.spectra.posterior_model_spectra import PosteriorModelSpectra
-from permutect.data.datum import DEFAULT_GPU_FLOAT, DEFAULT_CPU_FLOAT
+from permutect.data.datum import DEFAULT_GPU_FLOAT, DEFAULT_CPU_FLOAT, Data
 from permutect.data.posterior_data import PosteriorBatch
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.metrics import plotting
@@ -60,7 +60,7 @@ class PosteriorModel(torch.nn.Module):
         of length batch_size.
         :return:
         """
-        var_types_b = batch.get_variant_types()
+        var_types_b = batch.get(Data.VARIANT_TYPE)
 
         # All log likelihood/relative posterior tensors below have shape batch.size() x len(CallType)
         # spectra tensors contain the likelihood that these *particular* reads (that is, not just the read count) are alt
@@ -108,7 +108,7 @@ class PosteriorModel(torch.nn.Module):
 
                 # the next line performs "for b in batch: posterior_total_tc[var_types[b],:] += posteriors_bc[b, :]"
                 posteriors_bc = torch.softmax(relative_posteriors, dim=-1).detach()
-                posterior_totals_tc.index_add_(dim=0, index=batch.get_variant_types(), source=posteriors_bc)
+                posterior_totals_tc.index_add_(dim=0, index=batch.get(Data.VARIANT_TYPE), source=posteriors_bc)
 
                 # confidence_mask = torch.logical_or(batch.get_artifact_logits() < 0, batch.get_artifact_logits() > 3)
                 loss = -torch.mean(log_evidence)
@@ -163,11 +163,11 @@ class PosteriorModel(torch.nn.Module):
         batch: PosteriorBatch
         for batch in tqdm(prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)):
             # TODO: should this be the original alt counts instead?
-            alt_counts_b = batch.get_alt_counts().cpu().tolist()
+            alt_counts_b = batch.get(Data.ALT_COUNT).cpu().tolist()
             # 0th column is true variant, subtract it from 1 to get error prob
             error_probs_b = self.error_probabilities_b(batch, germline_mode).cpu().tolist()
 
-            for var_type, alt_count, error_prob in zip(batch.get_variant_types().cpu().tolist(), alt_counts_b, error_probs_b):
+            for var_type, alt_count, error_prob in zip(batch.get(Data.VARIANT_TYPE).cpu().tolist(), alt_counts_b, error_probs_b):
                 error_probs_by_type[var_type].append(error_prob)
                 error_probs_by_type_by_cnt[var_type][alt_count_bin_index(alt_count)].append(error_prob)
 

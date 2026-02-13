@@ -10,7 +10,7 @@ import numpy as np
 from permutect.data.count_binning import ref_count_bin_name, NUM_REF_COUNT_BINS, alt_count_bin_name, NUM_ALT_COUNT_BINS, \
     logit_bin_name, NUM_LOGIT_BINS, ref_count_bin_indices, alt_count_bin_indices, logit_bin_indices, \
     ref_count_bin_index, alt_count_bin_index
-from permutect.data.datum import Datum, int16_to_float, Data
+from permutect.data.datum import Datum, int16_to_float, Data, uint32_from_two_int16s
 from permutect.misc_utils import gpu_if_available
 from permutect.utils.array_utils import flattened_indices
 from permutect.utils.enums import Label, Variation
@@ -34,59 +34,33 @@ class Batch:
         if self.lazy_batch_indices is not None:
             return self.lazy_batch_indices
         else:
-            self.lazy_batch_indices = BatchIndices(sources=self.get_sources(), labels=self.get_labels(),
-                var_types=self.get_variant_types(), ref_counts=self.get_ref_counts(), alt_counts=self.get_alt_counts())
+            self.lazy_batch_indices = BatchIndices(sources=self.get(Data.SOURCE), labels=self.get(Data.LABEL),
+                var_types=self.get(Data.VARIANT_TYPE), ref_counts=self.get(Data.REF_COUNT), alt_counts=self.get(Data.ALT_COUNT))
             return self.lazy_batch_indices
 
-    # get the original IntEnum format (VARIANT = 0, ARTIFACT = 1, UNLABELED = 2) labels
-    def get_labels(self) -> IntTensor:
-        return self.data[:, Datum.LABEL_IDX]
+    def get(self, data_field: Data):
+        index = data_field.idx
+        if data_field.dtype == np.uint16:
+            return self.data[:, index]
+        elif data_field.dtype == np.uint32:
+            return uint32_from_two_int16s(self.data[:, index], self.data[:, index + 1])
+        elif data_field.dtype == np.float16:
+            return int16_to_float(self.data[:, index])
+        else:
+            assert False, "Unsupported data type"
 
     # convert to the training format of 0.0 / 0.5 / 1.0 for variant / unlabeled / artifact
     # the 0.5 for unlabeled data is reasonable but should never actually be used due to the is_labeled mask
     def get_training_labels(self) -> FloatTensor:
-        int_enum_labels = self.get_labels()
+        int_enum_labels = self.get(Data.LABEL)
         return 1.0 * (int_enum_labels == Label.ARTIFACT) + 0.5 * (int_enum_labels == Label.UNLABELED)
 
     def get_is_labeled_mask(self) -> IntTensor:
-        int_enum_labels = self.get_labels()
+        int_enum_labels = self.get(Data.LABEL)
         return (int_enum_labels != Label.UNLABELED).int()
-
-    def get_sources(self) -> IntTensor:
-        return self.data[:, Datum.SOURCE_IDX]
-
-    def get_variant_types(self) -> IntTensor:
-        result = self.data[:, Datum.VARIANT_TYPE_IDX]
-        return result
-
-    def get_ref_counts(self) -> IntTensor:
-        return self.data[:, Datum.REF_COUNT_IDX]
-
-    def get_alt_counts(self) -> IntTensor:
-        return self.data[:, Datum.ALT_COUNT_IDX]
-
-    def get_original_alt_counts(self) -> IntTensor:
-        return self.data[:, Datum.ORIGINAL_ALT_COUNT_IDX]
-
-    def get_original_depths(self) -> IntTensor:
-        return self.data[:, Datum.ORIGINAL_DEPTH_IDX]
-
-    def get_original_normal_alt_counts(self) -> IntTensor:
-        return self.data[:, Datum.ORIGINAL_NORMAL_ALT_COUNT_IDX]
-
-    def get_original_normal_depths(self) -> IntTensor:
-        return self.data[:, Datum.ORIGINAL_NORMAL_DEPTH_IDX]
 
     def get_info_be(self) -> Tensor:
         return int16_to_float(self.data[:, self.info_start:self.info_end])
-
-    # this is -log10ToLog(TLOD) - log(tumorDepth + 1);
-    def get_seq_error_log_lks(self) -> Tensor:
-        return int16_to_float(self.data[:, Datum.SEQ_ERROR_LOG_LK_IDX])
-
-    # this is -log10ToLog(NALOD) - log(normalDepth + 1)
-    def get_normal_seq_error_log_lks(self) -> Tensor:
-        return int16_to_float(self.data[:, Datum.NORMAL_SEQ_ERROR_LOG_LK_IDX])
 
     def get_haplotypes_bs(self) -> IntTensor:
         # each row is 1D array of integer array reference and alt haplotypes concatenated -- A, C, G, T, deletion = 0, 1, 2, 3, 4

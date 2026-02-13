@@ -4,7 +4,7 @@ from torch import nn
 from permutect.architecture.spectra.artifact_spectra import ArtifactSpectra
 from permutect.architecture.spectra.normal_artifact_spectrum import NormalArtifactSpectrum
 from permutect.architecture.spectra.somatic_spectrum import SomaticSpectrum
-from permutect.data.datum import DEFAULT_GPU_FLOAT, DEFAULT_CPU_FLOAT
+from permutect.data.datum import DEFAULT_GPU_FLOAT, DEFAULT_CPU_FLOAT, Data
 from permutect.data.posterior_data import PosteriorBatch
 from permutect.misc_utils import gpu_if_available
 from permutect.utils.enums import Call
@@ -64,27 +64,28 @@ class PosteriorModelSpectra(nn.Module):
         """
         'bc' indexing denotes by datum within batch, then by Call type
         """
-        var_types_b, afs_b, mafs_b = batch.get_variant_types(), batch.get_allele_frequencies(), batch.get_mafs()
-        depths_b, alt_counts_b = batch.get_original_depths(), batch.get_original_alt_counts()
-        normal_depths_b, normal_alt_counts_b = batch.get_original_normal_depths(), batch.get_original_normal_alt_counts()
+        var_types_b, afs_b, mafs_b = batch.get(Data.VARIANT_TYPE), batch.get_allele_frequencies(), batch.get_mafs()
+        depths_b, alt_counts_b = batch.get(Data.ORIGINAL_DEPTH), batch.get(Data.ORIGINAL_ALT_COUNT)
+        normal_depths_b, normal_alt_counts_b = batch.get(Data.ORIGINAL_NORMAL_DEPTH), batch.get(Data.ORIGINAL_NORMAL_ALT_COUNT)
 
         na_tumor_log_lks_b, na_normal_log_lks_b = self.normal_artifact_spectra.forward(var_types_b=var_types_b,
             tumor_alt_counts_b=alt_counts_b, tumor_depths_b=depths_b,
             normal_alt_counts_b=normal_alt_counts_b, normal_depths_b=normal_depths_b)
 
         spectra_log_lks_bc = torch.zeros((batch.size(), len(Call)), device=self._device, dtype=self._dtype)
-        tumor_artifact_spectrum_log_lks_b = self.artifact_spectra.forward(batch.get_variant_types(), depths_b,
+        tumor_artifact_spectrum_log_lks_b = self.artifact_spectra.forward(batch.get(Data.VARIANT_TYPE), depths_b,
                                                                           alt_counts_b)
         spectra_log_lks_bc[:, Call.SOMATIC] = self.somatic_spectrum.forward(depths_b, alt_counts_b, mafs_b)
         spectra_log_lks_bc[:, Call.ARTIFACT] = tumor_artifact_spectrum_log_lks_b
         spectra_log_lks_bc[:, Call.NORMAL_ARTIFACT] = na_tumor_log_lks_b
-        spectra_log_lks_bc[:, Call.SEQ_ERROR] = batch.get_seq_error_log_lks()
+        spectra_log_lks_bc[:, Call.SEQ_ERROR] = batch.get(Data.SEQ_ERROR_LOG_LK)
         spectra_log_lks_bc[:, Call.GERMLINE] = germline_log_likelihood(afs_b, mafs_b, alt_counts_b, depths_b, self.het_beta)
 
+        normal_seq_error_log_lks = batch.get(Data.NORMAL_SEQ_ERROR_LOG_LK)
         normal_log_lks_bc = torch.zeros_like(spectra_log_lks_bc)
-        normal_log_lks_bc[:, Call.SOMATIC] = batch.get_normal_seq_error_log_lks()
-        normal_log_lks_bc[:, Call.ARTIFACT] = batch.get_normal_seq_error_log_lks()
-        normal_log_lks_bc[:, Call.SEQ_ERROR] = batch.get_normal_seq_error_log_lks()
+        normal_log_lks_bc[:, Call.SOMATIC] = normal_seq_error_log_lks
+        normal_log_lks_bc[:, Call.ARTIFACT] = normal_seq_error_log_lks
+        normal_log_lks_bc[:, Call.SEQ_ERROR] = normal_seq_error_log_lks
         normal_log_lks_bc[:, Call.NORMAL_ARTIFACT] = torch.where(normal_alt_counts_b < 1, -9999, na_normal_log_lks_b)
         normal_log_lks_bc[:, Call.GERMLINE] = germline_log_likelihood(afs_b, batch.get_normal_mafs(),
             normal_alt_counts_b, normal_depths_b, self.het_beta)

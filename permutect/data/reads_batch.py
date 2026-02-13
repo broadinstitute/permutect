@@ -10,7 +10,7 @@ from torch import Tensor, IntTensor
 from torch_scatter import segment_csr
 
 from permutect.data.batch import Batch
-from permutect.data.datum import Datum, DEFAULT_NUMPY_FLOAT
+from permutect.data.datum import Datum, DEFAULT_NUMPY_FLOAT, Data
 from permutect.data.reads_datum import ReadsDatum, convert_uint8_to_quantile_normalized, NUMBER_OF_BYTES_IN_PACKED_READ
 
 
@@ -86,7 +86,7 @@ class ReadsBatch(Batch):
     # useful for regenerating original data, for example in pruning.  Each original datum has its own reads_2d of ref
     # followed by alt
     def get_list_of_reads_re(self):
-        ref_counts, alt_counts = self.get_ref_counts(), self.get_alt_counts()
+        ref_counts, alt_counts = self.get(Data.REF_COUNT), self.get(Data.ALT_COUNT)
         total_ref = torch.sum(ref_counts).item()
         ref_reads_re, alt_reads_re = self.get_reads_re()[:total_ref], self.get_reads_re()[total_ref:]
         ref_splits, alt_splits = torch.cumsum(ref_counts)[:-1], torch.cumsum(alt_counts)[:-1]

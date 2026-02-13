@@ -101,7 +101,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                 outputs = [model.compute_batch_output(batch, balancer) for batch in batches]
                 # parent_output = model.compute_batch_output(parent_batch, balancer)
 
-                sources = parent_batch.get_sources()
+                sources = parent_batch.get(Data.SOURCE)
                 source_mask_b = 1 if (calibration_sources is None or not is_calibration_epoch) else \
                     torch.sum(torch.vstack([(sources == source).int() for source in calibration_sources]), dim=-1)
 
@@ -314,8 +314,8 @@ def evaluate_model(model: ArtifactModel, epoch: int, num_sources: int, balancer:
 
             embedding_metrics.label_metadata.extend(label_strings)
             embedding_metrics.correct_metadata.extend(correct_strings)
-            embedding_metrics.type_metadata.extend([Variation(idx).name for idx in batch.get_variant_types().cpu().tolist()])
-            embedding_metrics.truncated_count_metadata.extend([alt_count_bin_name(alt_count_bin_index(alt_count)) for alt_count in batch.get_alt_counts().cpu().tolist()])
+            embedding_metrics.type_metadata.extend([Variation(idx).name for idx in batch.get(Data.VARIANT_TYPE).cpu().tolist()])
+            embedding_metrics.truncated_count_metadata.extend([alt_count_bin_name(alt_count_bin_index(alt_count)) for alt_count in batch.get(Data.ALT_COUNT).cpu().tolist()])
             embedding_metrics.features.append(alt_means_be.detach().cpu())
             embedding_metrics.ref_features.append(ref_means_be.detach().cpu())
         embedding_metrics.output_to_summary_writer(summary_writer, epoch=epoch)
