@@ -42,7 +42,7 @@ from permutect.data.count_binning import cap_ref_count, cap_alt_count
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.reads_datum import ReadsDatum, RawUnnormalizedReadsDatum, NUMBER_OF_BYTES_IN_PACKED_READ, \
     convert_quantile_normalized_to_uint8
-from permutect.data.datum import DEFAULT_NUMPY_FLOAT, Datum
+from permutect.data.datum import DEFAULT_NUMPY_FLOAT, Datum, Data
 
 from permutect.misc_utils import ConsistentValue
 from permutect.utils.enums import Variation, Label
@@ -144,8 +144,8 @@ def read_raw_unnormalized_data(dataset_file, only_artifacts: bool = False, sourc
                                            ref_sequence_string=ref_sequence_string, gatk_info_array=gatk_info_array,
                                            ref_tensor=ref_tensor, alt_tensor=alt_tensor)
 
-                ref_count = cap_ref_count(datum.get_ref_count())
-                alt_count = cap_alt_count(datum.get_alt_count())
+                ref_count = cap_ref_count(datum.get(Data.REF_COUNT))
+                alt_count = cap_alt_count(datum.get(Data.ALT_COUNT))
                 yield datum.copy_with_downsampled_reads(ref_count, alt_count)
 
 
@@ -211,7 +211,7 @@ def make_read_quantile_transform(read_end_indices, data_ve, reads_re):
 
     # define ref read ranges for each datum in the normalization set
     normalization_read_start_indices = [read_end_indices[max(idx - 1, 0)] for idx in indices_for_normalization]
-    normalization_ref_counts = [Datum(array=data_ve[idx]).get_ref_count() for idx in indices_for_normalization]
+    normalization_ref_counts = [Datum(array=data_ve[idx]).get(Data.REF_COUNT) for idx in indices_for_normalization]
     normalization_ref_end_indices = [(start + ref_count) for start, ref_count in zip(normalization_read_start_indices, normalization_ref_counts)]
 
     # for every index in the normalization set, get all the reads of the corresponding datum.  Stack all these reads to
@@ -270,7 +270,7 @@ def get_normalization_set(raw_stacked_data_ve) -> List[int]:
 
         # priority is negative squared difference between original allele fraction and 1/2
         # thus most germline het-like data have highest priority
-        priority = -((raw_datum.get_original_alt_count() / raw_datum.get_original_depth()) - 0.5) ** 2
+        priority = -((raw_datum.get(Data.ORIGINAL_ALT_COUNT) / raw_datum.get(Data.ORIGINAL_DEPTH)) - 0.5) ** 2
 
         indices_for_normalization_queue.put((priority, n))
     all_indices_for_normalization = []
@@ -348,8 +348,8 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
         (hap_equiv_binary_1, hap_equiv_binary_2, hap_equiv_binary_3, edit_dist_binary, hap_dom_binary, str_info_array_ve))
 
     tlod_over_nalt = all_info_ve[:, 4]
-    orig_alt_counts = np.array([datum.get_original_alt_count() for datum in buffer])
-    orig_depths = np.array([datum.get_original_depth() for datum in buffer])
+    orig_alt_counts = np.array([datum.get(Data.ORIGINAL_ALT_COUNT) for datum in buffer])
+    orig_depths = np.array([datum.get(Data.ORIGINAL_DEPTH) for datum in buffer])
     orig_ref_counts = orig_depths - orig_alt_counts
 
     natural_log_tlod = LOG10_TO_LN * tlod_over_nalt * orig_alt_counts
@@ -422,7 +422,7 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
     for n, raw_datum in enumerate(buffer):
         ref_start_index = 0 if n == 0 else read_index_ranges[n - 1]     # first index of this datum's reads
         alt_end_index = read_index_ranges[n]
-        alt_start_index = ref_start_index + raw_datum.get_ref_count()
+        alt_start_index = ref_start_index + raw_datum.get(Data.REF_COUNT)
 
         # TODO: maybe we could also have columnwise nonparametric test statistics, like for example we record the
         # TODO: quantiles over all ref reads

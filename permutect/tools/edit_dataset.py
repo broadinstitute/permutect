@@ -2,6 +2,7 @@ import argparse
 from enum import Enum
 
 from permutect import constants
+from permutect.data.datum import Data
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.utils.enums import Label
 
@@ -22,22 +23,24 @@ def generate_edited_data(memory_mapped_datas, edit_type: str, source: int):
             if source is not None:
                 reads_datum.set_source(source)
 
+            original_label = reads_datum.get(Data.LABEL)
+
             if edit_type == EditType.UNLABEL_ARTIFACTS.value:
-                if reads_datum.get_label() == Label.ARTIFACT:
+                if original_label == Label.ARTIFACT:
                     reads_datum.set_label(Label.UNLABELED)
                 yield reads_datum
             elif edit_type == EditType.UNLABEL_VARIANTS.value:
-                if reads_datum.get_label() == Label.VARIANT:
+                if original_label == Label.VARIANT:
                     reads_datum.set_label(Label.UNLABELED)
                 yield reads_datum
             elif edit_type == EditType.UNLABEL_EVERYTHING.value:
                 reads_datum.set_label(Label.UNLABELED)
                 yield reads_datum
             elif edit_type == EditType.REMOVE_ARTIFACTS.value:
-                if reads_datum.get_label() != Label.ARTIFACT:
+                if original_label != Label.ARTIFACT:
                     yield reads_datum
             elif edit_type == EditType.REMOVE_VARIANTS.value:
-                if reads_datum.get_label() != Label.VARIANT:
+                if original_label != Label.VARIANT:
                     yield reads_datum
             elif edit_type == EditType.KEEP_EVERYTHING.value:
                 yield reads_datum

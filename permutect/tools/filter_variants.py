@@ -14,7 +14,7 @@ from permutect.architecture.posterior_model import PosteriorModel
 from permutect.architecture.artifact_model import ArtifactModel, load_model
 from permutect.data import plain_text_data
 from permutect.data.batch import BatchIndexedTensor
-from permutect.data.datum import Datum
+from permutect.data.datum import Datum, Data
 from permutect.data.memory_mapped_posterior_data import MemoryMappedPosteriorData
 from permutect.data.posterior_data import PosteriorDatum, PosteriorBatch
 from permutect.data.posterior_dataset import PosteriorDataset
@@ -53,8 +53,8 @@ def encode(contig: str, position: int, ref: str, alt: str):
 
 
 def encode_datum(datum: Datum, contig_index_to_name_map):
-    contig_name = contig_index_to_name_map[datum.get_contig()]
-    return encode(contig_name, datum.get_position(), datum.get_ref_allele(), datum.get_alt_allele())
+    contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
+    return encode(contig_name, datum.get(Data.POSITION), datum.get_ref_allele(), datum.get_alt_allele())
 
 
 def encode_variant(v: cyvcf2.Variant, zero_based=False):
@@ -214,8 +214,8 @@ def generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model:
 
         for datum_array, logit, embedding in zip(batch.get_data_be(), artifact_logits_b.detach().tolist(), alt_means_be.cpu()):
             datum = Datum(datum_array)
-            contig_name = contig_index_to_name_map[datum.get_contig()]
-            position = datum.get_position()
+            contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
+            position = datum.get(Data.POSITION)
             encoding = encode(contig_name, position, datum.get_ref_allele(), datum.get_alt_allele())
             if encoding in allele_frequencies and encoding not in m2_filtering_to_keep:
                 allele_frequency = allele_frequencies[encoding]
@@ -286,8 +286,8 @@ def apply_filtering_to_vcf(input_vcf, output_vcf, contig_index_to_name_map, erro
         for datum, post_probs, logit, log_prior, log_spec, log_normal, embedding in zip(data, posterior_probs_bc, artifact_logits, log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, batch.embeddings):
             encoding = encode_datum(datum, contig_index_to_name_map)
             encoding_to_posterior_results[encoding] = PosteriorResult(artifact_logit=logit, posterior_probabilities=post_probs.tolist(),
-                log_priors=log_prior, spectra_lls=log_spec, normal_lls=log_normal, label=datum.get_label(),
-                alt_count=datum.get_original_alt_count(), depth=datum.get_original_depth(), var_type=datum.get_variant_type(), embedding=embedding)
+                log_priors=log_prior, spectra_lls=log_spec, normal_lls=log_normal, label=datum.get(Data.LABEL),
+                alt_count=datum.get(Data.ORIGINAL_ALT_COUNT), depth=datum.get(Data.ORIGINAL_DEPTH), var_type=datum.get(Data.VARIANT_TYPE), embedding=embedding)
 
     print("Applying threshold")
     unfiltered_vcf = cyvcf2.VCF(input_vcf)

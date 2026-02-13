@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import enum
 import numpy as np
 import torch
 
@@ -37,6 +38,35 @@ def uint32_to_two_int16s(num: int):
 def uint32_from_two_int16s(int16_1: int, int16_2: int) -> int:
     shifted1, shifted2 = int16_1 + (BIGGEST_INT16 + 1), int16_2 + (BIGGEST_INT16 + 1)
     return BIGGEST_UINT16 * shifted1 + shifted2
+
+class Data(enum.Enum):
+    REF_COUNT = (np.uint16, 0)
+    ALT_COUNT = (np.uint16, 1)
+    HAPLOTYPES_LENGTH = (np.uint16, 2)
+    INFO_LENGTH = (np.uint16, 3)
+    LABEL = (np.uint16, 4)
+    VARIANT_TYPE = (np.uint16, 5)
+    SOURCE = (np.uint16, 6)
+    ORIGINAL_DEPTH = (np.uint16, 7)
+    ORIGINAL_ALT_COUNT = (np.uint16, 8)
+    ORIGINAL_NORMAL_DEPTH = (np.uint16, 9)
+    ORIGINAL_NORMAL_ALT_COUNT = (np.uint16, 10)
+    CONTIG = (np.uint16, 11)
+    POSITION = (np.uint32, 12)              # NOTE: uint32 takes TWO uint16s!
+    REF_ALLELE_AS_BASE_5 = (np.uint32, 14)  # NOTE: uint32 takes TWO uint16s!
+    ALT_ALLELE_AS_BASE_5 = (np.uint32, 16)  # NOTE: uint32 takes TWO uint16s!
+
+    # FloatTensor indices
+    SEQ_ERROR_LOG_LK_IDX = (np.float16, 18)         # float stored as int=
+    NORMAL_SEQ_ERROR_LOG_LK_IDX = (np.float16, 19)  # float stored as int=
+
+    NUM_SCALAR_ELEMENTS = enum.nonmember(20)
+    HAPLOTYPES_START_IDX = enum.nonmember(20)
+
+
+    def __init__(self, dtype: np.dtype, idx: int):
+        self.dtype = dtype
+        self.idx = idx
 
 
 class Datum:
@@ -127,93 +157,54 @@ class Datum:
 
         return result
 
+    def get(self, data_field: Data):
+        index = data_field.idx
+        if data_field.dtype == np.uint16:
+            return self.array[index]
+        elif data_field.dtype == np.uint32:
+            return uint32_from_two_int16s(self.array[index], self.array[index + 1])
+        elif data_field.dtype == np.float32:
+            return int16_to_float(self.array[index])
+        else:
+            assert False, "Unsupported data type"
+
+
     def store_uint32_as_two_int16s(self, uint32_number, start_index):
         int16_1, int16_2 = uint32_to_two_int16s(uint32_number)
         self.array[start_index] = int16_1
         self.array[start_index + 1] = int16_2
 
-    def get_uint32_from_two_int16s(self, start_index):
-        return uint32_from_two_int16s(self.array[start_index], self.array[start_index + 1])
-
     def store_float_as_int16(self, float_number, index):
         self.array[index] = float_to_clipped_int16(float_number)
 
-    def get_float_from_int16(self, index):
-        return int16_to_float(self.array[index])
-
-    def get_ref_count(self) -> int:
-        return self.array[Datum.REF_COUNT_IDX]
-
-    def get_alt_count(self) -> int:
-        return self.array[Datum.ALT_COUNT_IDX]
-
     def get_read_count(self) -> int:
-        return self.get_alt_count() + self.get_ref_count()
-
-    def get_haplotypes_array_length(self) -> int:
-        return self.array[Datum.HAPLOTYPES_LENGTH_IDX]
-
-    def get_info_array_length(self) -> int:
-        return self.array[Datum.INFO_LENGTH_IDX]
-
-    def get_label(self) -> int:
-        return self.array[Datum.LABEL_IDX]
+        return self.get(Data.ALT_COUNT) + self.get(Data.REF_COUNT)
 
     def is_labeled(self):
-        return self.get_label() != Label.UNLABELED
+        return self.get(Data.LABEL) != Label.UNLABELED
 
     def set_label(self, label: Label):
         self.array[Datum.LABEL_IDX] = label
 
-    def get_variant_type(self) -> int:
-        return self.array[Datum.VARIANT_TYPE_IDX]
-
-    def get_source(self) -> int:
-        return self.array[Datum.SOURCE_IDX]
-
     def set_source(self, source: int):
         self.array[Datum.SOURCE_IDX] = source
 
-    def get_original_depth(self) -> int:
-        return self.array[Datum.ORIGINAL_DEPTH_IDX]
-
-    def get_original_alt_count(self) -> int:
-        return self.array[Datum.ORIGINAL_ALT_COUNT_IDX]
-
-    def get_original_normal_depth(self) -> int:
-        return self.array[Datum.ORIGINAL_NORMAL_DEPTH_IDX]
-
-    def get_original_normal_alt_count(self) -> int:
-        return self.array[Datum.ORIGINAL_NORMAL_ALT_COUNT_IDX]
-
-    def get_contig(self) -> int:
-        return self.array[Datum.CONTIG_IDX]
-
-    def get_position(self) -> int:
-        return self.get_uint32_from_two_int16s(Datum.POSITION_IDX)
-
     def get_ref_allele(self) -> str:
-        return bases5_as_base_string(self.get_uint32_from_two_int16s(Datum.REF_ALLELE_AS_BASE_5_IDX))
+        return bases5_as_base_string(self.get(Data.REF_ALLELE_AS_BASE_5))
 
     def get_alt_allele(self) -> str:
-        return bases5_as_base_string(self.get_uint32_from_two_int16s(Datum.ALT_ALLELE_AS_BASE_5_IDX))
-
-    def get_seq_error_log_lk(self) -> float:
-        return self.get_float_from_int16(Datum.SEQ_ERROR_LOG_LK_IDX)
-
-    def get_normal_seq_error_log_lk(self) -> float:
-        return self.get_float_from_int16(Datum.NORMAL_SEQ_ERROR_LOG_LK_IDX)
+        return bases5_as_base_string(self.get(Data.ALT_ALLELE_AS_BASE_5))
 
     def get_haplotypes_1d(self) -> np.ndarray:
         # 1D array of integer array reference and alt haplotypes concatenated -- A, C, G, T, deletion = 0, 1, 2, 3, 4
-        start = Datum.HAPLOTYPES_START_IDX
-        haplotypes_length = self.array[Datum.HAPLOTYPES_LENGTH_IDX]
+        start = Data.HAPLOTYPES_START_IDX
+        haplotypes_length = self.get(Data.HAPLOTYPES_LENGTH)
         assert haplotypes_length > 0, "trying to get ref seq array when none exists"
         return self.array[start:start + haplotypes_length]
 
     def get_info_1d(self) -> np.ndarray:
-        start = Datum.HAPLOTYPES_START_IDX + self.array[Datum.HAPLOTYPES_LENGTH_IDX]
-        info_length = self.array[Datum.INFO_LENGTH_IDX]
+        start = Data.HAPLOTYPES_START_IDX + self.get(Data.HAPLOTYPES_LENGTH)
+        info_length = self.get(Data.INFO_LENGTH)
         assert info_length > 0, "trying to get info array when none exists"
         return self.array[start:start + info_length] / FLOAT_TO_LONG_MULTIPLIER
 

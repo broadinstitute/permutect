@@ -8,7 +8,7 @@ from typing import List, Generator
 import numpy as np
 import torch
 
-from permutect.data.datum import Datum, DEFAULT_NUMPY_FLOAT
+from permutect.data.datum import Datum, DEFAULT_NUMPY_FLOAT, Data
 from permutect.misc_utils import ConsistentValue, report_memory_usage
 from permutect.utils.allele_utils import trim_alleles_on_right, get_str_info_array, make_1d_sequence_tensor
 from permutect.utils.enums import Variation, Label
@@ -95,9 +95,10 @@ class RawUnnormalizedReadsDatum(Datum):
         return result
 
     def copy_with_downsampled_reads(self, ref_downsample: int, alt_downsample: int) -> RawUnnormalizedReadsDatum:
-        old_ref_count, old_alt_count = len(self.reads_re) - self.get_alt_count(), self.get_alt_count()
+        old_alt_count = self.get(Data.ALT_COUNT)
+        old_ref_count = len(self.reads_re) - old_alt_count
         new_ref_count = min(old_ref_count, ref_downsample)
-        new_alt_count = min(self.get_alt_count(), alt_downsample)
+        new_alt_count = min(self.get(Data.ALT_COUNT), alt_downsample)
 
         if new_ref_count == old_ref_count and new_alt_count == old_alt_count:
             return self
@@ -119,10 +120,10 @@ class RawUnnormalizedReadsDatum(Datum):
         return self.reads_re
 
     def get_ref_reads_re(self) -> np.ndarray:
-        return self.reads_re[:-self.get_alt_count()]
+        return self.reads_re[:-self.get(Data.ALT_COUNT)]
 
     def get_alt_reads_re(self) -> np.ndarray:
-        return self.reads_re[-self.get_alt_count():]
+        return self.reads_re[-self.get(Data.ALT_COUNT):]
 
 
 class ReadsDatum(Datum):
@@ -152,9 +153,9 @@ class ReadsDatum(Datum):
         return 8 * NUMBER_OF_BYTES_IN_PACKED_READ + num_nonbinary_features
 
     def get_compressed_ref_reads_re(self) -> np.ndarray:
-        return self.compressed_reads_re[:-self.get_alt_count()]
+        return self.compressed_reads_re[:-self.get(Data.ALT_COUNT)]
 
     def get_compressed_alt_reads_re(self) -> np.ndarray:
-        return self.compressed_reads_re[-self.get_alt_count():]
+        return self.compressed_reads_re[-self.get(Data.ALT_COUNT):]
 
 

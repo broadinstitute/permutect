@@ -10,7 +10,7 @@ import numpy as np
 from permutect.data.count_binning import ref_count_bin_name, NUM_REF_COUNT_BINS, alt_count_bin_name, NUM_ALT_COUNT_BINS, \
     logit_bin_name, NUM_LOGIT_BINS, ref_count_bin_indices, alt_count_bin_indices, logit_bin_indices, \
     ref_count_bin_index, alt_count_bin_index
-from permutect.data.datum import Datum, int16_to_float
+from permutect.data.datum import Datum, int16_to_float, Data
 from permutect.misc_utils import gpu_if_available
 from permutect.utils.array_utils import flattened_indices
 from permutect.utils.enums import Label, Variation
@@ -239,15 +239,15 @@ class BatchIndexedTensor(Tensor):
     # TODO: move to subclass as in comments below
     def record_datum(self, datum: Datum, value: float = 1.0, grow_source_if_necessary: bool = True):
         assert not self.has_logits(), "this only works when not including logits"
-        source = datum.get_source()
+        source = datum.get(Data.SOURCE)
         if source >= self.num_sources():
             if grow_source_if_necessary:
                 self.resize_sources(source + 1)
             else:
                 raise Exception("Datum source doesn't fit.")
         # no logits here
-        ref_idx, alt_idx = ref_count_bin_index(datum.get_ref_count()), alt_count_bin_index(datum.get_alt_count())
-        self[source, datum.get_label(), datum.get_variant_type(), ref_idx, alt_idx] += value
+        ref_idx, alt_idx = ref_count_bin_index(datum.get(Data.REF_COUNT)), alt_count_bin_index(datum.get(Data.ALT_COUNT))
+        self[source, datum.get(Data.LABEL), datum.get(Data.VARIANT_TYPE), ref_idx, alt_idx] += value
 
     # TODO: move to a metrics subclass -- this class should really only be for indexing, not recording
     def record(self, batch: Batch, values: Tensor, logits: Tensor=None):

@@ -18,7 +18,7 @@ from permutect.training.downsampler import Downsampler
 from permutect.architecture.artifact_model import ArtifactModel, record_embeddings
 from permutect.data.reads_batch import DownsampledReadsBatch, ReadsBatch
 from permutect.data.reads_dataset import ReadsDataset
-from permutect.data.datum import Datum
+from permutect.data.datum import Datum, Data
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.metrics.evaluation_metrics import EmbeddingMetrics, EvaluationMetrics
 from permutect.metrics.loss_metrics import LossMetrics
@@ -252,23 +252,23 @@ def collect_evaluation_data(model: ArtifactModel, num_sources: int, balancer: Ba
                 if report_worst:
                     for datum_array, predicted_logit in zip(batch.get_data_be(), output.calibrated_logits_b.detach().cpu().tolist()):
                         datum = Datum(datum_array)
-                        wrong_call = (datum.get_label() == Label.ARTIFACT and predicted_logit < 0) or \
-                                     (datum.get_label() == Label.VARIANT and predicted_logit > 0)
+                        wrong_call = (datum.get(Data.LABEL) == Label.ARTIFACT and predicted_logit < 0) or \
+                                     (datum.get(Data.LABEL) == Label.VARIANT and predicted_logit > 0)
                         if wrong_call:
-                            alt_count = datum.get_alt_count()
+                            alt_count = datum.get(Data.ALT_COUNT)
                             rounded_count = round_alt_count_to_bin_center(alt_count)
                             confidence = abs(predicted_logit)
 
                             # the 0th aka highest priority element in the queue is the one with the lowest confidence
-                            pqueue = worst_offenders_by_label_and_alt_count[(Label(datum.get_label()), rounded_count)]
+                            pqueue = worst_offenders_by_label_and_alt_count[(Label(datum.get(Data.LABEL)), rounded_count)]
 
                             # clear space if this confidence is more egregious
                             if pqueue.full() and pqueue.queue[0][0] < confidence:
                                 pqueue.get()  # discards the least confident bad call
 
                             if not pqueue.full():  # if space was cleared or if it wasn't full already
-                                pqueue.put((confidence, str(datum.get_contig()) + ":" + str(
-                                    datum.get_position()) + ':' + datum.get_ref_allele() + "->" + datum.get_alt_allele()))
+                                pqueue.put((confidence, str(datum.get(Data.CONTIG)) + ":" + str(
+                                    datum.get(Data.POSITION)) + ':' + datum.get_ref_allele() + "->" + datum.get_alt_allele()))
         # done with this epoch type
     # done collecting data
     return evaluation_metrics, worst_offenders_by_label_and_alt_count

@@ -9,7 +9,7 @@ from typing import Generator, List
 import numpy as np
 import torch
 
-from permutect.data.datum import Datum, DATUM_ARRAY_DTYPE
+from permutect.data.datum import Datum, DATUM_ARRAY_DTYPE, Data
 from permutect.data.reads_datum import ReadsDatum, READS_ARRAY_DTYPE
 from permutect.misc_utils import Timer
 
@@ -59,7 +59,7 @@ class MemoryMappedData:
                 data_array = self.data_mmap[idx]
                 reads_array = self.reads_mmap[0 if idx == 0 else self.read_end_indices[idx - 1]:self.read_end_indices[idx]]
                 datum = ReadsDatum(datum_array=data_array, compressed_reads_re=reads_array)
-                if keep_probs_by_label_l is None or random.random() < keep_probs_by_label_l[datum.get_label()]:
+                if keep_probs_by_label_l is None or random.random() < keep_probs_by_label_l[datum.get(Data.LABEL)]:
                     yield datum
                     count += 1
         print(f"generated {count} objects.")
