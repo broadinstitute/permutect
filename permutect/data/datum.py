@@ -45,19 +45,17 @@ class Data(enum.Enum):
     # int16 array elements
     REF_COUNT = (np.uint16, 0)
     ALT_COUNT = (np.uint16, 1)
-    HAPLOTYPES_LENGTH = (np.uint16, 2)      # TODO: this will be obsolete
-    INFO_LENGTH = (np.uint16, 3)            # TODO: this will be obsolete
-    LABEL = (np.uint16, 4)
-    VARIANT_TYPE = (np.uint16, 5)
-    SOURCE = (np.uint16, 6)
-    ORIGINAL_DEPTH = (np.uint16, 7)
-    ORIGINAL_ALT_COUNT = (np.uint16, 8)
-    ORIGINAL_NORMAL_DEPTH = (np.uint16, 9)
-    ORIGINAL_NORMAL_ALT_COUNT = (np.uint16, 10)
-    CONTIG = (np.uint16, 11)
-    POSITION = (np.uint32, 12)              # NOTE: uint32 takes TWO uint16s!
-    REF_ALLELE_AS_BASE_5 = (np.uint32, 14)  # NOTE: uint32 takes TWO uint16s!
-    ALT_ALLELE_AS_BASE_5 = (np.uint32, 16)  # NOTE: uint32 takes TWO uint16s!
+    LABEL = (np.uint16, 2)
+    VARIANT_TYPE = (np.uint16, 3)
+    SOURCE = (np.uint16, 4)
+    ORIGINAL_DEPTH = (np.uint16, 5)
+    ORIGINAL_ALT_COUNT = (np.uint16, 6)
+    ORIGINAL_NORMAL_DEPTH = (np.uint16, 7)
+    ORIGINAL_NORMAL_ALT_COUNT = (np.uint16, 8)
+    CONTIG = (np.uint16, 9)
+    POSITION = (np.uint32, 10)              # NOTE: uint32 takes TWO uint16s!
+    REF_ALLELE_AS_BASE_5 = (np.uint32, 12)  # NOTE: uint32 takes TWO uint16s!
+    ALT_ALLELE_AS_BASE_5 = (np.uint32, 14)  # NOTE: uint32 takes TWO uint16s!
     # after this, at the end of the int16 array comes the sub-array containing the ref sequence haplotype
 
     # float16 array elements
@@ -69,8 +67,8 @@ class Data(enum.Enum):
         self.dtype = dtype
         self.idx = idx
 
-Data.NUM_SCALAR_INT16_ELEMENTS = 18    # in Python 3.11+ can use enum.nonmember
-Data.HAPLOTYPES_START_IDX = 18          # in Python 3.11+ can use enum.nonmember
+Data.NUM_SCALAR_INT16_ELEMENTS = 16    # in Python 3.11+ can use enum.nonmember
+Data.HAPLOTYPES_START_IDX = 16          # in Python 3.11+ can use enum.nonmember
 Data.NUM_SCALAR_FLOAT16_ELEMENTS = 2    # in Python 3.11+ can use enum.nonmember
 Data.INFO_START_IDX = 2          # in Python 3.11+ can use enum.nonmember
 class Datum:
@@ -105,8 +103,6 @@ class Datum:
         zeroed_float16_array = np.zeros(Data.NUM_SCALAR_FLOAT16_ELEMENTS + info_length, dtype=np.float16)
         result = cls(zeroed_int16_array, zeroed_float16_array)
         # ref count and alt count remain zero
-        result.set(Data.HAPLOTYPES_LENGTH, haplotypes_length)
-        result.set(Data.INFO_LENGTH, info_length)
         result.set(Data.LABEL, label)
         result.set(Data.VARIANT_TYPE, variant_type)
         result.set(Data.SOURCE, source)
@@ -176,7 +172,6 @@ class Datum:
     # this method should not otherwise be used!!!
     def set_info_1d(self, new_info: np.ndarray):
         self.float16_array = np.hstack((self.float16_array[:Data.INFO_START_IDX], new_info))
-        self.set(Data.INFO_LENGTH, len(new_info))
 
     def get_int16_array(self) -> np.ndarray:
         return self.int16_array
