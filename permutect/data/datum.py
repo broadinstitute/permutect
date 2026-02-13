@@ -17,9 +17,11 @@ DATUM_ARRAY_DTYPE = np.int16
 BIGGEST_UINT16 = 65535
 BIGGEST_INT16 = 32767
 FLOAT_TO_LONG_MULTIPLIER = 30
-
 MAX_FLOAT = BIGGEST_INT16 / FLOAT_TO_LONG_MULTIPLIER
 
+DEFAULT_NUMPY_FLOAT = np.float16
+DEFAULT_GPU_FLOAT = torch.float32
+DEFAULT_CPU_FLOAT = torch.float32
 
 def float_to_clipped_int16(float_number: float) -> int:
     unbounded_int = round(float_number * FLOAT_TO_LONG_MULTIPLIER)
@@ -40,10 +42,11 @@ def uint32_from_two_int16s(int16_1, int16_2):
     return BIGGEST_UINT16 * shifted1 + shifted2
 
 class Data(enum.Enum):
+    # int16 array elements
     REF_COUNT = (np.uint16, 0)
     ALT_COUNT = (np.uint16, 1)
-    HAPLOTYPES_LENGTH = (np.uint16, 2)
-    INFO_LENGTH = (np.uint16, 3)
+    HAPLOTYPES_LENGTH = (np.uint16, 2)      # TODO: this will be obsolete
+    INFO_LENGTH = (np.uint16, 3)            # TODO: this will be obsolete
     LABEL = (np.uint16, 4)
     VARIANT_TYPE = (np.uint16, 5)
     SOURCE = (np.uint16, 6)
@@ -55,21 +58,21 @@ class Data(enum.Enum):
     POSITION = (np.uint32, 12)              # NOTE: uint32 takes TWO uint16s!
     REF_ALLELE_AS_BASE_5 = (np.uint32, 14)  # NOTE: uint32 takes TWO uint16s!
     ALT_ALLELE_AS_BASE_5 = (np.uint32, 16)  # NOTE: uint32 takes TWO uint16s!
+    # after this, at the end of the int16 array comes the sub-array containing the ref sequence haplotype
 
-    # FloatTensor indices
-    SEQ_ERROR_LOG_LK = (np.float16, 18)         # float stored as int=
-    NORMAL_SEQ_ERROR_LOG_LK = (np.float16, 19)  # float stored as int=
-
-    # after these come the variable-length sub-arrays (not within a single dataset, but in principle variable length fo
-    # different versions of Permutect or different sequencing) for the reference sequence context and the info tensor
+    # float16 array elements
+    SEQ_ERROR_LOG_LK = (np.float16, 0)
+    NORMAL_SEQ_ERROR_LOG_LK = (np.float16, 1)
+    # after this, at the end of the float16 array comes the sub-array containing the INFO vector
 
     def __init__(self, dtype: np.dtype, idx: int):
         self.dtype = dtype
         self.idx = idx
 
-Data.NUM_SCALAR_ELEMENTS = 20    # in Python 3.11+ can use enum.nonmember
-Data.HAPLOTYPES_START_IDX = 20   # in Python 3.11+ can use enum.nonmember
-
+Data.NUM_SCALAR_INT16_ELEMENTS = 18    # in Python 3.11+ can use enum.nonmember
+Data.HAPLOTYPES_START_IDX = 18          # in Python 3.11+ can use enum.nonmember
+Data.NUM_SCALAR_FLOAT16_ELEMENTS = 2    # in Python 3.11+ can use enum.nonmember
+Data.INFO_START_IDX = 2          # in Python 3.11+ can use enum.nonmember
 class Datum:
     """
     contains data that apply to a candidate mutation as a whole i.e. not the read sets.  These are organized into a single
@@ -77,11 +80,13 @@ class Datum:
     with a large number and rounding.
     """
     
-    def __init__(self, array: np.ndarray):
+    def __init__(self, int16_array: np.ndarray, float16_array: np.ndarray):
         # note: this constructor does no checking eg of whether the arrays are consistent with their purported lengths
         # or of whether ref, alt alleles have been trimmed
-        assert array.ndim == 1 and len(array) >= Data.NUM_SCALAR_ELEMENTS
-        self.array: np.ndarray = np.ndarray.astype(array, DATUM_ARRAY_DTYPE)
+        assert int16_array.ndim == 1 and len(int16_array) >= Data.NUM_SCALAR_INT16_ELEMENTS
+        self.int16_array: np.ndarray = np.ndarray.astype(int16_array, np.int16)
+        assert float16_array.ndim == 1 and len(float16_array) >= Data.NUM_SCALAR_FLOAT16_ELEMENTS
+        self.float16_array: np.ndarray = np.ndarray.astype(float16_array, np.float16)
 
     @classmethod
     def make_datum_without_reads(cls, label: Label, variant_type: Variation, source: int,
@@ -96,7 +101,9 @@ class Datum:
         haplotypes = np.hstack((ref_hap, alt_hap))
 
         haplotypes_length, info_length = len(haplotypes), len(info_array)
-        result = cls(np.zeros(Data.NUM_SCALAR_ELEMENTS + haplotypes_length + info_length, dtype=DATUM_ARRAY_DTYPE))
+        zeroed_int16_array = np.zeros(Data.NUM_SCALAR_INT16_ELEMENTS + haplotypes_length, dtype=np.int16)
+        zeroed_float16_array = np.zeros(Data.NUM_SCALAR_FLOAT16_ELEMENTS + info_length, dtype=np.float16)
+        result = cls(zeroed_int16_array, zeroed_float16_array)
         # ref count and alt count remain zero
         result.set(Data.HAPLOTYPES_LENGTH, haplotypes_length)
         result.set(Data.INFO_LENGTH, info_length)
@@ -111,38 +118,35 @@ class Datum:
         result.set(Data.POSITION, position)
         result.set(Data.REF_ALLELE_AS_BASE_5, bases_as_base5_int(ref_allele))
         result.set(Data.ALT_ALLELE_AS_BASE_5, bases_as_base5_int(alt_allele))
+        result.int16_array[Data.HAPLOTYPES_START_IDX:] = haplotypes
+
         result.set(Data.SEQ_ERROR_LOG_LK, seq_error_log_lk)    # this is -log10ToLog(TLOD) - log(tumorDepth + 1)
         result.set(Data.NORMAL_SEQ_ERROR_LOG_LK, normal_seq_error_log_lk)       # this is -log10ToLog(NALOD) - log(normalDepth + 1)
-
-        haplotypes_start = Data.HAPLOTYPES_START_IDX
-        haplotypes_end = haplotypes_start + haplotypes_length
-        info_end = haplotypes_end + info_length
-        result.array[haplotypes_start:haplotypes_end] = haplotypes  # haplotypes array is uint8
-        result.array[haplotypes_end:info_end] = np.ndarray.astype(info_array * FLOAT_TO_LONG_MULTIPLIER, DATUM_ARRAY_DTYPE)
+        result.float16_array[Data.INFO_START_IDX:] = info_array
 
         return result
 
     def get(self, data_field: Data):
         index = data_field.idx
         if data_field.dtype == np.uint16:
-            return self.array[index]
+            return self.int16_array[index]
         elif data_field.dtype == np.uint32:
-            return uint32_from_two_int16s(self.array[index], self.array[index + 1])
+            return uint32_from_two_int16s(self.int16_array[index], self.int16_array[index + 1])
         elif data_field.dtype == np.float16:
-            return int16_to_float(self.array[index])
+            return self.float16_array[index]
         else:
             assert False, "Unsupported data type"
 
     def set(self, data_field: Data, value):
         index = data_field.idx
         if data_field.dtype == np.uint16:
-            self.array[index] = value
+            self.int16_array[index] = value
         elif data_field.dtype == np.uint32:
             int16_1, int16_2 = uint32_to_two_int16s(value)
-            self.array[index] = int16_1
-            self.array[index + 1] = int16_2
+            self.int16_array[index] = int16_1
+            self.int16_array[index + 1] = int16_2
         elif data_field.dtype == np.float16:
-            self.array[index] = float_to_clipped_int16(value)
+            self.float16_array[index] = value
         else:
             assert False, "Unsupported data type"
 
@@ -160,35 +164,22 @@ class Datum:
 
     def get_haplotypes_1d(self) -> np.ndarray:
         # 1D array of integer array reference and alt haplotypes concatenated -- A, C, G, T, deletion = 0, 1, 2, 3, 4
-        start = Data.HAPLOTYPES_START_IDX
-        haplotypes_length = self.get(Data.HAPLOTYPES_LENGTH)
-        assert haplotypes_length > 0, "trying to get ref seq array when none exists"
-        return self.array[start:start + haplotypes_length]
+        assert len(self.int16_array) > Data.NUM_SCALAR_INT16_ELEMENTS, "trying to get ref seq array when none exists"
+        return self.int16_array[Data.HAPLOTYPES_START_IDX:]
 
     def get_info_1d(self) -> np.ndarray:
-        start = Data.HAPLOTYPES_START_IDX + self.get(Data.HAPLOTYPES_LENGTH)
-        info_length = self.get(Data.INFO_LENGTH)
-        assert info_length > 0, "trying to get info array when none exists"
-        return self.array[start:start + info_length] / FLOAT_TO_LONG_MULTIPLIER
+        assert len(self.float16_array) > Data.NUM_SCALAR_FLOAT16_ELEMENTS, "trying to get info array when none exists"
+        return self.float16_array[Data.INFO_START_IDX:]
 
     # note: this potentially resizes the array and requires the leading info tensor size element to be modified
     # we do this in preprocessing when adding extra info to the info from GATK.
     # this method should not otherwise be used!!!
     def set_info_1d(self, new_info: np.ndarray):
-        new_info_as_long = np.ndarray.astype(new_info * FLOAT_TO_LONG_MULTIPLIER, DATUM_ARRAY_DTYPE)
-        old_info_start = Data.HAPLOTYPES_START_IDX + self.get(Data.HAPLOTYPES_LENGTH)
-        self.array = np.hstack((self.array[:old_info_start], new_info_as_long))
+        self.float16_array = np.hstack((self.float16_array[:Data.INFO_START_IDX], new_info))
         self.set(Data.INFO_LENGTH, len(new_info))
 
     def get_array_1d(self) -> np.ndarray:
-        return self.array
+        return self.int16_array
 
     def get_nbytes(self) -> int:
-        return self.array.nbytes
-
-
-DEFAULT_NUMPY_FLOAT = np.float16
-DEFAULT_GPU_FLOAT = torch.float32
-DEFAULT_CPU_FLOAT = torch.float32
-MAX_FLOAT_16 = torch.finfo(torch.float16).max
-MIN_FLOAT_16 = torch.finfo(torch.float16).min
+        return self.int16_array.nbytes + self.float16_array.nbytes

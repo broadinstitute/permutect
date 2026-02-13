@@ -156,7 +156,7 @@ def generate_raw_data_from_text_files(dataset_files, sources: List[int]=None) ->
         source = 0 if sources is None else (sources[0] if len(sources) == 1 else sources[n])
         reads_datum: RawUnnormalizedReadsDatum
         for reads_datum in read_raw_unnormalized_data(dataset_file, source=source):
-            data_dim.check(len(reads_datum.array))
+            data_dim.check(len(reads_datum.int16_array))
             reads_dim.check(reads_datum.reads_re.shape[-1])
             yield reads_datum
 
@@ -211,7 +211,7 @@ def make_read_quantile_transform(read_end_indices, data_ve, reads_re):
 
     # define ref read ranges for each datum in the normalization set
     normalization_read_start_indices = [read_end_indices[max(idx - 1, 0)] for idx in indices_for_normalization]
-    normalization_ref_counts = [Datum(array=data_ve[idx]).get(Data.REF_COUNT) for idx in indices_for_normalization]
+    normalization_ref_counts = [Datum(int16_array=data_ve[idx]).get(Data.REF_COUNT) for idx in indices_for_normalization]
     normalization_ref_end_indices = [(start + ref_count) for start, ref_count in zip(normalization_read_start_indices, normalization_ref_counts)]
 
     # for every index in the normalization set, get all the reads of the corresponding datum.  Stack all these reads to
@@ -263,7 +263,7 @@ def get_normalization_set(raw_stacked_data_ve) -> List[int]:
 
     indices_for_normalization_queue = PriorityQueue(maxsize=MAX_NUM_DATA_FOR_NORMALIZATION)
     for n, raw_data_array in enumerate(raw_stacked_data_ve):
-        raw_datum = Datum(array=raw_data_array)
+        raw_datum = Datum(int16_array=raw_data_array)
 
         if indices_for_normalization_queue.full():
             indices_for_normalization_queue.get()  # pop the lowest-priority element i.e. the worst-suited for normalization
@@ -431,7 +431,7 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
         extra_info_e = np.hstack((alt_distance_medians_e, alt_boolean_means_e))
 
         output_reads_re = output_uint8_reads_array[ref_start_index:alt_end_index]
-        output_datum: ReadsDatum = ReadsDatum(datum_array=raw_datum.array, compressed_reads_re=output_reads_re)
+        output_datum: ReadsDatum = ReadsDatum(datum_array=raw_datum.int16_array, compressed_reads_re=output_reads_re)
 
         output_datum.set_info_1d(np.hstack((all_info_transformed_ve[n], extra_info_e)))
         normalized_result.append(output_datum)

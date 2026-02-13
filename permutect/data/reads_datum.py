@@ -107,7 +107,7 @@ class RawUnnormalizedReadsDatum(Datum):
             random_ref_read_indices = torch.randperm(old_ref_count)[:new_ref_count]
             random_alt_read_indices = old_ref_count + torch.randperm(old_alt_count)[:new_alt_count]
             new_reads = np.vstack((self.reads_re[random_ref_read_indices], self.reads_re[random_alt_read_indices]))
-            new_data_array = self.array.copy()
+            new_data_array = self.int16_array.copy()
             result = RawUnnormalizedReadsDatum(new_data_array, new_reads)
             result.set(Data.REF_COUNT, new_ref_count)
             result.set(Data.ALT_COUNT, new_alt_count)
