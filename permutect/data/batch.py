@@ -23,10 +23,11 @@ class Batch:
 
     def _finish_initializiation_from_data_array(self):
         self._size = len(self.data)
-        self.haplotypes_start = Datum.HAPLOTYPES_START_IDX
-        self.haplotypes_end = Datum.HAPLOTYPES_START_IDX + self.data[0, Datum.HAPLOTYPES_LENGTH_IDX]
+        first_datum = Datum(self.data[0].numpy())
+        self.haplotypes_start = Data.HAPLOTYPES_START_IDX
+        self.haplotypes_end = Data.HAPLOTYPES_START_IDX + first_datum.get(Data.HAPLOTYPES_LENGTH)
         self.info_start = self.haplotypes_end
-        info_length = self.data[0, Datum.INFO_LENGTH_IDX]
+        info_length = first_datum.get(Data.INFO_LENGTH)
         self.info_end = self.info_start + info_length
         self.lazy_batch_indices = None
 

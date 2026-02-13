@@ -155,18 +155,10 @@ class DownsampledReadsBatch(ReadsBatch):
             return super().get(data_field)
 
     # override
-    def get_ref_counts(self) -> IntTensor:
-        return self.ref_counts
-
-    # override
-    def get_alt_counts(self) -> IntTensor:
-        return self.alt_counts
-
-    # override
     def get_data_be(self) -> np.ndarray:
         result = self.data.cpu().numpy(force=True)  # force it to make a copy because we modify it
-        result[:, Datum.REF_COUNT_IDX] = self.ref_counts.cpu().numpy()
-        result[:, Datum.ALT_COUNT_IDX] = self.alt_counts.cpu().numpy()
+        result[:, Data.REF_COUNT.idx] = self.ref_counts.cpu().numpy()
+        result[:, Data.ALT_COUNT.idx] = self.alt_counts.cpu().numpy()
         return result
 
     # override

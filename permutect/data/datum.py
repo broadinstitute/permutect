@@ -60,6 +60,9 @@ class Data(enum.Enum):
     SEQ_ERROR_LOG_LK = (np.float16, 18)         # float stored as int=
     NORMAL_SEQ_ERROR_LOG_LK = (np.float16, 19)  # float stored as int=
 
+    # after these come the variable-length sub-arrays (not within a single dataset, but in principle variable length fo
+    # different versions of Permutect or different sequencing) for the reference sequence context and the info tensor
+
     def __init__(self, dtype: np.dtype, idx: int):
         self.dtype = dtype
         self.idx = idx
@@ -73,42 +76,11 @@ class Datum:
     LongTensor, containing some quantities that are inherently integral and some that are cast as longs by multiplying
     with a large number and rounding.
     """
-
-    # indices of inherently integral quantities
-    REF_COUNT_IDX = 0               # potentially downsampled -- the actual size of the ref reads tensor
-    ALT_COUNT_IDX = 1               # potentially downsampled -- the actual size of the alt reads tensor
-    HAPLOTYPES_LENGTH_IDX = 2       # length of the sub-array encoding the reference and alt haplotype sequences
-    INFO_LENGTH_IDX = 3             # length of the sub-array encoding the info vector
-    LABEL_IDX = 4                   # the IntEnum label
-    VARIANT_TYPE_IDX = 5            # the IntEnum variant type
-    SOURCE_IDX = 6                  # the integer encoding the source
-
-    ORIGINAL_DEPTH_IDX = 7          # the original depth of the sequencing data before downsampling
-    ORIGINAL_ALT_COUNT_IDX = 8      # the original alt count of the sequencing data before downsampling
-    ORIGINAL_NORMAL_DEPTH_IDX = 9   # the original matched normal sample depth of the sequencing data before downsampling
-    ORIGINAL_NORMAL_ALT_COUNT_IDX = 10     # the original matched normal sample alt count of the sequencing data before downsampling
-
-    CONTIG_IDX = 11                 # the index of the contig/chromosome
-
-    # NOTE: the next three elements all require TWO int16s i.e. 32 bits to represent!!!!
-    POSITION_IDX = 12               # the position of the variant start within the contig
-    REF_ALLELE_AS_BASE_5_IDX = 14   # the reference allele encoded as a single base 5 integer
-    ALT_ALLELE_AS_BASE_5_IDX = 16   # the reference allele encoded as a single base 5 integer
-
-    # FloatTensor indices
-    SEQ_ERROR_LOG_LK_IDX = 18
-    NORMAL_SEQ_ERROR_LOG_LK_IDX = 19
-
-    NUM_SCALAR_ELEMENTS = NORMAL_SEQ_ERROR_LOG_LK_IDX + 1
-    HAPLOTYPES_START_IDX = 20
-
-    # after these come the variable-length sub-arrays (not within a single dataset, but in principle variable length for
-    # different versions of Permutect or different sequencing) for the reference sequence context and the info tensor
-
+    
     def __init__(self, array: np.ndarray):
         # note: this constructor does no checking eg of whether the arrays are consistent with their purported lengths
         # or of whether ref, alt alleles have been trimmed
-        assert array.ndim == 1 and len(array) >= Datum.NUM_SCALAR_ELEMENTS
+        assert array.ndim == 1 and len(array) >= Data.NUM_SCALAR_ELEMENTS
         self.array: np.ndarray = np.ndarray.astype(array, DATUM_ARRAY_DTYPE)
 
     @classmethod
@@ -124,7 +96,7 @@ class Datum:
         haplotypes = np.hstack((ref_hap, alt_hap))
 
         haplotypes_length, info_length = len(haplotypes), len(info_array)
-        result = cls(np.zeros(Datum.NUM_SCALAR_ELEMENTS + haplotypes_length + info_length, dtype=DATUM_ARRAY_DTYPE))
+        result = cls(np.zeros(Data.NUM_SCALAR_ELEMENTS + haplotypes_length + info_length, dtype=DATUM_ARRAY_DTYPE))
         # ref count and alt count remain zero
         result.set(Data.HAPLOTYPES_LENGTH, haplotypes_length)
         result.set(Data.INFO_LENGTH, info_length)
@@ -204,9 +176,9 @@ class Datum:
     # this method should not otherwise be used!!!
     def set_info_1d(self, new_info: np.ndarray):
         new_info_as_long = np.ndarray.astype(new_info * FLOAT_TO_LONG_MULTIPLIER, DATUM_ARRAY_DTYPE)
-        old_info_start = Datum.HAPLOTYPES_START_IDX + self.array[Datum.HAPLOTYPES_LENGTH_IDX]
+        old_info_start = Data.HAPLOTYPES_START_IDX + self.get(Data.HAPLOTYPES_LENGTH)
         self.array = np.hstack((self.array[:old_info_start], new_info_as_long))
-        self.array[Datum.INFO_LENGTH_IDX] = len(new_info)
+        self.set(Data.INFO_LENGTH, len(new_info))
 
     def get_array_1d(self) -> np.ndarray:
         return self.array
