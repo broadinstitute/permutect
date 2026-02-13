@@ -57,8 +57,8 @@ class Data(enum.Enum):
     ALT_ALLELE_AS_BASE_5 = (np.uint32, 16)  # NOTE: uint32 takes TWO uint16s!
 
     # FloatTensor indices
-    SEQ_ERROR_LOG_LK_IDX = (np.float16, 18)         # float stored as int=
-    NORMAL_SEQ_ERROR_LOG_LK_IDX = (np.float16, 19)  # float stored as int=
+    SEQ_ERROR_LOG_LK = (np.float16, 18)         # float stored as int=
+    NORMAL_SEQ_ERROR_LOG_LK = (np.float16, 19)  # float stored as int=
 
     NUM_SCALAR_ELEMENTS = enum.nonmember(20)
     HAPLOTYPES_START_IDX = enum.nonmember(20)
@@ -128,28 +128,23 @@ class Datum:
         haplotypes_length, info_length = len(haplotypes), len(info_array)
         result = cls(np.zeros(Datum.NUM_SCALAR_ELEMENTS + haplotypes_length + info_length, dtype=DATUM_ARRAY_DTYPE))
         # ref count and alt count remain zero
-        result.array[Datum.HAPLOTYPES_LENGTH_IDX] = haplotypes_length
-        result.array[Datum.INFO_LENGTH_IDX] = info_length
+        result.set(Data.HAPLOTYPES_LENGTH, haplotypes_length)
+        result.set(Data.INFO_LENGTH, info_length)
+        result.set(Data.LABEL, label)
+        result.set(Data.VARIANT_TYPE, variant_type)
+        result.set(Data.SOURCE, source)
+        result.set(Data.ORIGINAL_DEPTH, original_depth)
+        result.set(Data.ORIGINAL_ALT_COUNT, original_alt_count)
+        result.set(Data.ORIGINAL_NORMAL_DEPTH, original_normal_depth)
+        result.set(Data.ORIGINAL_NORMAL_ALT_COUNT, original_normal_alt_count)
+        result.set(Data.CONTIG, contig)
+        result.set(Data.POSITION, position)
+        result.set(Data.REF_ALLELE_AS_BASE_5, bases_as_base5_int(ref_allele))
+        result.set(Data.ALT_ALLELE_AS_BASE_5, bases_as_base5_int(alt_allele))
+        result.set(Data.SEQ_ERROR_LOG_LK, seq_error_log_lk)
+        result.set(Data.NORMAL_SEQ_ERROR_LOG_LK, normal_seq_error_log_lk)
 
-        result.array[Datum.LABEL_IDX] = label
-        result.array[Datum.VARIANT_TYPE_IDX] = variant_type
-        result.array[Datum.SOURCE_IDX] = source
-
-        result.array[Datum.ORIGINAL_DEPTH_IDX] = original_depth
-        result.array[Datum.ORIGINAL_ALT_COUNT_IDX] = original_alt_count
-        result.array[Datum.ORIGINAL_NORMAL_DEPTH_IDX] = original_normal_depth
-        result.array[Datum.ORIGINAL_NORMAL_ALT_COUNT_IDX] = original_normal_alt_count
-
-        result.array[Datum.CONTIG_IDX] = contig
-
-        result.store_uint32_as_two_int16s(position, Datum.POSITION_IDX)
-        result.store_uint32_as_two_int16s(bases_as_base5_int(ref_allele), Datum.REF_ALLELE_AS_BASE_5_IDX)
-        result.store_uint32_as_two_int16s(bases_as_base5_int(alt_allele), Datum.ALT_ALLELE_AS_BASE_5_IDX)
-
-        result.store_float_as_int16(seq_error_log_lk, Datum.SEQ_ERROR_LOG_LK_IDX)
-        result.store_float_as_int16(normal_seq_error_log_lk, Datum.NORMAL_SEQ_ERROR_LOG_LK_IDX)
-
-        haplotypes_start = Datum.HAPLOTYPES_START_IDX
+        haplotypes_start = Data.HAPLOTYPES_START_IDX
         haplotypes_end = haplotypes_start + haplotypes_length
         info_end = haplotypes_end + info_length
         result.array[haplotypes_start:haplotypes_end] = haplotypes  # haplotypes array is uint8
@@ -168,26 +163,24 @@ class Datum:
         else:
             assert False, "Unsupported data type"
 
-
-    def store_uint32_as_two_int16s(self, uint32_number, start_index):
-        int16_1, int16_2 = uint32_to_two_int16s(uint32_number)
-        self.array[start_index] = int16_1
-        self.array[start_index + 1] = int16_2
-
-    def store_float_as_int16(self, float_number, index):
-        self.array[index] = float_to_clipped_int16(float_number)
+    def set(self, data_field: Data, value):
+        index = data_field.idx
+        if data_field.dtype == np.uint16:
+            self.array[index] = value
+        elif data_field.dtype == np.uint32:
+            int16_1, int16_2 = uint32_to_two_int16s(value)
+            self.array[index] = int16_1
+            self.array[index + 1] = int16_2
+        elif data_field.dtype == np.float32:
+            self.array[index] = float_to_clipped_int16(value)
+        else:
+            assert False, "Unsupported data type"
 
     def get_read_count(self) -> int:
         return self.get(Data.ALT_COUNT) + self.get(Data.REF_COUNT)
 
     def is_labeled(self):
         return self.get(Data.LABEL) != Label.UNLABELED
-
-    def set_label(self, label: Label):
-        self.array[Datum.LABEL_IDX] = label
-
-    def set_source(self, source: int):
-        self.array[Datum.SOURCE_IDX] = source
 
     def get_ref_allele(self) -> str:
         return bases5_as_base_string(self.get(Data.REF_ALLELE_AS_BASE_5))
@@ -222,13 +215,6 @@ class Datum:
 
     def get_nbytes(self) -> int:
         return self.array.nbytes
-
-    @classmethod
-    def copy_data_without_haplotypes_and_info(cls, data_array: np.ndarray) -> np.ndarray:
-        result = data_array[:Datum.NUM_SCALAR_ELEMENTS].copy()
-        result[Datum.HAPLOTYPES_LENGTH_IDX] = 0
-        result[Datum.INFO_LENGTH_IDX] = 0
-        return result
 
 
 DEFAULT_NUMPY_FLOAT = np.float16

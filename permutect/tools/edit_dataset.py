@@ -21,20 +21,20 @@ def generate_edited_data(memory_mapped_datas, edit_type: str, source: int):
     for memory_mapped_data in memory_mapped_datas:
         for reads_datum in memory_mapped_data.generate_reads_data():
             if source is not None:
-                reads_datum.set_source(source)
+                reads_datum.set(Data.SOURCE, source)
 
             original_label = reads_datum.get(Data.LABEL)
 
             if edit_type == EditType.UNLABEL_ARTIFACTS.value:
                 if original_label == Label.ARTIFACT:
-                    reads_datum.set_label(Label.UNLABELED)
+                    reads_datum.set(Data.LABEL, Label.UNLABELED)
                 yield reads_datum
             elif edit_type == EditType.UNLABEL_VARIANTS.value:
                 if original_label == Label.VARIANT:
-                    reads_datum.set_label(Label.UNLABELED)
+                    reads_datum.set(Data.LABEL, Label.UNLABELED)
                 yield reads_datum
             elif edit_type == EditType.UNLABEL_EVERYTHING.value:
-                reads_datum.set_label(Label.UNLABELED)
+                reads_datum.set(Data.LABEL, Label.UNLABELED)
                 yield reads_datum
             elif edit_type == EditType.REMOVE_ARTIFACTS.value:
                 if original_label != Label.ARTIFACT:
