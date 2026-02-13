@@ -152,7 +152,7 @@ class MemoryMappedData:
         assert len(reads_files) == 1
 
         loaded_metadata = torch.load(metadata_files[0])
-        num_data, int16_data_dim, float16_data_dim, num_reads, reads_dim = loaded_metadata[0], loaded_metadata[1], loaded_metadata[2], loaded_metadata[3]
+        num_data, int16_data_dim, float16_data_dim, num_reads, reads_dim = loaded_metadata[0], loaded_metadata[1], loaded_metadata[2], loaded_metadata[3], loaded_metadata[4]
 
         # NOTE: the original file may have had excess space due to the O(N) amortized growing scheme
         # if we load the same file with the actual num_data, as opposed to the capacity, it DOES work correctly
@@ -217,4 +217,4 @@ class MemoryMappedData:
         float16_mmap.flush()
         reads_mmap.flush()
 
-        return cls(int16_mmap=int16_mmap, num_data=num_data, reads_mmap=reads_mmap, num_reads=num_reads)
+        return cls(int16_mmap=int16_mmap, float16_mmap=float16_mmap, num_data=num_data, reads_mmap=reads_mmap, num_reads=num_reads)
