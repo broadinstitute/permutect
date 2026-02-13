@@ -60,14 +60,12 @@ class Data(enum.Enum):
     SEQ_ERROR_LOG_LK = (np.float16, 18)         # float stored as int=
     NORMAL_SEQ_ERROR_LOG_LK = (np.float16, 19)  # float stored as int=
 
-    NUM_SCALAR_ELEMENTS = enum.nonmember(20)
-    HAPLOTYPES_START_IDX = enum.nonmember(20)
-
-
     def __init__(self, dtype: np.dtype, idx: int):
         self.dtype = dtype
         self.idx = idx
 
+Data.NUM_SCALAR_ELEMENTS = 20    # in Python 3.11+ can use enum.nonmember
+Data.HAPLOTYPES_START_IDX = 20   # in Python 3.11+ can use enum.nonmember
 
 class Datum:
     """
@@ -171,7 +169,7 @@ class Datum:
             int16_1, int16_2 = uint32_to_two_int16s(value)
             self.array[index] = int16_1
             self.array[index + 1] = int16_2
-        elif data_field.dtype == np.float32:
+        elif data_field.dtype == np.float16:
             self.array[index] = float_to_clipped_int16(value)
         else:
             assert False, "Unsupported data type"
