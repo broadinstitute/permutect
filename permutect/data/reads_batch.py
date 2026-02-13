@@ -61,6 +61,7 @@ class ReadsBatch(Batch):
         new_batch = copy.copy(self)
         new_batch.reads_re = self.reads_re.to(device=device, dtype=dtype, non_blocking=is_cuda)
         new_batch.int16_data = self.int16_data.to(device, non_blocking=is_cuda)  # don't cast dtype -- needs to stay integral!
+        new_batch.float16_data = self.float16_data.to(device, non_blocking=is_cuda)  # don't cast dtype -- needs to stay integral!
         return new_batch
 
     def get_reads_re(self) -> Tensor:
