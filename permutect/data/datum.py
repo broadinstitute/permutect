@@ -48,7 +48,8 @@ class Data(enum.Enum):
     # after this, at the end of the int16 array comes the sub-array containing the ref sequence haplotype
 
     # float16 array elements
-    # allele frequency, maf, normal maf, and cached artifact logit ar enot used until the posterior model
+    # allele frequency, maf, normal maf, and cached artifact logit are not used until the posterior model
+    # are are set to
     SEQ_ERROR_LOG_LK = (np.float16, 0)
     NORMAL_SEQ_ERROR_LOG_LK = (np.float16, 1)
     ALLELE_FREQUENCY = (np.float16, 2)
@@ -65,8 +66,8 @@ class Data(enum.Enum):
 
 Data.NUM_SCALAR_INT16_ELEMENTS = 16    # in Python 3.11+ can use enum.nonmember
 Data.HAPLOTYPES_START_IDX = 16          # in Python 3.11+ can use enum.nonmember
-Data.NUM_SCALAR_FLOAT16_ELEMENTS = 2    # in Python 3.11+ can use enum.nonmember
-Data.INFO_START_IDX = 2          # in Python 3.11+ can use enum.nonmember
+Data.NUM_SCALAR_FLOAT16_ELEMENTS = 6    # in Python 3.11+ can use enum.nonmember
+Data.INFO_START_IDX = 6          # in Python 3.11+ can use enum.nonmember
 
 class Datum:
     """
@@ -115,8 +116,13 @@ class Datum:
 
         result.set(Data.SEQ_ERROR_LOG_LK, seq_error_log_lk)    # this is -log10ToLog(TLOD) - log(tumorDepth + 1)
         result.set(Data.NORMAL_SEQ_ERROR_LOG_LK, normal_seq_error_log_lk)       # this is -log10ToLog(NALOD) - log(normalDepth + 1)
-        result.float16_array[Data.INFO_START_IDX:] = info_array
+        
+        result.set(Data.ALLELE_FREQUENCY, np.nan)
+        result.set(Data.MAF, np.nan)
+        result.set(Data.NORMAL_MAF, np.nan)
+        result.set(Data.CACHED_ARTIFACT_LOGIT, np.nan)
 
+        result.float16_array[Data.INFO_START_IDX:] = info_array 
         return result
 
     def get(self, data_field: Data):
