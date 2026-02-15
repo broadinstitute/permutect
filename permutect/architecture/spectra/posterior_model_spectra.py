@@ -64,7 +64,7 @@ class PosteriorModelSpectra(nn.Module):
         """
         'bc' indexing denotes by datum within batch, then by Call type
         """
-        var_types_b, afs_b, mafs_b = batch.get(Data.VARIANT_TYPE), batch.get_allele_frequencies(), batch.get_mafs()
+        var_types_b, afs_b, mafs_b = batch.get(Data.VARIANT_TYPE), batch.get(Data.ALLELE_FREQUENCY), batch.get(Data.MAF)
         depths_b, alt_counts_b = batch.get(Data.ORIGINAL_DEPTH), batch.get(Data.ORIGINAL_ALT_COUNT)
         normal_depths_b, normal_alt_counts_b = batch.get(Data.ORIGINAL_NORMAL_DEPTH), batch.get(Data.ORIGINAL_NORMAL_ALT_COUNT)
 
@@ -87,7 +87,7 @@ class PosteriorModelSpectra(nn.Module):
         normal_log_lks_bc[:, Call.ARTIFACT] = normal_seq_error_log_lks
         normal_log_lks_bc[:, Call.SEQ_ERROR] = normal_seq_error_log_lks
         normal_log_lks_bc[:, Call.NORMAL_ARTIFACT] = torch.where(normal_alt_counts_b < 1, -9999, na_normal_log_lks_b)
-        normal_log_lks_bc[:, Call.GERMLINE] = germline_log_likelihood(afs_b, batch.get_normal_mafs(),
+        normal_log_lks_bc[:, Call.GERMLINE] = germline_log_likelihood(afs_b, batch.get(Data.NORMAL_MAF),
             normal_alt_counts_b, normal_depths_b, self.het_beta)
 
         return spectra_log_lks_bc, normal_log_lks_bc

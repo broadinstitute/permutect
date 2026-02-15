@@ -65,15 +65,15 @@ class PosteriorModel(torch.nn.Module):
         # All log likelihood/relative posterior tensors below have shape batch.size() x len(CallType)
         # spectra tensors contain the likelihood that these *particular* reads (that is, not just the read count) are alt
         # normal log likelihoods contain everything going on in the matched normal sample
-        log_priors_bc = self.priors.log_priors_bc(var_types_b, batch.get_allele_frequencies())
+        log_priors_bc = self.priors.log_priors_bc(var_types_b, batch.get(Data.ALLELE_FREQUENCY))
         spectra_log_lks_bc, normal_log_lks_bc = self.spectra.spectra_log_likelihoods_bc(batch)
 
         log_posteriors_bc = log_priors_bc + spectra_log_lks_bc + normal_log_lks_bc
-        log_posteriors_bc[:, Call.ARTIFACT] += batch.get_artifact_logits()
-        log_posteriors_bc[:, Call.NORMAL_ARTIFACT] += batch.get_artifact_logits()
+        log_posteriors_bc[:, Call.ARTIFACT] += batch.get(Data.CACHED_ARTIFACT_LOGIT)
+        log_posteriors_bc[:, Call.NORMAL_ARTIFACT] += batch.get(Data.CACHED_ARTIFACT_LOGIT)
 
         # TODO: HACK / EXPERIMENT: make it impossible to call an artifact when the artifact logits are negative
-        log_posteriors_bc[:, Call.ARTIFACT] = torch.where(batch.get_artifact_logits() < 0, -9999, log_posteriors_bc[:, Call.ARTIFACT])
+        log_posteriors_bc[:, Call.ARTIFACT] = torch.where(batch.get(Data.CACHED_ARTIFACT_LOGIT) < 0, -9999, log_posteriors_bc[:, Call.ARTIFACT])
         # TODO: END OF HACK / EXPERIMENT
 
         return log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, log_posteriors_bc

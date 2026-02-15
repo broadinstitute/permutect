@@ -22,7 +22,6 @@ class PosteriorDataset(IterableDataset):
         print(f"Posterior data occupy {posterior_mmap.size_in_bytes() // 1000000} Mb and the system has {available_memory // 1000000} Mb of RAM available.")
         self._int16_data_ve = self.memory_map.int16_mmap
         self._float16_data_ve = self.memory_map.float16_mmap
-        self._extra_floats_ve = self.memory_map.extra_float_mmap
         self._stacked_embeddings_ve = self.memory_map.embedding_mmap
 
     def __len__(self) -> int:
@@ -76,7 +75,6 @@ class PosteriorDataset(IterableDataset):
             # these operations should be really fast because it's all sequential access
             chunk_int16_ve = self._int16_data_ve[chunk_start_idx:chunk_end_idx].copy()
             chunk_float16_ve = self._float16_data_ve[chunk_start_idx:chunk_end_idx].copy()
-            chunk_extra_floats_ve = self._extra_floats_ve[chunk_start_idx:chunk_end_idx].copy()
             chunk_embeddings_ve = self._stacked_embeddings_ve[chunk_start_idx:chunk_end_idx]
 
             ram_timer.report("Time to load chunk data into RAM")
@@ -87,14 +85,13 @@ class PosteriorDataset(IterableDataset):
             random.shuffle(indices)
 
             for idx in indices:
-                datum = PosteriorDatum(int16_array=chunk_int16_ve[idx], float16_array=chunk_float16_ve[idx], extra_float_array=chunk_extra_floats_ve[idx], embedding=chunk_embeddings_ve[idx])
+                datum = PosteriorDatum(int16_array=chunk_int16_ve[idx], float16_array=chunk_float16_ve[idx], embedding=chunk_embeddings_ve[idx])
                 yield datum
 
             # we have finished yielding all the data in this chunk.  Because this is such a large amount of data,
             # we explicitly free memory (delete objects and garbage collect) before loading the next chunk
             del chunk_int16_ve
             del chunk_float16_ve
-            del chunk_extra_floats_ve
             del chunk_embeddings_ve
             del indices
             gc.collect()

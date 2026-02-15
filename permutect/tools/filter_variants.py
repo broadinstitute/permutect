@@ -280,9 +280,9 @@ def apply_filtering_to_vcf(input_vcf, output_vcf, contig_index_to_name_map, erro
 
         most_confident_probs_b, most_confident_calls_b = torch.max(posterior_probs_bc, dim=-1)
         artifact_logit_metrics.record_with_sources_and_logits(batch, values=most_confident_probs_b,
-            sources_override=most_confident_calls_b, logits=batch.get_artifact_logits())
+            sources_override=most_confident_calls_b, logits=batch.get(Data.CACHED_ARTIFACT_LOGIT))
 
-        artifact_logits = batch.get_artifact_logits().cpu().tolist()
+        artifact_logits = batch.get(Data.CACHED_ARTIFACT_LOGIT).cpu().tolist()
         data = [Datum(int16_array, float16_array) for (int16_array, float16_array) in zip(batch.get_int16_data_be(), batch.get_float16_data_be())]
         for datum, post_probs, logit, log_prior, log_spec, log_normal, embedding in zip(data, posterior_probs_bc, artifact_logits, log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, batch.embeddings):
             encoding = encode_datum(datum, contig_index_to_name_map)
