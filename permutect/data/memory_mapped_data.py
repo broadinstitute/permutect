@@ -215,4 +215,6 @@ class MemoryMappedData:
         float16_mmap.flush()
         reads_mmap.flush()
 
+        # TODO: now that we're done in w+ mode, re-open new mmap objects in 'r' (read-only) mode for faster access
+
         return cls(int16_mmap=int16_mmap, float16_mmap=float16_mmap, num_data=num_data, reads_mmap=reads_mmap, num_reads=num_reads)
