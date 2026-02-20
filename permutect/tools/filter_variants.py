@@ -192,6 +192,14 @@ def generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model:
     dataset.annotate_allele_frequencies_and_mafs(input_vcf=input_vcf, contig_index_to_name_map=contig_index_to_name_map,
                                          segmentation=segmentation, normal_segmentation=normal_segmentation)
 
+    # TODO: "filters to keep" is too crude an idea -- some filters, such as contamination are not just used in the
+    # TODO: output Permutect VCF (i.e. trusted) but they also mean data should be excluded from the test dataset as they would
+    # TODO: throw off the posterior model (eg contamination would mess up the somatic AF spectrum)
+    # TODO: on the other hand, some M2 filters are valid data and won't mess up the posterior model.  We simply
+
+    # TODO: however, for now let's just have a method on the ReadsDataset (i.e. while it's still a readsDataset, nefore
+    # TODO: we create a posterior dataset) to restrict by M2 filters
+
     m2_filtering_to_keep = set()
 
     print("recording M2 filters from input VCF")
