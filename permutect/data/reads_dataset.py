@@ -18,6 +18,7 @@ from permutect.data.reads_datum import ReadsDatum
 from permutect.data.reads_batch import ReadsBatch
 from permutect.data.batch import BatchProperty, BatchIndexedTensor
 from permutect.misc_utils import ConsistentValue, Timer, report_memory_usage
+from permutect.tools.filter_variants import encode_variant, get_first_numeric_element, encode
 from permutect.utils.enums import Variation, Label
 
 WEIGHT_PSEUDOCOUNT = 10
@@ -199,15 +200,13 @@ class ReadsDataset(IterableDataset):
     def annotate_allele_frequencies_and_mafs(self, input_vcf, contig_index_to_name_map,
         segmentation=defaultdict(IntervalTree), normal_segmentation=defaultdict(IntervalTree)):
 
-        m2_filtering_to_keep = set()
         allele_frequencies = {}
 
         print("recording M2 filters and allele frequencies from input VCF")
         pbar = tqdm(enumerate(cyvcf2.VCF(input_vcf)), mininterval=60)
         for n, v in pbar:
+            # TODO: encode_variant, get_first_numeric_element should be moved to utils file
             encoding = encode_variant(v, zero_based=True)
-            if filters_to_keep_from_m2(v):
-                m2_filtering_to_keep.add(encoding)
             allele_frequencies[encoding] = 10 ** (-get_first_numeric_element(v, "POPAF"))
 
         # open the float16 mmap data in r+ (read/write) mode -- the same data in a different mmap object -- in order
@@ -225,6 +224,7 @@ class ReadsDataset(IterableDataset):
 
             contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
             position = datum.get(Data.POSITION)
+            # TODO: encode should be moved to utils file
             encoding = encode(contig_name, position, datum.get_ref_allele(), datum.get_alt_allele())
 
             # these are default dicts, so if there's no segmentation for the contig we will get no overlaps but not an error
@@ -240,6 +240,8 @@ class ReadsDataset(IterableDataset):
             datum.set(Data.NORMAL_MAF, normal_maf)
 
         float16_overwrite_mmap.flush()
+        # TODO: debug here and set breakpoint, double-check that the backing file has been modified and that it is
+        # TODO: reflected in the original mmap
 
 
 

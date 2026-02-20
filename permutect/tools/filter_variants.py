@@ -188,23 +188,21 @@ def make_filtered_vcf(artifact_model_path, initial_log_variant_prior: float, ini
 @torch.inference_mode()
 def generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model: ArtifactModel,
                                batch_size: int, num_workers: int, segmentation=defaultdict(IntervalTree), normal_segmentation=defaultdict(IntervalTree)):
-    print("Reading test dataset")
+    print("Adding allele frequencies, MAFs, and normal MAFs to test dataset")
+    dataset.annotate_allele_frequencies_and_mafs(input_vcf=input_vcf, contig_index_to_name_map=contig_index_to_name_map,
+                                         segmentation=segmentation, normal_segmentation=normal_segmentation)
 
     m2_filtering_to_keep = set()
-    allele_frequencies = {}
 
-    print("recording M2 filters and allele frequencies from input VCF")
+    print("recording M2 filters from input VCF")
     pbar = tqdm(enumerate(cyvcf2.VCF(input_vcf)), mininterval=60)
     for n, v in pbar:
         encoding = encode_variant(v, zero_based=True)
         if filters_to_keep_from_m2(v):
             m2_filtering_to_keep.add(encoding)
-        allele_frequencies[encoding] = 10 ** (-get_first_numeric_element(v, "POPAF"))
 
-    # pass through the plain text dataset, normalizing and creating ReadSetDatasets as we go, running the artifact model
+    # pass through the dataset, running the artifact model
     # to get artifact logits, which we record in a dict keyed by variant strings.  These will later be added to PosteriorDatum objects.
-    report_memory_usage("Parsing and normalizing plain text data.")
-
     loader = dataset.make_data_loader(batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
 
     print("creating posterior data...")
@@ -218,17 +216,9 @@ def generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model:
             contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
             position = datum.get(Data.POSITION)
             encoding = encode(contig_name, position, datum.get_ref_allele(), datum.get_alt_allele())
-            if encoding in allele_frequencies and encoding not in m2_filtering_to_keep:
-                allele_frequency = allele_frequencies[encoding]
-
-                # these are default dicts, so if there's no segmentation for the contig we will get no overlaps but not an error
-                # For a general IntervalTree there is a list of potentially multiple overlaps but here there is either one or zero
-                segmentation_overlaps = segmentation[contig_name][position]
-                normal_segmentation_overlaps = normal_segmentation[contig_name][position]
-                maf = list(segmentation_overlaps)[0].data if segmentation_overlaps else 0.5
-                normal_maf = list(normal_segmentation_overlaps)[0].data if normal_segmentation_overlaps else 0.5
-
-                posterior_datum = PosteriorDatum.create(int16_array, float16_array, allele_frequency, logit, maf, normal_maf, embedding.numpy())
+            # TODO: only yield if datum allele frequency is not NaN (to duplicate previous behavior)
+            if encoding not in m2_filtering_to_keep:
+                posterior_datum = PosteriorDatum.create(int16_array, float16_array, logit, embedding.numpy())
                 yield posterior_datum
 
 @torch.inference_mode()

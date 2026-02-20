@@ -18,11 +18,8 @@ class PosteriorDatum(Datum):
         self.embedding = embedding
 
     @classmethod
-    def create(cls, int16_array, float16_array, allele_frequency: float, artifact_logit: float, maf: float, normal_maf: float, embedding: Tensor):
+    def create(cls, int16_array, float16_array, artifact_logit: float, embedding: Tensor):
         result = cls(int16_array, float16_array, embedding)
-        result.set(Data.ALLELE_FREQUENCY, allele_frequency)
-        result.set(Data.MAF, maf)
-        result.set(Data.NORMAL_MAF, normal_maf)
         result.set(Data.CACHED_ARTIFACT_LOGIT, artifact_logit)
         return result
 
