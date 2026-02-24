@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import DataLoader, IterableDataset
 
 from permutect.data.memory_mapped_data import MemoryMappedData
-from permutect.data.reads_datum import ReadsDatum, READS_ARRAY_DTYPE
+from permutect.data.reads_datum import ReadsDatum, COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.reads_batch import ReadsBatch
 from permutect.data.batch import BatchProperty, BatchIndexedTensor
 from permutect.misc_utils import ConsistentValue, Timer, report_memory_usage
@@ -50,7 +50,7 @@ class ReadsDataset(IterableDataset):
         available_memory = psutil.virtual_memory().available
         print(f"Data occupy {memory_mapped_data.size_in_bytes() // 1000000} Mb and the system has {available_memory // 1000000} Mb of RAM available.")
 
-        self._stacked_reads_re = np.zeros((0,0), dtype=READS_ARRAY_DTYPE) if self.memory_mapped_data.reads_mmap is None else self.memory_mapped_data.reads_mmap
+        self._stacked_reads_re = np.zeros((0,0), dtype=COMPRESSED_READS_ARRAY_DTYPE) if self.memory_mapped_data.reads_mmap is None else self.memory_mapped_data.reads_mmap
         self._int_array_ve = self.memory_mapped_data.int_mmap
         self._float_array_ve = self.memory_mapped_data.float_mmap
 

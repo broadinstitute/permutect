@@ -40,7 +40,7 @@ from sklearn.preprocessing import QuantileTransformer
 
 from permutect.data.count_binning import cap_ref_count, cap_alt_count
 from permutect.data.memory_mapped_data import MemoryMappedData
-from permutect.data.reads_datum import ReadsDatum, RawUnnormalizedReadsDatum, NUMBER_OF_BYTES_IN_PACKED_READ, \
+from permutect.data.reads_datum import ReadsDatum, NUMBER_OF_BYTES_IN_PACKED_READ, \
     convert_quantile_normalized_to_uint8
 from permutect.data.datum import FLOAT_DTYPE, Datum, Data
 
@@ -95,7 +95,7 @@ def count_number_of_data_and_reads_in_text_file(dataset_file):
     return num_data, num_reads
 
 
-def read_raw_unnormalized_data(dataset_file, only_artifacts: bool = False, source: int=0) -> Generator[RawUnnormalizedReadsDatum, None, None]:
+def read_raw_unnormalized_data(dataset_file, only_artifacts: bool = False, source: int=0) -> Generator[Datum, None, None]:
     """
     generator that yields data from a plain text dataset file.
     """
@@ -135,25 +135,25 @@ def read_raw_unnormalized_data(dataset_file, only_artifacts: bool = False, sourc
             normal_seq_error_log_lk = read_float(file.readline())
 
             if alt_tensor_size > 0 and passes_label_filter:
-                datum = RawUnnormalizedReadsDatum.from_gatk(label=label, variant_type=Variation.get_type(ref_allele, alt_allele), source=source,
-                                           original_depth=original_depth, original_alt_count=original_alt_count,
-                                           original_normal_depth=original_normal_depth, original_normal_alt_count=original_normal_alt_count,
-                                           contig=contig, position=position, ref_allele=ref_allele, alt_allele=alt_allele,
-                                           seq_error_log_lk=seq_error_log_lk, normal_seq_error_log_lk=normal_seq_error_log_lk,
-                                           ref_sequence_string=ref_sequence_string, gatk_info_array=gatk_info_array,
-                                           ref_tensor=ref_tensor, alt_tensor=alt_tensor)
+                datum = Datum.from_gatk(label=label, variant_type=Variation.get_type(ref_allele, alt_allele), source=source,
+                                                            original_depth=original_depth, original_alt_count=original_alt_count,
+                                                            original_normal_depth=original_normal_depth, original_normal_alt_count=original_normal_alt_count,
+                                                            contig=contig, position=position, ref_allele=ref_allele, alt_allele=alt_allele,
+                                                            seq_error_log_lk=seq_error_log_lk, normal_seq_error_log_lk=normal_seq_error_log_lk,
+                                                            ref_sequence_string=ref_sequence_string, gatk_info_array=gatk_info_array,
+                                                            ref_reads_array_re=ref_tensor, alt_reads_array_re=alt_tensor)
 
                 ref_count = cap_ref_count(datum.get(Data.REF_COUNT))
                 alt_count = cap_alt_count(datum.get(Data.ALT_COUNT))
                 yield datum.copy_with_downsampled_reads(ref_count, alt_count)
 
 
-def generate_raw_data_from_text_files(dataset_files, sources: List[int]=None) -> Generator[RawUnnormalizedReadsDatum, None, None]:
+def generate_raw_data_from_text_files(dataset_files, sources: List[int]=None) -> Generator[Datum, None, None]:
     data_dim, reads_dim = ConsistentValue(), ConsistentValue()
 
     for n, dataset_file in enumerate(dataset_files):
         source = 0 if sources is None else (sources[0] if len(sources) == 1 else sources[n])
-        reads_datum: RawUnnormalizedReadsDatum
+        reads_datum: Datum
         for reads_datum in read_raw_unnormalized_data(dataset_file, source=source):
             data_dim.check(len(reads_datum.int_array))
             reads_dim.check(reads_datum.reads_re.shape[-1])
@@ -197,7 +197,7 @@ def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Read
         raw_data_list = []
         for idx in range(start_idx, end_idx):
             reads = reads_mmap_re[0 if idx == 0 else read_end_indices[idx - 1]:read_end_indices[idx]]
-            raw_datum = RawUnnormalizedReadsDatum(int_array=int_mmap_ve[idx], float_array=float_mmap_ve[idx], reads_re=reads)
+            raw_datum = Datum(int_array=int_mmap_ve[idx], float_array=float_mmap_ve[idx], reads_re=reads)
             raw_data_list.append(raw_datum)
 
         normalized_data_list = normalize_raw_data_list(raw_data_list, read_quantile_transform)
@@ -281,7 +281,7 @@ def get_normalization_set(raw_int_array_ve, raw_float_array_ve) -> List[int]:
 
 
 # this normalizes the buffer and also prepends new features to the info tensor
-def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quantile_transform) -> List[ReadsDatum]:
+def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> List[ReadsDatum]:
     # 2D array.  Rows are ref/alt reads, columns are read features
     all_reads_re = np.vstack([datum.reads_re for datum in buffer])
 
@@ -410,7 +410,7 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
     output_uint8_reads_array = np.hstack((packed_output_array, distance_columns_output))
 
     normalized_result = []
-    raw_datum: RawUnnormalizedReadsDatum
+    raw_datum: Datum
     for n, raw_datum in enumerate(buffer):
         ref_start_index = 0 if n == 0 else read_index_ranges[n - 1]     # first index of this datum's reads
         alt_end_index = read_index_ranges[n]

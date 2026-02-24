@@ -4,25 +4,15 @@ import numpy as np
 import torch
 
 from permutect.data.datum import Datum, FLOAT_DTYPE, Data
-from permutect.utils.allele_utils import trim_alleles_on_right, get_str_info_array, make_1d_sequence_tensor
-from permutect.utils.enums import Variation, Label
-
 
 # base strings longer than this when encoding data
-
 
 # on disk and in datasets before creating batches, read tensors are stored with dtype np.uint8
 # the leading columns are from binary quantities (either inherently binary or one-hot-encoded categorical) with np.packbits
 # applied (this converts bool tensors into byte tensors, each byte holding eight bools)
 # if the number of boolean bits is not a multiple of 8, it gets padded with zeros.  This isn't a problem.
 NUMBER_OF_BYTES_IN_PACKED_READ = 7
-READS_ARRAY_DTYPE = np.uint8
-
-SUFFIX_FOR_DATA_FILES_IN_TAR = ".data"
-SUFFIX_FOR_DATA_COUNT_FILE_IN_TAR = ".counts"
-
-SUFFIX_FOR_DATA_MMAP_IN_TAR = ".data_mmap"
-SUFFIX_FOR_READS_MMAP_IN_TAR = ".reads_mmap"
+COMPRESSED_READS_ARRAY_DTYPE = np.uint8
 
 
 # quantile-normalized data is generally some small number of standard deviations from 0.  We can store as uint8 by
@@ -52,77 +42,11 @@ def make_sequence_tensor(sequence_string: str) -> np.ndarray:
     return result
 
 
-# this is what we get from GATK plain text data.  It must be normalized and processed before becoming the
-# data used by Permutect
-class RawUnnormalizedReadsDatum(Datum):
-    def __init__(self, int_array: np.ndarray, float_array: np.ndarray, reads_re: np.ndarray):
-        super().__init__(int_array, float_array)
-        self.reads_re = reads_re
-
-    # gatk_info tensor comes from GATK and does not include one-hot encoding of variant type
-    @classmethod
-    def from_gatk(cls, label: Label, variant_type: Variation, source: int,
-            original_depth: int, original_alt_count: int, original_normal_depth: int, original_normal_alt_count: int,
-            contig: int, position: int, ref_allele: str, alt_allele: str,
-            seq_error_log_lk: float, normal_seq_error_log_lk: float,
-            ref_sequence_string: str, gatk_info_array: np.ndarray,
-            ref_tensor: np.ndarray, alt_tensor: np.ndarray) -> RawUnnormalizedReadsDatum:
-        # note: it is very important to trim here, as early as possible, because truncating to 13 or fewer bases
-        # does not commute with trimming!!!  If we are not consistent about trimming first, dataset variants and
-        # VCF variants might get inconsistent encodings!!!
-        trimmed_ref, trimmed_alt = trim_alleles_on_right(ref_allele, alt_allele)
-        str_info = get_str_info_array(ref_sequence_string, trimmed_ref, trimmed_alt)
-        info_array = np.hstack([gatk_info_array, str_info])
-        ref_seq_array = make_1d_sequence_tensor(ref_sequence_string)
-        read_tensor = np.vstack([ref_tensor, alt_tensor]) if ref_tensor is not None else alt_tensor
-
-        datum = Datum.make_datum_without_reads(label=label, variant_type=variant_type, source=source,
-            original_depth=original_depth, original_alt_count=original_alt_count, original_normal_depth=original_normal_depth,
-            original_normal_alt_count=original_normal_alt_count, contig=contig, position=position,
-            ref_allele=trimmed_ref, alt_allele=trimmed_alt, seq_error_log_lk=seq_error_log_lk,
-            normal_seq_error_log_lk=normal_seq_error_log_lk, ref_seq_array=ref_seq_array, info_array=info_array)
-        # ref and alt counts need to be set manually.  Everything else is handled in the ParentDatum constructor
-        datum.set(Data.REF_COUNT, 0 if ref_tensor is None else len(ref_tensor))
-        datum.set(Data.ALT_COUNT, 0 if alt_tensor is None else len(alt_tensor))
-
-        result = cls(int_array=datum.get_int_array(), float_array=datum.get_float_array(), reads_re=read_tensor)
-        return result
-
-    def copy_with_downsampled_reads(self, ref_downsample: int, alt_downsample: int) -> RawUnnormalizedReadsDatum:
-        old_alt_count = self.get(Data.ALT_COUNT)
-        old_ref_count = len(self.reads_re) - old_alt_count
-        new_ref_count = min(old_ref_count, ref_downsample)
-        new_alt_count = min(self.get(Data.ALT_COUNT), alt_downsample)
-
-        if new_ref_count == old_ref_count and new_alt_count == old_alt_count:
-            return self
-        else:
-            # new reads are random selection of ref reads vstacked on top of all the alts
-            random_ref_read_indices = torch.randperm(old_ref_count)[:new_ref_count]
-            random_alt_read_indices = old_ref_count + torch.randperm(old_alt_count)[:new_alt_count]
-            new_reads = np.vstack((self.reads_re[random_ref_read_indices], self.reads_re[random_alt_read_indices]))
-            result = RawUnnormalizedReadsDatum(int_array=self.int_array.copy(), float_array=self.float_array.copy(), reads_re=new_reads)
-            result.set(Data.REF_COUNT, new_ref_count)
-            result.set(Data.ALT_COUNT, new_alt_count)
-            return result
-
-    def size_in_bytes(self):
-        return self.reads_re.nbytes + self.get_nbytes()
-
-    def get_reads_array_re(self) -> np.ndarray:
-        return self.reads_re
-
-    def get_ref_reads_re(self) -> np.ndarray:
-        return self.reads_re[:-self.get(Data.ALT_COUNT)]
-
-    def get_alt_reads_re(self) -> np.ndarray:
-        return self.reads_re[-self.get(Data.ALT_COUNT):]
-
 
 class ReadsDatum(Datum):
     def __init__(self, int_array: np.ndarray, float_array: np.ndarray, compressed_reads_re: np.ndarray):
         super().__init__(int_array, float_array)
-        assert compressed_reads_re.dtype == READS_ARRAY_DTYPE
+        assert compressed_reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
 
         # Reads are in a compressed, unusable form.  Binary columns must be unpacked and float
         # columns must be transformed back from uint8

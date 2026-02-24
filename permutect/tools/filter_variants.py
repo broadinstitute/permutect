@@ -18,7 +18,7 @@ from permutect.data.prefetch_generator import prefetch_generator
 from permutect.data.reads_batch import ReadsBatch
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.data.count_binning import MAX_ALT_COUNT, alt_count_bin_index, alt_count_bin_name
-from permutect.data.reads_datum import ReadsDatum, READS_ARRAY_DTYPE
+from permutect.data.reads_datum import ReadsDatum, COMPRESSED_READS_ARRAY_DTYPE
 from permutect.metrics.evaluation_metrics import EvaluationMetrics, EmbeddingMetrics
 from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.metrics.posterior_result import PosteriorResult
@@ -172,7 +172,7 @@ def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_
             # make a ReadsDatum with no reads or haplotypes whose 1D info array is the embedding
             # TODO: perhaps make a PosteriorDatum class that inherits from ReadsDatum and overrides some functions
             # TODO: to throw an error?
-            empty_reads = np.zeros((0,0), dtype=READS_ARRAY_DTYPE)
+            empty_reads = np.zeros((0,0), dtype=COMPRESSED_READS_ARRAY_DTYPE)
             empty_haplotypes = np.zeros((0,), dtype=INT_DTYPE)
             output_datum = ReadsDatum(int_array=int_array, float_array=float_array, compressed_reads_re=empty_reads)
             output_datum.set(Data.REF_COUNT, 0)

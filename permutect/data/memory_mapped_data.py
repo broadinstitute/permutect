@@ -14,7 +14,7 @@ from intervaltree import IntervalTree
 from tqdm import tqdm
 
 from permutect.data.datum import Datum, Data
-from permutect.data.reads_datum import ReadsDatum, READS_ARRAY_DTYPE
+from permutect.data.reads_datum import ReadsDatum, COMPRESSED_READS_ARRAY_DTYPE
 from permutect.misc_utils import Timer, encode_variant, get_first_numeric_element, encode, overlapping_filters
 
 # numpy.save appends .npy if the extension doesn't already include it.  We preempt this behavior.
@@ -58,13 +58,13 @@ class MemoryMappedData:
     def generate_reads_data(self, num_folds: int = None, folds_to_use: List[int] = None, keep_probs_by_label_l = None) -> Generator[ReadsDatum, None, None]:
         folds_set = None if folds_to_use is None else set(folds_to_use)
         print("Generating ReadsDatum objects from memory-mapped data.")
-        assert self.reads_mmap is None or self.reads_mmap.dtype == READS_ARRAY_DTYPE
+        assert self.reads_mmap is None or self.reads_mmap.dtype == COMPRESSED_READS_ARRAY_DTYPE
         count = 0
         for idx in range(self.num_data):
             if folds_to_use is None or (idx % num_folds in folds_set):
                 int_array = self.int_mmap[idx]
                 float_array = self.float_mmap[idx]
-                reads_array = np.zeros((0,0), dtype=READS_ARRAY_DTYPE) if self.reads_mmap is None else \
+                reads_array = np.zeros((0,0), dtype=COMPRESSED_READS_ARRAY_DTYPE) if self.reads_mmap is None else \
                     self.reads_mmap[0 if idx == 0 else self.read_end_indices[idx - 1]:self.read_end_indices[idx]]
                 datum = ReadsDatum(int_array=int_array, float_array=float_array, compressed_reads_re=reads_array)
                 if keep_probs_by_label_l is None or random.random() < keep_probs_by_label_l[datum.get(Data.LABEL)]:

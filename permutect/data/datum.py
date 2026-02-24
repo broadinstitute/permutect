@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import enum
-from tkinter.tix import INTEGER
 
 import numpy as np
 import torch
 
-from permutect.utils.allele_utils import bases_as_base5_int, bases5_as_base_string, get_ref_and_alt_sequences
+from permutect.data.reads_datum import COMPRESSED_READS_ARRAY_DTYPE
+from permutect.utils.allele_utils import bases_as_base5_int, bases5_as_base_string, get_ref_and_alt_sequences, \
+    trim_alleles_on_right, get_str_info_array, make_1d_sequence_tensor
 from permutect.utils.enums import Label, Variation
 
 # the range is -32,768 to 32,767
@@ -18,6 +19,7 @@ from permutect.utils.enums import Label, Variation
 INTEGER_DTYPE = np.int16
 LARGE_INTEGER_DTYPE = np.uint32
 FLOAT_DTYPE = np.float16
+RAW_READS_ARRAY_DTYPE = np.float16
 BIGGEST_UINT16 = 65535
 BIGGEST_INT16 = 32767
 
@@ -74,12 +76,9 @@ Data.INFO_START_IDX = 6          # in Python 3.11+ can use enum.nonmember
 
 class Datum:
     """
-    contains data that apply to a candidate mutation as a whole i.e. not the read sets.  These are organized into a single
-    LongTensor, containing some quantities that are inherently integral and some that are cast as longs by multiplying
-    with a large number and rounding.
+    TODO: need documentation
     """
-    
-    def __init__(self, int_array: np.ndarray, float_array: np.ndarray):
+    def __init__(self, int_array: np.ndarray, float_array: np.ndarray, reads_re: np.ndarray = None):
         # note: this constructor does no checking eg of whether the arrays are consistent with their purported lengths
         # or of whether ref, alt alleles have been trimmed
         assert int_array.ndim == 1 and len(int_array) >= Data.NUM_SCALAR_INT_ELEMENTS
@@ -87,14 +86,28 @@ class Datum:
         assert float_array.ndim == 1 and len(float_array) >= Data.NUM_SCALAR_FLOAT_ELEMENTS
         self.float_array: np.ndarray = np.ndarray.astype(float_array, FLOAT_DTYPE)
 
+        self.reads_re: np.ndarray = np.zeros((0,0), dtype=RAW_READS_ARRAY_DTYPE) if reads_re is None else reads_re
+        assert reads_re.dtype == RAW_READS_ARRAY_DTYPE or reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
+
+    # this is what we get from GATK plain text data.  It must be normalized and processed before becoming the
+    # data used by Permutect
+    # gatk_info tensor comes from GATK and does not include one-hot encoding of variant type
     @classmethod
-    def make_datum_without_reads(cls, label: Label, variant_type: Variation, source: int,
-        original_depth: int, original_alt_count: int, original_normal_depth: int, original_normal_alt_count: int,
-        contig: int, position: int, ref_allele: str, alt_allele: str,
-        seq_error_log_lk: float, normal_seq_error_log_lk: float, ref_seq_array: np.ndarray, info_array: np.ndarray) -> Datum:
-        """
-        We are careful about our float to long conversions here and in the getters!
-        """
+    def from_gatk(cls, label: Label, variant_type: Variation, source: int,
+                    original_depth: int, original_alt_count: int, original_normal_depth: int,
+                    original_normal_alt_count: int,
+                    contig: int, position: int, ref_allele: str, alt_allele: str,
+                    seq_error_log_lk: float, normal_seq_error_log_lk: float,
+                    ref_sequence_string: str, gatk_info_array: np.ndarray,
+                    ref_reads_array_re: np.ndarray, alt_reads_array_re: np.ndarray) -> Datum:
+        # note: it is very important to trim here, as early as possible, because truncating to 13 or fewer bases
+        # does not commute with trimming!!!  If we are not consistent about trimming first, dataset variants and
+        # VCF variants might get inconsistent encodings!!!
+        trimmed_ref, trimmed_alt = trim_alleles_on_right(ref_allele, alt_allele)
+        str_info = get_str_info_array(ref_sequence_string, trimmed_ref, trimmed_alt)
+        info_array = np.hstack([gatk_info_array, str_info])
+        ref_seq_array = make_1d_sequence_tensor(ref_sequence_string)
+
         ref_hap, alt_hap = get_ref_and_alt_sequences(ref_seq_array, ref_allele, alt_allele)
         assert len(ref_hap) == len(ref_seq_array) and len(alt_hap) == len(ref_seq_array)
         haplotypes = np.hstack((ref_hap, alt_hap))
@@ -102,8 +115,12 @@ class Datum:
         haplotypes_length, info_length = len(haplotypes), len(info_array)
         zeroed_int_array = np.zeros(Data.NUM_SCALAR_INT_ELEMENTS + haplotypes_length, dtype=INTEGER_DTYPE)
         zeroed_float_array = np.zeros(Data.NUM_SCALAR_FLOAT_ELEMENTS + info_length, dtype=FLOAT_DTYPE)
-        result = cls(zeroed_int_array, zeroed_float_array)
-        # ref count and alt count remain zero
+        reads_array_re = np.vstack(
+            [ref_reads_array_re, alt_reads_array_re]) if ref_reads_array_re is not None else alt_reads_array_re
+
+        result = cls(int_array=zeroed_int_array, float_array=zeroed_float_array, reads_re=reads_array_re)
+        result.set(Data.REF_COUNT, 0 if ref_reads_array_re is None else len(ref_reads_array_re))
+        result.set(Data.ALT_COUNT, 0 if alt_reads_array_re is None else len(alt_reads_array_re))
         result.set(Data.LABEL, label)
         result.set(Data.VARIANT_TYPE, variant_type)
         result.set(Data.SOURCE, source)
@@ -117,9 +134,10 @@ class Datum:
         result.set(Data.ALT_ALLELE_AS_BASE_5, bases_as_base5_int(alt_allele))
         result.int_array[Data.HAPLOTYPES_START_IDX:] = haplotypes
 
-        result.set(Data.SEQ_ERROR_LOG_LK, seq_error_log_lk)    # this is -log10ToLog(TLOD) - log(tumorDepth + 1)
-        result.set(Data.NORMAL_SEQ_ERROR_LOG_LK, normal_seq_error_log_lk)       # this is -log10ToLog(NALOD) - log(normalDepth + 1)
-        
+        result.set(Data.SEQ_ERROR_LOG_LK, seq_error_log_lk)  # this is -log10ToLog(TLOD) - log(tumorDepth + 1)
+        result.set(Data.NORMAL_SEQ_ERROR_LOG_LK,
+                   normal_seq_error_log_lk)  # this is -log10ToLog(NALOD) - log(normalDepth + 1)
+
         result.set(Data.ALLELE_FREQUENCY, np.nan)
         result.set(Data.MAF, np.nan)
         result.set(Data.NORMAL_MAF, np.nan)
@@ -127,6 +145,7 @@ class Datum:
 
         result.float_array[Data.INFO_START_IDX:] = info_array
         return result
+
 
     def get(self, data_field: Data):
         index = data_field.idx
@@ -191,5 +210,32 @@ class Datum:
     def get_float_array(self) -> np.ndarray:
         return self.float_array
 
+    def get_reads_array_re(self) -> np.ndarray:
+        return self.reads_re
+
+    def get_ref_reads_re(self) -> np.ndarray:
+        return self.reads_re[:-self.get(Data.ALT_COUNT)]
+
+    def get_alt_reads_re(self) -> np.ndarray:
+        return self.reads_re[-self.get(Data.ALT_COUNT):]
+
     def get_nbytes(self) -> int:
-        return self.int_array.nbytes + self.float_array.nbytes
+        return self.int_array.nbytes + self.float_array.nbytes + self.reads_re.nbytes
+
+    def copy_with_downsampled_reads(self, ref_downsample: int, alt_downsample: int) -> Datum:
+        old_alt_count = self.get(Data.ALT_COUNT)
+        old_ref_count = len(self.reads_re) - old_alt_count
+        new_ref_count = min(old_ref_count, ref_downsample)
+        new_alt_count = min(self.get(Data.ALT_COUNT), alt_downsample)
+
+        if new_ref_count == old_ref_count and new_alt_count == old_alt_count:
+            return self
+        else:
+            # new reads are random selection of ref reads vstacked on top of all the alts
+            random_ref_read_indices = torch.randperm(old_ref_count)[:new_ref_count]
+            random_alt_read_indices = old_ref_count + torch.randperm(old_alt_count)[:new_alt_count]
+            new_reads = np.vstack((self.reads_re[random_ref_read_indices], self.reads_re[random_alt_read_indices]))
+            result = Datum(int_array=self.int_array.copy(), float_array=self.float_array.copy(), reads_re=new_reads)
+            result.set(Data.REF_COUNT, new_ref_count)
+            result.set(Data.ALT_COUNT, new_alt_count)
+            return result
