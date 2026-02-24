@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import IntEnum
+from turtledemo.clock import datum
 from typing import List, Tuple
 
 import torch
@@ -10,7 +11,9 @@ import numpy as np
 from permutect.data.count_binning import ref_count_bin_name, NUM_REF_COUNT_BINS, alt_count_bin_name, NUM_ALT_COUNT_BINS, \
     logit_bin_name, NUM_LOGIT_BINS, ref_count_bin_indices, alt_count_bin_indices, logit_bin_indices, \
     ref_count_bin_index, alt_count_bin_index
-from permutect.data.datum import Datum, Data, uint32_from_two_int16s, INTEGER_DTYPE, FLOAT_DTYPE, LARGE_INTEGER_DTYPE
+from permutect.data.datum import Datum, Data, uint32_from_two_int16s, INTEGER_DTYPE, FLOAT_DTYPE, LARGE_INTEGER_DTYPE, \
+    NUMBER_OF_BYTES_IN_PACKED_READ, COMPRESSED_READS_ARRAY_DTYPE
+from permutect.data.plain_text_data import convert_uint8_to_quantile_normalized
 from permutect.misc_utils import gpu_if_available
 from permutect.utils.array_utils import flattened_indices
 from permutect.utils.enums import Label, Variation
@@ -20,6 +23,24 @@ class Batch:
     def __init__(self, data: List[Datum]):
         self.int_tensor = torch.from_numpy(np.vstack([d.get_int_array() for d in data])).to(torch.long)
         self.float_tensor = torch.from_numpy(np.vstack([d.get_float_array() for d in data])).to(torch.float)
+
+        ref_arrays = [datum.get_ref_reads_re() for datum in data]
+        alt_arrays = [datum.get_alt_reads_re() for datum in data]
+        reads_re = np.vstack(ref_arrays + alt_arrays)
+
+        reads_are_compressed = data[0].reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
+
+        if reads_are_compressed:
+            packed_binary_columns_re = reads_re[:, :NUMBER_OF_BYTES_IN_PACKED_READ]
+            compressed_float_columns_re = reads_re[:, NUMBER_OF_BYTES_IN_PACKED_READ:]
+            binary_columns_re = np.ndarray.astype(np.unpackbits(packed_binary_columns_re, axis=1), FLOAT_DTYPE)
+            float_columns_re = convert_uint8_to_quantile_normalized(compressed_float_columns_re)
+            self.reads_re = torch.from_numpy(np.hstack((binary_columns_re, float_columns_re)))
+        else:
+            self.reads_re = torch.from_numpy(reads_re)
+
+        # assert that the decompression got the expected tensor shape
+        assert self.reads_re.shape[1] == data[0].num_read_features()
         self._finish_initializiation_from_arrays()
 
     def _finish_initializiation_from_arrays(self):

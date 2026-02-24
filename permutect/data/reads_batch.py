@@ -34,20 +34,7 @@ class ReadsBatch(Batch):
 
     def __init__(self, data: List[Datum]):
         super().__init__(data)
-        compressed_ref_arrays = [item.get_compressed_ref_reads_re() for item in data]
-        compressed_alt_arrays = [item.get_compressed_alt_reads_re() for item in data]
-        compressed_reads_re = np.vstack(compressed_ref_arrays + compressed_alt_arrays)
 
-        packed_binary_columns_re = compressed_reads_re[:, :NUMBER_OF_BYTES_IN_PACKED_READ]
-        compressed_float_columns_re = compressed_reads_re[:, NUMBER_OF_BYTES_IN_PACKED_READ:]
-
-        binary_columns_re = np.ndarray.astype(np.unpackbits(packed_binary_columns_re, axis=1), FLOAT_DTYPE)
-        float_columns_re = convert_uint8_to_quantile_normalized(compressed_float_columns_re)
-
-        self.reads_re = torch.from_numpy(np.hstack((binary_columns_re, float_columns_re)))
-
-        # assert that the decompression got the expected tensor shape
-        assert self.reads_re.shape[1] == data[0].num_read_features()
 
     # pin memory for all tensors that are sent to the GPU
     def pin_memory(self):
