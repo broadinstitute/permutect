@@ -48,11 +48,11 @@ def logit_bin_name(logit_bin_idx: int) -> str:
 
 
 def ref_count_bin_indices(count_tensor: IntTensor) -> IntTensor:
-    return torch.div(count_tensor, COUNT_BIN_SKIP, rounding_mode='floor')
+    return torch.div(torch.clip(count_tensor, max=MAX_REF_COUNT), COUNT_BIN_SKIP, rounding_mode='floor')
 
 
 def alt_count_bin_indices(count_tensor: IntTensor) -> IntTensor:
-    return torch.div(count_tensor - 1, COUNT_BIN_SKIP, rounding_mode='floor')
+    return torch.div(torch.clip(count_tensor, max=MAX_ALT_COUNT) - 1, COUNT_BIN_SKIP, rounding_mode='floor')
 
 
 def count_from_ref_bin_index(count_bin_index: int) -> int:

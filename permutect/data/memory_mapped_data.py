@@ -116,7 +116,6 @@ class MemoryMappedData:
         print("recording filters and allele frequencies from input VCF")
         pbar = tqdm(enumerate(cyvcf2.VCF(input_vcf)), mininterval=60)
         for n, v in pbar:
-            # TODO: encode_variant, get_first_numeric_element should be moved to utils file
             encoding = encode_variant(v, zero_based=True)
             allele_frequencies[encoding] = 10 ** (-get_first_numeric_element(v, "POPAF"))
             if overlapping_filters(v, filters_to_exclude):

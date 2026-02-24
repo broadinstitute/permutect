@@ -26,12 +26,15 @@ class Batch:
         self._size = len(self.int_tensor)
         self.lazy_batch_indices = None
 
-    def batch_indices(self) -> BatchIndices:
+    def batch_indices(self, use_original_counts: bool = False) -> BatchIndices:
         if self.lazy_batch_indices is not None:
             return self.lazy_batch_indices
         else:
+            ref_counts = (self.get(Data.ORIGINAL_DEPTH) - self.get(Data.ORIGINAL_ALT_COUNT)) if use_original_counts \
+                else self.get(Data.REF_COUNT)
+            alt_counts = self.get(Data.ORIGINAL_ALT_COUNT if use_original_counts else Data.ALT_COUNT)
             self.lazy_batch_indices = BatchIndices(sources=self.get(Data.SOURCE), labels=self.get(Data.LABEL),
-                var_types=self.get(Data.VARIANT_TYPE), ref_counts=self.get(Data.REF_COUNT), alt_counts=self.get(Data.ALT_COUNT))
+                var_types=self.get(Data.VARIANT_TYPE), ref_counts=ref_counts, alt_counts=alt_counts)
             return self.lazy_batch_indices
 
     def get(self, data_field: Data):
@@ -224,8 +227,8 @@ class BatchIndexedTensor(Tensor):
         self[source, datum.get(Data.LABEL), datum.get(Data.VARIANT_TYPE), ref_idx, alt_idx] += value
 
     # TODO: move to a metrics subclass -- this class should really only be for indexing, not recording
-    def record(self, batch: Batch, values: Tensor, logits: Tensor=None):
-        batch.batch_indices().increment_tensor(self, values=values, logits=logits)
+    def record(self, batch: Batch, values: Tensor, logits: Tensor=None, use_original_counts: bool = False):
+        batch.batch_indices(use_original_counts).increment_tensor(self, values=values, logits=logits)
 
     def get_marginal(self, *properties: Tuple[BatchProperty, ...]) -> Tensor:
         """
