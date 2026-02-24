@@ -53,18 +53,19 @@ class MemoryMappedData:
         return self.num_data
 
     def size_in_bytes(self):
-        return self.int_mmap.nbytes + self.float_mmap.nbytes + self.reads_mmap.nbytes
+        return self.int_mmap.nbytes + self.float_mmap.nbytes + (0 if self.reads_mmap is None else self.reads_mmap.nbytes)
 
     def generate_reads_data(self, num_folds: int = None, folds_to_use: List[int] = None, keep_probs_by_label_l = None) -> Generator[ReadsDatum, None, None]:
         folds_set = None if folds_to_use is None else set(folds_to_use)
         print("Generating ReadsDatum objects from memory-mapped data.")
-        assert self.reads_mmap.dtype == READS_ARRAY_DTYPE
+        assert self.reads_mmap is None or self.reads_mmap.dtype == READS_ARRAY_DTYPE
         count = 0
         for idx in range(self.num_data):
             if folds_to_use is None or (idx % num_folds in folds_set):
                 int_array = self.int_mmap[idx]
                 float_array = self.float_mmap[idx]
-                reads_array = self.reads_mmap[0 if idx == 0 else self.read_end_indices[idx - 1]:self.read_end_indices[idx]]
+                reads_array = np.zeros((0,0), dtype=READS_ARRAY_DTYPE) if self.reads_mmap is None else \
+                    self.reads_mmap[0 if idx == 0 else self.read_end_indices[idx - 1]:self.read_end_indices[idx]]
                 datum = ReadsDatum(int_array=int_array, float_array=float_array, compressed_reads_re=reads_array)
                 if keep_probs_by_label_l is None or random.random() < keep_probs_by_label_l[datum.get(Data.LABEL)]:
                     yield datum
@@ -162,7 +163,7 @@ class MemoryMappedData:
         :return:
         """
         # num_data, data dimension; num_reads, reads dimension
-        metadata = np.array([self.num_data, self.int_mmap.shape[-1], self.float_mmap.shape[-1], self.num_reads, self.reads_mmap.shape[-1]], dtype=np.uint32)
+        metadata = np.array([self.num_data, self.int_mmap.shape[-1], self.float_mmap.shape[-1], self.num_reads, 0 if self.reads_mmap is None else self.reads_mmap.shape[-1]], dtype=np.uint32)
         metadata_file = NamedTemporaryFile(suffix=SUFFIX_FOR_METADATA)
         torch.save(metadata, metadata_file.name)
 
@@ -174,14 +175,16 @@ class MemoryMappedData:
         float_array_file = NamedTemporaryFile(suffix=SUFFIX_FOR_FLOAT_MMAP)
         np.save(float_array_file.name, self.float_mmap)
 
-        reads_file = NamedTemporaryFile(suffix=SUFFIX_FOR_READS_MMAP)
-        np.save(reads_file.name, self.reads_mmap)
+        if self.reads_mmap is not None:
+            reads_file = NamedTemporaryFile(suffix=SUFFIX_FOR_READS_MMAP)
+            np.save(reads_file.name, self.reads_mmap)
 
         with tarfile.open(output_tarfile, "w") as output_tar:
             output_tar.add(metadata_file.name, arcname=("metadata" + SUFFIX_FOR_METADATA))
             output_tar.add(int_array_file.name, arcname=("int_array" + SUFFIX_FOR_INT_MMAP))
             output_tar.add(float_array_file.name, arcname=("float_array" + SUFFIX_FOR_FLOAT_MMAP))
-            output_tar.add(reads_file.name, arcname=("reads_array" + SUFFIX_FOR_READS_MMAP))
+            if self.reads_mmap is not None:
+                output_tar.add(reads_file.name, arcname=("reads_array" + SUFFIX_FOR_READS_MMAP))
 
     # Load the list of objects back from the .npy file
     # Remember to set allow_pickle=True when loading as well
@@ -202,16 +205,16 @@ class MemoryMappedData:
         assert len(metadata_files) == 1
         assert len(int_array_files) == 1
         assert len(float_data_files) == 1
-        assert len(reads_files) == 1
 
         loaded_metadata = torch.load(metadata_files[0])
         num_data, int_array_dim, float_array_dim, num_reads, reads_dim = loaded_metadata[0], loaded_metadata[1], loaded_metadata[2], loaded_metadata[3], loaded_metadata[4]
 
+        assert len(reads_files) == (1 if num_reads == 0 else 0)
         # NOTE: the original file may have had excess space due to the O(N) amortized growing scheme
         # if we load the same file with the actual num_data, as opposed to the capacity, it DOES work correctly
         int_mmap = np.lib.format.open_memmap(int_array_files[0], mode='r', shape=(num_data, int_array_dim))
         float_mmap = np.lib.format.open_memmap(float_data_files[0], mode='r', shape=(num_data, float_array_dim))
-        reads_mmap = np.lib.format.open_memmap(reads_files[0], mode='r', shape=(num_reads, reads_dim))
+        reads_mmap = None if num_reads == 0 else np.lib.format.open_memmap(reads_files[0], mode='r', shape=(num_reads, reads_dim))
         loading_timer.report("Time to load data from tarfile")
 
         return cls(int_mmap=int_mmap, float_mmap=float_mmap, num_data=num_data, reads_mmap=reads_mmap, num_reads=num_reads)
@@ -264,15 +267,18 @@ class MemoryMappedData:
             # write new data
             int_mmap[num_data - 1] = int_array
             float_mmap[num_data - 1] = float_array
-            reads_mmap[num_reads - len(reads_array):num_reads] = reads_array
+            if len(reads_array) > 0:
+                reads_mmap[num_reads - len(reads_array):num_reads] = reads_array
 
-        int_mmap.flush()
-        float_mmap.flush()
-        reads_mmap.flush()
+
+        for memmap in (int_mmap, float_mmap, reads_mmap):
+            if memmap is not None:
+                memmap.flush()
 
         # re-open new mmap objects in 'r' (read-only) mode for faster access
         int_mmap = np.memmap(int_mmap.filename, dtype=int_mmap.dtype, mode='r', shape=int_mmap.shape)
         float_mmap = np.memmap(float_mmap.filename, dtype=float_mmap.dtype, mode='r', shape=float_mmap.shape)
-        reads_mmap = np.memmap(reads_mmap.filename, dtype=reads_mmap.dtype, mode='r', shape=reads_mmap.shape)
+        if reads_mmap is not None:
+            reads_mmap = np.memmap(reads_mmap.filename, dtype=reads_mmap.dtype, mode='r', shape=reads_mmap.shape)
 
         return cls(int_mmap=int_mmap, float_mmap=float_mmap, num_data=num_data, reads_mmap=reads_mmap, num_reads=num_reads)

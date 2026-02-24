@@ -14,14 +14,11 @@ from permutect.architecture.artifact_model import ArtifactModel, load_model
 from permutect.data import plain_text_data
 from permutect.data.datum import Datum, Data, FLOAT_DTYPE
 from permutect.data.memory_mapped_data import MemoryMappedData
-from permutect.data.memory_mapped_posterior_data import MemoryMappedPosteriorData
-from permutect.data.posterior_data import PosteriorDatum, PosteriorBatch
-from permutect.data.posterior_dataset import PosteriorDataset
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.data.reads_batch import ReadsBatch
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.data.count_binning import MAX_ALT_COUNT, alt_count_bin_index, alt_count_bin_name
-from permutect.data.reads_datum import ReadsDatum
+from permutect.data.reads_datum import ReadsDatum, READS_ARRAY_DTYPE
 from permutect.metrics.evaluation_metrics import EvaluationMetrics, EmbeddingMetrics
 from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.metrics.posterior_result import PosteriorResult
@@ -175,7 +172,7 @@ def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_
             # make a ReadsDatum with no reads or haplotypes whose 1D info array is the embedding
             # TODO: perhaps make a PosteriorDatum class that inherits from ReadsDatum and overrides some functions
             # TODO: to throw an error?
-            empty_reads = np.zeros((0,0), dtype=FLOAT_DTYPE)
+            empty_reads = np.zeros((0,0), dtype=READS_ARRAY_DTYPE)
             empty_haplotypes = np.zeros((0,), dtype=INT_DTYPE)
             output_datum = ReadsDatum(int_array=int_array, float_array=float_array, compressed_reads_re=empty_reads)
             output_datum.set(Data.REF_COUNT, 0)
@@ -221,7 +218,7 @@ def apply_filtering_to_vcf(input_vcf, output_vcf, contig_index_to_name_map, erro
     artifact_logit_metrics = AccuracyMetrics.create(num_sources=len(Call))
     encoding_to_posterior_results = {}
 
-    batch: PosteriorBatch
+    batch: ReadsBatch
     for batch in tqdm(prefetch_generator(posterior_loader), mininterval=60, total=len(posterior_loader)):
         # posterior, along with intermediate tensors for debugging/interpretation
         log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, log_posteriors_bc = \
@@ -243,7 +240,9 @@ def apply_filtering_to_vcf(input_vcf, output_vcf, contig_index_to_name_map, erro
 
         artifact_logits = batch.get(Data.CACHED_ARTIFACT_LOGIT).cpu().tolist()
         data = [Datum(int_array, float_array) for (int_array, float_array) in zip(batch.get_int_array_be(), batch.get_float_array_be())]
-        for datum, post_probs, logit, log_prior, log_spec, log_normal, embedding in zip(data, posterior_probs_bc, artifact_logits, log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, batch.embeddings):
+        # NOTE: for posterior data, batch.get_info_be actually gets the embedding array!!!!!
+        # TODO: perhaps make this safer
+        for datum, post_probs, logit, log_prior, log_spec, log_normal, embedding in zip(data, posterior_probs_bc, artifact_logits, log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, batch.get_info_be()):
             encoding = encode_datum(datum, contig_index_to_name_map)
             encoding_to_posterior_results[encoding] = PosteriorResult(artifact_logit=logit, posterior_probabilities=post_probs.tolist(),
                 log_priors=log_prior, spectra_lls=log_spec, normal_lls=log_normal, label=datum.get(Data.LABEL),

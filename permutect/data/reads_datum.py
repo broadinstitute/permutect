@@ -139,6 +139,8 @@ class ReadsDatum(Datum):
 
     # this is the number of read features in a PyTorch float tensor, after unpacking the compressed binaries
     def num_read_features(self) -> int:
+        if self.compressed_reads_re.shape[1] == 0:
+            return 0
         num_read_uint8s = self.compressed_reads_re.shape[1]
         num_nonbinary_features = num_read_uint8s - NUMBER_OF_BYTES_IN_PACKED_READ
         # 8 bits per byte.  In general the last few features will be extraneous padded zeros, but that's okay.

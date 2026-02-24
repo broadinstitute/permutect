@@ -164,6 +164,9 @@ class Datum:
     def get_alt_allele(self) -> str:
         return bases5_as_base_string(self.get(Data.ALT_ALLELE_AS_BASE_5))
 
+    def get_haplotypes_array_size(self):
+        return len(self.int_array) - Data.NUM_SCALAR_INT_ELEMENTS
+
     def get_haplotypes_1d(self) -> np.ndarray:
         # 1D array of integer array reference and alt haplotypes concatenated -- A, C, G, T, deletion = 0, 1, 2, 3, 4
         assert len(self.int_array) > Data.NUM_SCALAR_INT_ELEMENTS, "trying to get ref seq array when none exists"

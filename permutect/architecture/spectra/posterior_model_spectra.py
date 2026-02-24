@@ -5,7 +5,7 @@ from permutect.architecture.spectra.artifact_spectra import ArtifactSpectra
 from permutect.architecture.spectra.normal_artifact_spectrum import NormalArtifactSpectrum
 from permutect.architecture.spectra.somatic_spectrum import SomaticSpectrum
 from permutect.data.datum import DEFAULT_GPU_FLOAT, DEFAULT_CPU_FLOAT, Data
-from permutect.data.posterior_data import PosteriorBatch
+from permutect.data.reads_batch import ReadsBatch
 from permutect.misc_utils import gpu_if_available
 from permutect.utils.enums import Call
 from permutect.utils.stats_utils import beta_binomial_log_lk
@@ -60,7 +60,7 @@ class PosteriorModelSpectra(nn.Module):
         self.artifact_spectra = ArtifactSpectra()
         self.normal_artifact_spectra = NormalArtifactSpectrum()
 
-    def spectra_log_likelihoods_bc(self, batch: PosteriorBatch) -> torch.Tensor:
+    def spectra_log_likelihoods_bc(self, batch: ReadsBatch) -> torch.Tensor:
         """
         'bc' indexing denotes by datum within batch, then by Call type
         """
@@ -73,8 +73,7 @@ class PosteriorModelSpectra(nn.Module):
             normal_alt_counts_b=normal_alt_counts_b, normal_depths_b=normal_depths_b)
 
         spectra_log_lks_bc = torch.zeros((batch.size(), len(Call)), device=self._device, dtype=self._dtype)
-        tumor_artifact_spectrum_log_lks_b = self.artifact_spectra.forward(batch.get(Data.VARIANT_TYPE), depths_b,
-                                                                          alt_counts_b)
+        tumor_artifact_spectrum_log_lks_b = self.artifact_spectra.forward(batch.get(Data.VARIANT_TYPE), depths_b, alt_counts_b)
         spectra_log_lks_bc[:, Call.SOMATIC] = self.somatic_spectrum.forward(depths_b, alt_counts_b, mafs_b)
         spectra_log_lks_bc[:, Call.ARTIFACT] = tumor_artifact_spectrum_log_lks_b
         spectra_log_lks_bc[:, Call.NORMAL_ARTIFACT] = na_tumor_log_lks_b
