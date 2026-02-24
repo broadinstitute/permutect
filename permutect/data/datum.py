@@ -173,11 +173,14 @@ class Datum:
         assert len(self.float_array) > Data.NUM_SCALAR_FLOAT_ELEMENTS, "trying to get info array when none exists"
         return self.float_array[Data.INFO_START_IDX:]
 
-    # note: this potentially resizes the array and requires the leading info tensor size element to be modified
+    # note: this potentially resizes the array
     # we do this in preprocessing when adding extra info to the info from GATK.
     # this method should not otherwise be used!!!
     def set_info_1d(self, new_info: np.ndarray):
         self.float_array = np.hstack((self.float_array[:Data.INFO_START_IDX], new_info))
+
+    def set_haplotypes_1d(self, new_haplotypes: np.ndarray):
+        self.int_array = np.hstack((self.int_array[:Data.HAPLOTYPES_START_IDX], new_haplotypes))
 
     def get_int_array(self) -> np.ndarray:
         return self.int_array

@@ -12,7 +12,8 @@ from permutect import constants
 from permutect.architecture.posterior_model import PosteriorModel
 from permutect.architecture.artifact_model import ArtifactModel, load_model
 from permutect.data import plain_text_data
-from permutect.data.datum import Datum, Data
+from permutect.data.datum import Datum, Data, FLOAT_DTYPE
+from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.memory_mapped_posterior_data import MemoryMappedPosteriorData
 from permutect.data.posterior_data import PosteriorDatum, PosteriorBatch
 from permutect.data.posterior_dataset import PosteriorDataset
@@ -20,6 +21,7 @@ from permutect.data.prefetch_generator import prefetch_generator
 from permutect.data.reads_batch import ReadsBatch
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.data.count_binning import MAX_ALT_COUNT, alt_count_bin_index, alt_count_bin_name
+from permutect.data.reads_datum import ReadsDatum
 from permutect.metrics.evaluation_metrics import EvaluationMetrics, EmbeddingMetrics
 from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.metrics.posterior_result import PosteriorResult
@@ -158,7 +160,7 @@ def make_filtered_vcf(artifact_model_path, initial_log_variant_prior: float, ini
 
 
 @torch.inference_mode()
-def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_workers: int):
+def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_workers: int, INT_DTYPE=None):
 
     # pass through the dataset, running the artifact model
     # to get artifact logits, which we record in a dict keyed by variant strings.  These will later be added to PosteriorDatum objects.
@@ -170,8 +172,17 @@ def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_
         artifact_logits_b, _, alt_means_be, _ = model.calculate_logits(batch)
         for int_array, float_array, logit, embedding in zip(batch.get_int_array_be(), batch.get_float_array_be(),
                                                                 artifact_logits_b.detach().tolist(), alt_means_be.cpu()):
-            posterior_datum = PosteriorDatum.create(int_array, float_array, logit, embedding.numpy())
-            yield posterior_datum
+            # make a ReadsDatum with no reads or haplotypes whose 1D info array is the embedding
+            # TODO: perhaps make a PosteriorDatum class that inherits from ReadsDatum and overrides some functions
+            # TODO: to throw an error?
+            empty_reads = np.zeros((0,0), dtype=FLOAT_DTYPE)
+            empty_haplotypes = np.zeros((0,), dtype=INT_DTYPE)
+            output_datum = ReadsDatum(int_array=int_array, float_array=float_array, compressed_reads_re=empty_reads)
+            output_datum.set(Data.REF_COUNT, 0)
+            output_datum.set(Data.ALT_COUNT, 0)
+            output_datum.set_info_1d(embedding)
+            output_datum.set_haplotypes_1d(empty_haplotypes)
+            yield output_datum
 
 @torch.inference_mode()
 def make_posterior_data_loader(dataset_file, input_vcf, contig_index_to_name_map, model: ArtifactModel,
@@ -187,13 +198,14 @@ def make_posterior_data_loader(dataset_file, input_vcf, contig_index_to_name_map
     dataset = ReadsDataset(memory_mapped_data=annotated_mmap_data)
     annotation_timer.report("Time to annotate data with AF and MAF:")
 
+    # Generate ReadsDatum objects without reads or haplotypes, where the INFO array is the embedding, and with the
+    # cached artifact logit computed from the model
     posterior_generator = generate_posterior_data(dataset, model, batch_size, num_workers)
-    posterior_mmap = MemoryMappedPosteriorData.from_generator(posterior_generator, estimated_num_data=len(dataset))
+    posterior_mmap = MemoryMappedData.from_generator(posterior_generator, estimated_num_data=len(dataset), estimated_num_reads=0)
     print(f"Size of filtering dataset: {len(posterior_mmap)}")
 
-
-    posterior_dataset = PosteriorDataset(posterior_mmap)
-    report_memory_usage("Finished creating PosteriorDataset.")
+    posterior_dataset = ReadsDataset(posterior_mmap)
+    report_memory_usage("Finished creating posterior ReadsDataset.")
     return posterior_dataset.make_data_loader(batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
 
 
