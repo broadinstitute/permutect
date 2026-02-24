@@ -6,11 +6,11 @@ from typing import List
 
 import numpy as np
 import torch
-from torch import Tensor, IntTensor
+from torch import Tensor
 from torch_scatter import segment_csr
 
 from permutect.data.batch import Batch
-from permutect.data.datum import Datum, DEFAULT_NUMPY_FLOAT, Data
+from permutect.data.datum import FLOAT_DTYPE, Data
 from permutect.data.reads_datum import ReadsDatum, convert_uint8_to_quantile_normalized, NUMBER_OF_BYTES_IN_PACKED_READ
 
 
@@ -41,7 +41,7 @@ class ReadsBatch(Batch):
         packed_binary_columns_re = compressed_reads_re[:, :NUMBER_OF_BYTES_IN_PACKED_READ]
         compressed_float_columns_re = compressed_reads_re[:, NUMBER_OF_BYTES_IN_PACKED_READ:]
 
-        binary_columns_re = np.ndarray.astype(np.unpackbits(packed_binary_columns_re, axis=1), DEFAULT_NUMPY_FLOAT)
+        binary_columns_re = np.ndarray.astype(np.unpackbits(packed_binary_columns_re, axis=1), FLOAT_DTYPE)
         float_columns_re = convert_uint8_to_quantile_normalized(compressed_float_columns_re)
 
         self.reads_re = torch.from_numpy(np.hstack((binary_columns_re, float_columns_re)))
@@ -60,8 +60,8 @@ class ReadsBatch(Batch):
         is_cuda = device.type == 'cuda'
         new_batch = copy.copy(self)
         new_batch.reads_re = self.reads_re.to(device=device, dtype=dtype, non_blocking=is_cuda)
-        new_batch.int16_data = self.int16_data.to(device, non_blocking=is_cuda)  # don't cast dtype -- needs to stay integral!
-        new_batch.float16_data = self.float16_data.to(device, non_blocking=is_cuda)  # don't cast dtype -- needs to stay integral!
+        new_batch.int_tensor = self.int_tensor.to(device, non_blocking=is_cuda)  # don't cast dtype -- needs to stay integral!
+        new_batch.float_tensor = self.float_tensor.to(device, non_blocking=is_cuda)  # don't cast dtype -- needs to stay integral!
         return new_batch
 
     def get_reads_re(self) -> Tensor:
@@ -104,9 +104,9 @@ class DownsampledReadsBatch(ReadsBatch):
         """
         This is delicate.  We're constructing it without calling super().__init__
         """
-        self.int16_data = original_batch.int16_data # note: no copy -- we never modify it!!!
-        self.float16_data = original_batch.float16_data # note: no copy -- we never modify it!!!
-        self.device = self.int16_data.device
+        self.int_tensor = original_batch.int_tensor # note: no copy -- we never modify it!!!
+        self.float_tensor = original_batch.float_tensor # note: no copy -- we never modify it!!!
+        self.device = self.int_tensor.device
         self.reads_re = original_batch.reads_re
         self._finish_initializiation_from_arrays()
         # at this point all member variables needed by the parent class are available
@@ -157,8 +157,8 @@ class DownsampledReadsBatch(ReadsBatch):
             return super().get(data_field)
 
     # override
-    def get_int16_data_be(self) -> np.ndarray:
-        result = self.int16_data.cpu().numpy(force=True)  # force it to make a copy because we modify it
+    def get_int_array_be(self) -> np.ndarray:
+        result = self.int_tensor.cpu().numpy(force=True)  # force it to make a copy because we modify it
         result[:, Data.REF_COUNT.idx] = self.ref_counts.cpu().numpy()
         result[:, Data.ALT_COUNT.idx] = self.alt_counts.cpu().numpy()
         return result

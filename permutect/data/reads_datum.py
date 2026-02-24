@@ -1,15 +1,9 @@
 from __future__ import annotations
 
-import os
-import tarfile
-import tempfile
-from typing import List, Generator
-
 import numpy as np
 import torch
 
-from permutect.data.datum import Datum, DEFAULT_NUMPY_FLOAT, Data
-from permutect.misc_utils import ConsistentValue, report_memory_usage
+from permutect.data.datum import Datum, FLOAT_DTYPE, Data
 from permutect.utils.allele_utils import trim_alleles_on_right, get_str_info_array, make_1d_sequence_tensor
 from permutect.utils.enums import Variation, Label
 
@@ -40,7 +34,7 @@ def convert_quantile_normalized_to_uint8(data: np.ndarray):
 
 # the inverse of the above
 def convert_uint8_to_quantile_normalized(data: np.ndarray):
-    return np.ndarray.astype((data - 128) / 32, DEFAULT_NUMPY_FLOAT)
+    return np.ndarray.astype((data - 128) / 32, FLOAT_DTYPE)
 
 
 def make_sequence_tensor(sequence_string: str) -> np.ndarray:
@@ -61,8 +55,8 @@ def make_sequence_tensor(sequence_string: str) -> np.ndarray:
 # this is what we get from GATK plain text data.  It must be normalized and processed before becoming the
 # data used by Permutect
 class RawUnnormalizedReadsDatum(Datum):
-    def __init__(self, int16_array: np.ndarray, float16_array: np.ndarray, reads_re: np.ndarray):
-        super().__init__(int16_array, float16_array)
+    def __init__(self, int_array: np.ndarray, float_array: np.ndarray, reads_re: np.ndarray):
+        super().__init__(int_array, float_array)
         self.reads_re = reads_re
 
     # gatk_info tensor comes from GATK and does not include one-hot encoding of variant type
@@ -91,7 +85,7 @@ class RawUnnormalizedReadsDatum(Datum):
         datum.set(Data.REF_COUNT, 0 if ref_tensor is None else len(ref_tensor))
         datum.set(Data.ALT_COUNT, 0 if alt_tensor is None else len(alt_tensor))
 
-        result = cls(int16_array=datum.get_int16_array(), float16_array=datum.get_float16_array(), reads_re=read_tensor)
+        result = cls(int_array=datum.get_int_array(), float_array=datum.get_float_array(), reads_re=read_tensor)
         return result
 
     def copy_with_downsampled_reads(self, ref_downsample: int, alt_downsample: int) -> RawUnnormalizedReadsDatum:
@@ -107,7 +101,7 @@ class RawUnnormalizedReadsDatum(Datum):
             random_ref_read_indices = torch.randperm(old_ref_count)[:new_ref_count]
             random_alt_read_indices = old_ref_count + torch.randperm(old_alt_count)[:new_alt_count]
             new_reads = np.vstack((self.reads_re[random_ref_read_indices], self.reads_re[random_alt_read_indices]))
-            result = RawUnnormalizedReadsDatum(int16_array=self.int16_array.copy(), float16_array=self.float16_array.copy(), reads_re=new_reads)
+            result = RawUnnormalizedReadsDatum(int_array=self.int_array.copy(), float_array=self.float_array.copy(), reads_re=new_reads)
             result.set(Data.REF_COUNT, new_ref_count)
             result.set(Data.ALT_COUNT, new_alt_count)
             return result
@@ -126,8 +120,8 @@ class RawUnnormalizedReadsDatum(Datum):
 
 
 class ReadsDatum(Datum):
-    def __init__(self, int16_array: np.ndarray, float16_array: np.ndarray, compressed_reads_re: np.ndarray):
-        super().__init__(int16_array, float16_array)
+    def __init__(self, int_array: np.ndarray, float_array: np.ndarray, compressed_reads_re: np.ndarray):
+        super().__init__(int_array, float_array)
         assert compressed_reads_re.dtype == READS_ARRAY_DTYPE
 
         # Reads are in a compressed, unusable form.  Binary columns must be unpacked and float

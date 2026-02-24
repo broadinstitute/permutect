@@ -18,8 +18,8 @@ from permutect.data.reads_datum import ReadsDatum, READS_ARRAY_DTYPE
 from permutect.misc_utils import Timer, encode_variant, get_first_numeric_element, encode, overlapping_filters
 
 # numpy.save appends .npy if the extension doesn't already include it.  We preempt this behavior.
-SUFFIX_FOR_INT16_MMAP = ".int16_mmap.npy"
-SUFFIX_FOR_FLOAT16_MMAP = ".float16_mmap.npy"
+SUFFIX_FOR_INT_MMAP = ".int_mmap.npy"
+SUFFIX_FOR_FLOAT_MMAP = ".float_mmap.npy"
 SUFFIX_FOR_READS_MMAP = ".reads_mmap.npy"
 SUFFIX_FOR_METADATA = ".metadata.npy"
 
@@ -35,9 +35,9 @@ class MemoryMappedData:
         does not correspond to actual data.  The num_data and num_reads tell us how far into the files is actual data.
     """
 
-    def __init__(self, int16_mmap, float16_mmap, num_data, reads_mmap, num_reads):
-        self.int16_mmap = int16_mmap
-        self.float16_mmap = float16_mmap
+    def __init__(self, int_mmap, float_mmap, num_data, reads_mmap, num_reads):
+        self.int_mmap = int_mmap
+        self.float_mmap = float_mmap
         self.reads_mmap = reads_mmap
         self.num_data = num_data
         self.num_reads = num_reads
@@ -46,14 +46,14 @@ class MemoryMappedData:
         self.read_end_indices = np.zeros(shape=(num_data,), dtype=np.uint32)
         idx = 0
         for n in range(num_data):
-            idx += Datum(int16_mmap[n], float16_mmap[n]).get_read_count()
+            idx += Datum(self.int_mmap[n], self.float_mmap[n]).get_read_count()
             self.read_end_indices[n] = idx
 
     def __len__(self):
         return self.num_data
 
     def size_in_bytes(self):
-        return self.int16_mmap.nbytes + self.float16_mmap.nbytes + self.reads_mmap.nbytes
+        return self.int_mmap.nbytes + self.float_mmap.nbytes + self.reads_mmap.nbytes
 
     def generate_reads_data(self, num_folds: int = None, folds_to_use: List[int] = None, keep_probs_by_label_l = None) -> Generator[ReadsDatum, None, None]:
         folds_set = None if folds_to_use is None else set(folds_to_use)
@@ -62,10 +62,10 @@ class MemoryMappedData:
         count = 0
         for idx in range(self.num_data):
             if folds_to_use is None or (idx % num_folds in folds_set):
-                int16_array = self.int16_mmap[idx]
-                float16_array = self.float16_mmap[idx]
+                int_array = self.int_mmap[idx]
+                float_array = self.float_mmap[idx]
                 reads_array = self.reads_mmap[0 if idx == 0 else self.read_end_indices[idx - 1]:self.read_end_indices[idx]]
-                datum = ReadsDatum(int16_array=int16_array, float16_array=float16_array, compressed_reads_re=reads_array)
+                datum = ReadsDatum(int_array=int_array, float_array=float_array, compressed_reads_re=reads_array)
                 if keep_probs_by_label_l is None or random.random() < keep_probs_by_label_l[datum.get(Data.LABEL)]:
                     yield datum
                     count += 1
@@ -128,7 +128,7 @@ class MemoryMappedData:
 
             if encoding in allele_frequencies and not encoding in encodings_to_exclude:
                 # NOTE: we copy the float array because it needs to be modified
-                new_datum = ReadsDatum(int16_array=datum.int16_array, float16_array=datum.float16_array.copy(),
+                new_datum = ReadsDatum(int_array=datum.int_array, float_array=datum.float_array.copy(),
                                        compressed_reads_re=datum.compressed_reads_re)
 
                 # these are default dicts, so if there's no segmentation for the contig we will get no overlaps but not an error
@@ -162,25 +162,25 @@ class MemoryMappedData:
         :return:
         """
         # num_data, data dimension; num_reads, reads dimension
-        metadata = np.array([self.num_data, self.int16_mmap.shape[-1], self.float16_mmap.shape[-1], self.num_reads, self.reads_mmap.shape[-1]], dtype=np.uint32)
+        metadata = np.array([self.num_data, self.int_mmap.shape[-1], self.float_mmap.shape[-1], self.num_reads, self.reads_mmap.shape[-1]], dtype=np.uint32)
         metadata_file = NamedTemporaryFile(suffix=SUFFIX_FOR_METADATA)
         torch.save(metadata, metadata_file.name)
 
         # For some reason, self.data_mmap.filename and self.reads_mmap.filename point to an empty file.  I have no clue why this is,
         # so at risk of redundant copying I just use numpy's save function, followed later by numpy.open_memmap
-        int16_data_file = NamedTemporaryFile(suffix=SUFFIX_FOR_INT16_MMAP)
-        np.save(int16_data_file.name, self.int16_mmap)
+        int_array_file = NamedTemporaryFile(suffix=SUFFIX_FOR_INT_MMAP)
+        np.save(int_array_file.name, self.int_mmap)
 
-        float16_data_file = NamedTemporaryFile(suffix=SUFFIX_FOR_FLOAT16_MMAP)
-        np.save(float16_data_file.name, self.float16_mmap)
+        float_array_file = NamedTemporaryFile(suffix=SUFFIX_FOR_FLOAT_MMAP)
+        np.save(float_array_file.name, self.float_mmap)
 
         reads_file = NamedTemporaryFile(suffix=SUFFIX_FOR_READS_MMAP)
         np.save(reads_file.name, self.reads_mmap)
 
         with tarfile.open(output_tarfile, "w") as output_tar:
             output_tar.add(metadata_file.name, arcname=("metadata" + SUFFIX_FOR_METADATA))
-            output_tar.add(int16_data_file.name, arcname=("int16_array" + SUFFIX_FOR_INT16_MMAP))
-            output_tar.add(float16_data_file.name, arcname=("float16_array" + SUFFIX_FOR_FLOAT16_MMAP))
+            output_tar.add(int_array_file.name, arcname=("int_array" + SUFFIX_FOR_INT_MMAP))
+            output_tar.add(float_array_file.name, arcname=("float_array" + SUFFIX_FOR_FLOAT_MMAP))
             output_tar.add(reads_file.name, arcname=("reads_array" + SUFFIX_FOR_READS_MMAP))
 
     # Load the list of objects back from the .npy file
@@ -196,25 +196,25 @@ class MemoryMappedData:
                     tar.extract(member, path=temp_dir.name)
 
         metadata_files = [os.path.abspath(os.path.join(temp_dir.name, p)) for p in os.listdir(temp_dir.name) if p.endswith(SUFFIX_FOR_METADATA)]
-        int16_data_files = [os.path.abspath(os.path.join(temp_dir.name, p)) for p in os.listdir(temp_dir.name) if p.endswith(SUFFIX_FOR_INT16_MMAP)]
-        float16_data_files = [os.path.abspath(os.path.join(temp_dir.name, p)) for p in os.listdir(temp_dir.name) if p.endswith(SUFFIX_FOR_FLOAT16_MMAP)]
+        int_array_files = [os.path.abspath(os.path.join(temp_dir.name, p)) for p in os.listdir(temp_dir.name) if p.endswith(SUFFIX_FOR_INT_MMAP)]
+        float_data_files = [os.path.abspath(os.path.join(temp_dir.name, p)) for p in os.listdir(temp_dir.name) if p.endswith(SUFFIX_FOR_FLOAT_MMAP)]
         reads_files = [os.path.abspath(os.path.join(temp_dir.name, p)) for p in os.listdir(temp_dir.name) if p.endswith(SUFFIX_FOR_READS_MMAP)]
         assert len(metadata_files) == 1
-        assert len(int16_data_files) == 1
-        assert len(float16_data_files) == 1
+        assert len(int_array_files) == 1
+        assert len(float_data_files) == 1
         assert len(reads_files) == 1
 
         loaded_metadata = torch.load(metadata_files[0])
-        num_data, int16_data_dim, float16_data_dim, num_reads, reads_dim = loaded_metadata[0], loaded_metadata[1], loaded_metadata[2], loaded_metadata[3], loaded_metadata[4]
+        num_data, int_array_dim, float_array_dim, num_reads, reads_dim = loaded_metadata[0], loaded_metadata[1], loaded_metadata[2], loaded_metadata[3], loaded_metadata[4]
 
         # NOTE: the original file may have had excess space due to the O(N) amortized growing scheme
         # if we load the same file with the actual num_data, as opposed to the capacity, it DOES work correctly
-        int16_mmap = np.lib.format.open_memmap(int16_data_files[0], mode='r', shape=(num_data, int16_data_dim))
-        float16_mmap = np.lib.format.open_memmap(float16_data_files[0], mode='r', shape=(num_data, float16_data_dim))
+        int_mmap = np.lib.format.open_memmap(int_array_files[0], mode='r', shape=(num_data, int_array_dim))
+        float_mmap = np.lib.format.open_memmap(float_data_files[0], mode='r', shape=(num_data, float_array_dim))
         reads_mmap = np.lib.format.open_memmap(reads_files[0], mode='r', shape=(num_reads, reads_dim))
         loading_timer.report("Time to load data from tarfile")
 
-        return cls(int16_mmap=int16_mmap, float16_mmap=float16_mmap, num_data=num_data, reads_mmap=reads_mmap, num_reads=num_reads)
+        return cls(int_mmap=int_mmap, float_mmap=float_mmap, num_data=num_data, reads_mmap=reads_mmap, num_reads=num_reads)
 
     @classmethod
     def from_generator(cls, reads_datum_source, estimated_num_data, estimated_num_reads) -> MemoryMappedData:
@@ -229,12 +229,12 @@ class MemoryMappedData:
         """
         num_data, num_reads = 0, 0
         data_capacity, reads_capacity = 0, 0
-        int16_mmap, float16_mmap, reads_mmap = None, None, None
+        int_mmap, float_mmap, reads_mmap = None, None, None
 
         datum: ReadsDatum
         for datum in reads_datum_source:
-            int16_array = datum.get_int16_array()
-            float16_array = datum.get_float16_array()
+            int_array = datum.get_int_array()
+            float_array = datum.get_float_array()
             reads_array = datum.get_reads_array_re()    # this works both for raw unnormalized data and the compressed reads of ReadsDatum
 
             num_data += 1
@@ -243,14 +243,14 @@ class MemoryMappedData:
             # double capacity or set to initial estimate, create new file and mmap, copy old data
             if num_data > data_capacity:
                 data_capacity = estimated_num_data if data_capacity == 0 else data_capacity*2
-                int16_file, float16_file = NamedTemporaryFile(suffix=SUFFIX_FOR_INT16_MMAP), NamedTemporaryFile(suffix=SUFFIX_FOR_FLOAT16_MMAP)
-                old_int16_mmap, old_float16_mmap = int16_mmap, float16_mmap
-                int16_mmap = np.memmap(int16_file.name, dtype=int16_array.dtype, mode='w+', shape=(data_capacity, int16_array.shape[-1]))
-                float16_mmap = np.memmap(float16_file.name, dtype=float16_array.dtype, mode='w+',
-                                       shape=(data_capacity, float16_array.shape[-1]))
-                if old_int16_mmap is not None:
-                    int16_mmap[:len(old_int16_mmap)] = old_int16_mmap
-                    float16_mmap[:len(old_float16_mmap)] = old_float16_mmap
+                int_file, float_file = NamedTemporaryFile(suffix=SUFFIX_FOR_INT_MMAP), NamedTemporaryFile(suffix=SUFFIX_FOR_FLOAT_MMAP)
+                old_int_mmap, old_float_mmap = int_mmap, float_mmap
+                int_mmap = np.memmap(int_file.name, dtype=int_array.dtype, mode='w+', shape=(data_capacity, int_array.shape[-1]))
+                float_mmap = np.memmap(float_file.name, dtype=float_array.dtype, mode='w+',
+                                       shape=(data_capacity, float_array.shape[-1]))
+                if old_int_mmap is not None:
+                    int_mmap[:len(old_int_mmap)] = old_int_mmap
+                    float_mmap[:len(old_float_mmap)] = old_float_mmap
 
             # likewise for reads
             if num_reads > reads_capacity:
@@ -262,14 +262,14 @@ class MemoryMappedData:
                     reads_mmap[:len(old_reads_mmap)] = old_reads_mmap
 
             # write new data
-            int16_mmap[num_data - 1] = int16_array
-            float16_mmap[num_data - 1] = float16_array
+            int_mmap[num_data - 1] = int_array
+            float_mmap[num_data - 1] = float_array
             reads_mmap[num_reads - len(reads_array):num_reads] = reads_array
 
-        int16_mmap.flush()
-        float16_mmap.flush()
+        int_mmap.flush()
+        float_mmap.flush()
         reads_mmap.flush()
 
         # TODO: now that we're done in w+ mode, re-open new mmap objects in 'r' (read-only) mode for faster access
 
-        return cls(int16_mmap=int16_mmap, float16_mmap=float16_mmap, num_data=num_data, reads_mmap=reads_mmap, num_reads=num_reads)
+        return cls(int_mmap=int_mmap, float_mmap=float_mmap, num_data=num_data, reads_mmap=reads_mmap, num_reads=num_reads)

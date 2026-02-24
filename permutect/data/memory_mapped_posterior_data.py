@@ -4,8 +4,8 @@ from tempfile import NamedTemporaryFile
 import numpy as np
 from permutect.data.posterior_data import PosteriorDatum
 
-SUFFIX_FOR_INT16_MMAP = ".int16_data_mmap.npy"
-SUFFIX_FOR_FLOAT16_MMAP = ".float16_data_mmap.npy"
+SUFFIX_FOR_INT_MMAP = ".int_data_mmap.npy"
+SUFFIX_FOR_FLOAT_MMAP = ".float_data_mmap.npy"
 SUFFIX_FOR_EMBEDDING_MMAP = ".embedding_mmap.npy"
 
 
@@ -22,9 +22,9 @@ class MemoryMappedPosteriorData:
     Also, it never needs to be saved/loaded.  It only exists during filtering and does not need to persist afterwards.
     """
 
-    def __init__(self, int16_mmap, float16_mmap, embedding_mmap, num_data):
-        self.int16_mmap = int16_mmap
-        self.float16_mmap = float16_mmap
+    def __init__(self, int_mmap, float_mmap, embedding_mmap, num_data):
+        self.int_mmap = int_mmap
+        self.float_mmap = float_mmap
         self.embedding_mmap = embedding_mmap
         self.num_data = num_data
 
@@ -32,7 +32,7 @@ class MemoryMappedPosteriorData:
         return self.num_data
 
     def size_in_bytes(self):
-        return self.int16_mmap.nbytes + self.float16_mmap.nbytes + self.embedding_mmap.nbytes
+        return self.int_mmap.nbytes + self.float_mmap.nbytes + self.embedding_mmap.nbytes
 
     @classmethod
     def from_generator(cls, posterior_datum_source, estimated_num_data) -> MemoryMappedPosteriorData:
@@ -41,12 +41,12 @@ class MemoryMappedPosteriorData:
         data to larger files, just like the amortized O(N) append operation on lists.
         """
         num_data, data_capacity = 0, 0
-        int16_mmap, float16_mmap, embedding_mmap = None, None, None
+        int_mmap, float_mmap, embedding_mmap = None, None, None
 
         datum: PosteriorDatum
         for datum in posterior_datum_source:
-            int16_array = datum.get_int16_array()
-            float16_array = datum.get_float16_array()
+            int_array = datum.get_int_array()
+            float_array = datum.get_float_array()
             embedding_array = datum.embedding
 
             num_data += 1
@@ -56,32 +56,32 @@ class MemoryMappedPosteriorData:
                 old_capacity = data_capacity
                 data_capacity = estimated_num_data if data_capacity == 0 else data_capacity*2
 
-                int16_file = NamedTemporaryFile(suffix=SUFFIX_FOR_INT16_MMAP)
-                float16_file = NamedTemporaryFile(suffix=SUFFIX_FOR_FLOAT16_MMAP)
+                int_file = NamedTemporaryFile(suffix=SUFFIX_FOR_INT_MMAP)
+                float_file = NamedTemporaryFile(suffix=SUFFIX_FOR_FLOAT_MMAP)
                 embedding_file = NamedTemporaryFile(suffix=SUFFIX_FOR_EMBEDDING_MMAP)
 
-                old_int16_mmap, old_float16_mmap, old_embedding_mmap = int16_mmap, float16_mmap, embedding_mmap
+                old_int_mmap, old_float_mmap, old_embedding_mmap = int_mmap, float_mmap, embedding_mmap
 
                 # allocate new memory maps
-                int16_mmap = np.memmap(int16_file.name, dtype=int16_array.dtype, mode='w+', shape=(data_capacity, int16_array.shape[-1]))
-                float16_mmap = np.memmap(float16_file.name, dtype=float16_array.dtype, mode='w+',
-                                       shape=(data_capacity, float16_array.shape[-1]))
+                int_mmap = np.memmap(int_file.name, dtype=int_array.dtype, mode='w+', shape=(data_capacity, int_array.shape[-1]))
+                float_mmap = np.memmap(float_file.name, dtype=float_array.dtype, mode='w+',
+                                       shape=(data_capacity, float_array.shape[-1]))
                 embedding_mmap = np.memmap(embedding_file.name, dtype=embedding_array.dtype, mode='w+', shape=(data_capacity, embedding_array.shape[-1]))
 
                 # copy the existing data into the new memory maps
-                if old_int16_mmap is not None:
-                    int16_mmap[:old_capacity] = old_int16_mmap
-                    float16_mmap[:old_capacity] = old_float16_mmap
-                    int16_mmap[:old_capacity] = old_embedding_mmap
+                if old_int_mmap is not None:
+                    int_mmap[:old_capacity] = old_int_mmap
+                    float_mmap[:old_capacity] = old_float_mmap
+                    int_mmap[:old_capacity] = old_embedding_mmap
 
 
             # write new data
-            int16_mmap[num_data - 1] = int16_array
-            float16_mmap[num_data - 1] = float16_array
+            int_mmap[num_data - 1] = int_array
+            float_mmap[num_data - 1] = float_array
             embedding_mmap[num_data - 1] = embedding_array
 
-        int16_mmap.flush()
-        float16_mmap.flush()
+        int_mmap.flush()
+        float_mmap.flush()
         embedding_mmap.flush()
 
-        return cls(int16_mmap=int16_mmap, float16_mmap=float16_mmap, embedding_mmap=embedding_mmap, num_data=num_data)
+        return cls(int_mmap=int_mmap, float_mmap=float_mmap, embedding_mmap=embedding_mmap, num_data=num_data)

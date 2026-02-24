@@ -20,8 +20,8 @@ class PosteriorDataset(IterableDataset):
 
         available_memory = psutil.virtual_memory().available
         print(f"Posterior data occupy {posterior_mmap.size_in_bytes() // 1000000} Mb and the system has {available_memory // 1000000} Mb of RAM available.")
-        self._int16_data_ve = self.memory_map.int16_mmap
-        self._float16_data_ve = self.memory_map.float16_mmap
+        self._int_array_ve = self.memory_map.int_mmap
+        self._float_array_ve = self.memory_map.float_mmap
         self._stacked_embeddings_ve = self.memory_map.embedding_mmap
 
     def __len__(self) -> int:
@@ -73,25 +73,25 @@ class PosteriorDataset(IterableDataset):
             ram_timer = Timer(f"Worker {worker_id} loading posterior data chunk [{chunk_start_idx}, {chunk_end_idx}) into RAM.")
             # TODO: I think the .copy() is necessary to copy the slice of the memory-map from disk into RAM
             # these operations should be really fast because it's all sequential access
-            chunk_int16_ve = self._int16_data_ve[chunk_start_idx:chunk_end_idx].copy()
-            chunk_float16_ve = self._float16_data_ve[chunk_start_idx:chunk_end_idx].copy()
+            chunk_int_array_ve = self._int_array_ve[chunk_start_idx:chunk_end_idx].copy()
+            chunk_float_array_ve = self._float_array_ve[chunk_start_idx:chunk_end_idx].copy()
             chunk_embeddings_ve = self._stacked_embeddings_ve[chunk_start_idx:chunk_end_idx]
 
             ram_timer.report("Time to load chunk data into RAM")
             report_memory_usage("Chunk data loaded into RAM.")
 
             # now that it's all in RAM, we can yield in randomly-accessed order
-            indices = list(range(len(chunk_int16_ve)))
+            indices = list(range(len(chunk_int_array_ve)))
             random.shuffle(indices)
 
             for idx in indices:
-                datum = PosteriorDatum(int16_array=chunk_int16_ve[idx], float16_array=chunk_float16_ve[idx], embedding=chunk_embeddings_ve[idx])
+                datum = PosteriorDatum(int_array=chunk_int_array_ve[idx], float_array=chunk_float_array_ve[idx], embedding=chunk_embeddings_ve[idx])
                 yield datum
 
             # we have finished yielding all the data in this chunk.  Because this is such a large amount of data,
             # we explicitly free memory (delete objects and garbage collect) before loading the next chunk
-            del chunk_int16_ve
-            del chunk_float16_ve
+            del chunk_int_array_ve
+            del chunk_float_array_ve
             del chunk_embeddings_ve
             del indices
             gc.collect()

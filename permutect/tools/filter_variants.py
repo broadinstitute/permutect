@@ -168,9 +168,9 @@ def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_
     batch: ReadsBatch
     for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
         artifact_logits_b, _, alt_means_be, _ = model.calculate_logits(batch)
-        for int16_array, float16_array, logit, embedding in zip(batch.get_int16_data_be(), batch.get_float16_data_be(),
-                artifact_logits_b.detach().tolist(), alt_means_be.cpu()):
-            posterior_datum = PosteriorDatum.create(int16_array, float16_array, logit, embedding.numpy())
+        for int_array, float_array, logit, embedding in zip(batch.get_int_array_be(), batch.get_float_array_be(),
+                                                                artifact_logits_b.detach().tolist(), alt_means_be.cpu()):
+            posterior_datum = PosteriorDatum.create(int_array, float_array, logit, embedding.numpy())
             yield posterior_datum
 
 @torch.inference_mode()
@@ -230,7 +230,7 @@ def apply_filtering_to_vcf(input_vcf, output_vcf, contig_index_to_name_map, erro
             sources_override=most_confident_calls_b, logits=batch.get(Data.CACHED_ARTIFACT_LOGIT))
 
         artifact_logits = batch.get(Data.CACHED_ARTIFACT_LOGIT).cpu().tolist()
-        data = [Datum(int16_array, float16_array) for (int16_array, float16_array) in zip(batch.get_int16_data_be(), batch.get_float16_data_be())]
+        data = [Datum(int_array, float_array) for (int_array, float_array) in zip(batch.get_int_array_be(), batch.get_float_array_be())]
         for datum, post_probs, logit, log_prior, log_spec, log_normal, embedding in zip(data, posterior_probs_bc, artifact_logits, log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, batch.embeddings):
             encoding = encode_datum(datum, contig_index_to_name_map)
             encoding_to_posterior_results[encoding] = PosteriorResult(artifact_logit=logit, posterior_probabilities=post_probs.tolist(),
