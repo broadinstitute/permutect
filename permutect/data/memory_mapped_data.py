@@ -209,7 +209,7 @@ class MemoryMappedData:
         loaded_metadata = torch.load(metadata_files[0])
         num_data, int_array_dim, float_array_dim, num_reads, reads_dim = loaded_metadata[0], loaded_metadata[1], loaded_metadata[2], loaded_metadata[3], loaded_metadata[4]
 
-        assert len(reads_files) == (1 if num_reads == 0 else 0)
+        assert len(reads_files) == (0 if num_reads == 0 else 1)
         # NOTE: the original file may have had excess space due to the O(N) amortized growing scheme
         # if we load the same file with the actual num_data, as opposed to the capacity, it DOES work correctly
         int_mmap = np.lib.format.open_memmap(int_array_files[0], mode='r', shape=(num_data, int_array_dim))
