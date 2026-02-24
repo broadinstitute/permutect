@@ -270,6 +270,9 @@ class MemoryMappedData:
         float_mmap.flush()
         reads_mmap.flush()
 
-        # TODO: now that we're done in w+ mode, re-open new mmap objects in 'r' (read-only) mode for faster access
+        # re-open new mmap objects in 'r' (read-only) mode for faster access
+        int_mmap = np.memmap(int_mmap.filename, dtype=int_mmap.dtype, mode='r', shape=int_mmap.shape)
+        float_mmap = np.memmap(float_mmap.filename, dtype=float_mmap.dtype, mode='r', shape=float_mmap.shape)
+        reads_mmap = np.memmap(reads_mmap.filename, dtype=reads_mmap.dtype, mode='r', shape=reads_mmap.shape)
 
         return cls(int_mmap=int_mmap, float_mmap=float_mmap, num_data=num_data, reads_mmap=reads_mmap, num_reads=num_reads)

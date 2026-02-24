@@ -1,12 +1,10 @@
 import gc
-from collections import defaultdict
 
 import psutil
 import random
 from typing import  List
 
 import torch
-from intervaltree import IntervalTree
 from torch.utils.data import DataLoader, IterableDataset
 
 from permutect.data.memory_mapped_data import MemoryMappedData
