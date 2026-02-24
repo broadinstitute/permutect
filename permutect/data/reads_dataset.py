@@ -56,7 +56,7 @@ class ReadsDataset(IterableDataset):
 
         self._num_read_features, self._num_info_features, self._haplotypes_length = ConsistentValue(), ConsistentValue(), ConsistentValue()
         data_recording_timer = Timer("Recording data counts. . .")
-        for datum in self.memory_mapped_data.generate_reads_data():
+        for datum in self.memory_mapped_data.generate_data():
             self.totals_slvra.record_datum(datum)
             self._num_read_features.check(datum.num_read_features())
             self._num_info_features.check(len(datum.get_info_1d()))

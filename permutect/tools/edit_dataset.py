@@ -19,7 +19,7 @@ class EditType(Enum):
 # generates BaseDatum(s) from the original dataset that *pass* the pruning thresholds
 def generate_edited_data(memory_mapped_datas, edit_type: str, source: int):
     for memory_mapped_data in memory_mapped_datas:
-        for reads_datum in memory_mapped_data.generate_reads_data():
+        for reads_datum in memory_mapped_data.generate_data():
             if source is not None:
                 reads_datum.set(Data.SOURCE, source)
 

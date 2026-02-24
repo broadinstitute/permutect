@@ -13,7 +13,7 @@ import torch
 from intervaltree import IntervalTree
 from tqdm import tqdm
 
-from permutect.data.datum import Datum, Data
+from permutect.data.datum import Datum, Data, COMPRESSED_READS_ARRAY_DTYPE
 from permutect.misc_utils import Timer, encode_variant, get_first_numeric_element, encode, overlapping_filters
 
 # numpy.save appends .npy if the extension doesn't already include it.  We preempt this behavior.
@@ -54,10 +54,9 @@ class MemoryMappedData:
     def size_in_bytes(self):
         return self.int_mmap.nbytes + self.float_mmap.nbytes + (0 if self.reads_mmap is None else self.reads_mmap.nbytes)
 
-    def generate_reads_data(self, num_folds: int = None, folds_to_use: List[int] = None, keep_probs_by_label_l = None) -> Generator[Datum, None, None]:
+    def generate_data(self, num_folds: int = None, folds_to_use: List[int] = None, keep_probs_by_label_l = None) -> Generator[Datum, None, None]:
         folds_set = None if folds_to_use is None else set(folds_to_use)
-        print("Generating Datum objects from memory-mapped data.")
-        assert self.reads_mmap is None or self.reads_mmap.dtype == COMPRESSED_READS_ARRAY_DTYPE
+        print("Generating data from memory maps.")
         count = 0
         for idx in range(self.num_data):
             if folds_to_use is None or (idx % num_folds in folds_set):
@@ -65,7 +64,7 @@ class MemoryMappedData:
                 float_array = self.float_mmap[idx]
                 reads_array = np.zeros((0,0), dtype=COMPRESSED_READS_ARRAY_DTYPE) if self.reads_mmap is None else \
                     self.reads_mmap[0 if idx == 0 else self.read_end_indices[idx - 1]:self.read_end_indices[idx]]
-                datum = Datum(int_array=int_array, float_array=float_array, reads_re=reads_array, compressed_reads=True)
+                datum = Datum(int_array=int_array, float_array=float_array, reads_re=reads_array, compressed_reads=(reads_array.dtype==COMPRESSED_READS_ARRAY_DTYPE))
                 if keep_probs_by_label_l is None or random.random() < keep_probs_by_label_l[datum.get(Data.LABEL)]:
                     yield datum
                     count += 1
@@ -80,14 +79,14 @@ class MemoryMappedData:
             fudge_factor = 1.1
             estimated_num_data = int(self.num_data * proportion * fudge_factor)
             estimated_num_reads = int(self.num_reads * proportion * fudge_factor)
-            reads_datum_source = self.generate_reads_data(num_folds=num_folds, folds_to_use=folds_to_use, keep_probs_by_label_l=keep_probs_by_label_l)
+            reads_datum_source = self.generate_data(num_folds=num_folds, folds_to_use=folds_to_use, keep_probs_by_label_l=keep_probs_by_label_l)
             return MemoryMappedData.from_generator(reads_datum_source, estimated_num_data, estimated_num_reads)
 
     def restrict_to_labeled_only(self) -> MemoryMappedData:
         print("Restricting dataset to labeled data only.")
         labeled_count, total = 0, 0
         # estimated the proportion of labeled data
-        for n, datum in enumerate(self.generate_reads_data()):
+        for n, datum in enumerate(self.generate_data()):
             if n > 1000:
                 break
             total += 1
@@ -98,7 +97,7 @@ class MemoryMappedData:
         estimated_num_reads = self.num_reads * labeled_proportion * fudge_factor
         estimated_num_data = self.num_data * labeled_proportion * fudge_factor
 
-        reads_datum_source = (datum for datum in self.generate_reads_data() if datum.is_labeled())
+        reads_datum_source = (datum for datum in self.generate_data() if datum.is_labeled())
         return MemoryMappedData.from_generator(reads_datum_source, estimated_num_data, estimated_num_reads)
 
     """
@@ -120,7 +119,7 @@ class MemoryMappedData:
             if overlapping_filters(v, filters_to_exclude):
                 encodings_to_exclude.add(encoding)
 
-        for datum in self.generate_reads_data():
+        for datum in self.generate_data():
             contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
             position = datum.get(Data.POSITION)
             encoding = encode(contig_name, position, datum.get_ref_allele(), datum.get_alt_allele())
