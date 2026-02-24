@@ -158,11 +158,7 @@ def make_filtered_vcf(artifact_model_path, initial_log_variant_prior: float, ini
 
 
 @torch.inference_mode()
-def generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model: ArtifactModel,
-                               batch_size: int, num_workers: int, segmentation=defaultdict(IntervalTree), normal_segmentation=defaultdict(IntervalTree)):
-    print("Adding allele frequencies, MAFs, and normal MAFs to test dataset")
-    dataset.annotate_allele_frequencies_and_mafs(input_vcf=input_vcf, contig_index_to_name_map=contig_index_to_name_map,
-                                         segmentation=segmentation, normal_segmentation=normal_segmentation)
+def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_workers: int):
 
     # pass through the dataset, running the artifact model
     # to get artifact logits, which we record in a dict keyed by variant strings.  These will later be added to PosteriorDatum objects.
@@ -191,8 +187,7 @@ def make_posterior_data_loader(dataset_file, input_vcf, contig_index_to_name_map
     dataset = ReadsDataset(memory_mapped_data=annotated_mmap_data)
     annotation_timer.report("Time to annotate data with AF and MAF:")
 
-    posterior_generator = generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model,
-        batch_size, num_workers, segmentation, normal_segmentation)
+    posterior_generator = generate_posterior_data(dataset, model, batch_size, num_workers)
     posterior_mmap = MemoryMappedPosteriorData.from_generator(posterior_generator, estimated_num_data=len(dataset))
     print(f"Size of filtering dataset: {len(posterior_mmap)}")
 

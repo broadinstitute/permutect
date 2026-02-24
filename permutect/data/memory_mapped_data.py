@@ -126,7 +126,7 @@ class MemoryMappedData:
             position = datum.get(Data.POSITION)
             encoding = encode(contig_name, position, datum.get_ref_allele(), datum.get_alt_allele())
 
-            if not encoding in encodings_to_exclude:
+            if encoding in allele_frequencies and not encoding in encodings_to_exclude:
                 # NOTE: we copy the float array because it needs to be modified
                 new_datum = ReadsDatum(int16_array=datum.int16_array, float16_array=datum.float16_array.copy(),
                                        compressed_reads_re=datum.compressed_reads_re)

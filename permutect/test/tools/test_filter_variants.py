@@ -8,7 +8,7 @@ from permutect.test.test_file_names import *
 
 def test_filtering_on_dream1_chr20():
     # Inputs
-    artifact_model = ARTIFACT_MODEL_V_0_4_0
+    artifact_model = EXPERIMENTAL_MODEL
     mutect2_vcf = MUTECT2_CHR20_FILTERED_VCF
     maf_segments = SEGMENTS_TABLE
     contigs_table = CONTIGS_TABLE
