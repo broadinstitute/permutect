@@ -1,6 +1,5 @@
 import argparse
 from collections import defaultdict
-from typing import Set
 
 import cyvcf2
 import numpy as np
@@ -24,7 +23,8 @@ from permutect.data.count_binning import MAX_ALT_COUNT, alt_count_bin_index, alt
 from permutect.metrics.evaluation_metrics import EvaluationMetrics, EmbeddingMetrics
 from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.metrics.posterior_result import PosteriorResult
-from permutect.misc_utils import report_memory_usage, gpu_if_available, encode, encode_datum, encode_variant, Timer
+from permutect.misc_utils import report_memory_usage, gpu_if_available, encode_datum, encode_variant, Timer, \
+    overlapping_filters
 from permutect.utils.allele_utils import find_variant_type
 from permutect.utils.enums import Variation, Call, Epoch, Label
 from permutect.utils.math_utils import prob_to_logit, inverse_sigmoid
@@ -38,10 +38,6 @@ SPECTRA_LOG_LIKELIHOOD_INFO_KEY = 'SPECLL'
 NORMAL_LOG_LIKELIHOOD_INFO_KEY = 'NORMLL'
 
 FILTER_NAMES = [call_type.name.lower() for call_type in Call]
-
-
-def overlapping_filters(v: cyvcf2.Variant, filters_set: Set[str]) -> Set[str]:
-    return set([]) if v.FILTER is None else set(v.FILTER.split(";")).intersection(filters_set)
 
 
 def parse_arguments():

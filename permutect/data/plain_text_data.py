@@ -37,7 +37,6 @@ from typing import List, Generator
 import numpy as np
 from scipy.special import gammaln
 from sklearn.preprocessing import QuantileTransformer
-from sympy.codegen.ast import int16
 
 from permutect.data.count_binning import cap_ref_count, cap_alt_count
 from permutect.data.memory_mapped_data import MemoryMappedData

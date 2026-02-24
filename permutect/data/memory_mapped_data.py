@@ -15,8 +15,7 @@ from tqdm import tqdm
 
 from permutect.data.datum import Datum, Data
 from permutect.data.reads_datum import ReadsDatum, READS_ARRAY_DTYPE
-from permutect.misc_utils import Timer, encode_variant, get_first_numeric_element, encode
-from permutect.tools.filter_variants import overlapping_filters
+from permutect.misc_utils import Timer, encode_variant, get_first_numeric_element, encode, overlapping_filters
 
 # numpy.save appends .npy if the extension doesn't already include it.  We preempt this behavior.
 SUFFIX_FOR_INT16_MMAP = ".int16_mmap.npy"

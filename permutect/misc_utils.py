@@ -1,5 +1,5 @@
 import time
-from typing import Iterator
+from typing import Iterator, Set
 
 import cyvcf2
 import psutil
@@ -146,3 +146,7 @@ def encode_variant(v: cyvcf2.Variant, zero_based=False):
     ref = v.REF
     start = (v.start + 1) if zero_based else v.start
     return encode(v.CHROM, start, ref, alt)
+
+
+def overlapping_filters(v: cyvcf2.Variant, filters_set: Set[str]) -> Set[str]:
+    return set([]) if v.FILTER is None else set(v.FILTER.split(";")).intersection(filters_set)
