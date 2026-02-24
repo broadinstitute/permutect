@@ -3,15 +3,20 @@ import os
 import random
 import tarfile
 import tempfile
+from collections import defaultdict
 from tempfile import NamedTemporaryFile
-from typing import Generator, List
+from typing import Generator, List, Set
 
+import cyvcf2
 import numpy as np
 import torch
+from intervaltree import IntervalTree
+from tqdm import tqdm
 
 from permutect.data.datum import Datum, Data
 from permutect.data.reads_datum import ReadsDatum, READS_ARRAY_DTYPE
-from permutect.misc_utils import Timer
+from permutect.misc_utils import Timer, encode_variant, get_first_numeric_element, encode
+from permutect.tools.filter_variants import overlapping_filters
 
 # numpy.save appends .npy if the extension doesn't already include it.  We preempt this behavior.
 SUFFIX_FOR_INT16_MMAP = ".int16_mmap.npy"
@@ -96,6 +101,57 @@ class MemoryMappedData:
 
         reads_datum_source = (datum for datum in self.generate_reads_data() if datum.is_labeled())
         return MemoryMappedData.from_generator(reads_datum_source, estimated_num_data, estimated_num_reads)
+
+    """
+    Add allele frequency (AF), minor allele frequency (MAF), and normal minor allele frequency (normal MAF) to the
+    float array of the output MemoryMappedData using information in a VCF and a segmentation.
+    
+    Additionally, skip data that have a given set of filters in the VCF.
+    """
+    def generate_vcf_annotated_data(self, input_vcf, contig_index_to_name_map, filters_to_exclude: Set[str],
+            segmentation=defaultdict(IntervalTree), normal_segmentation=defaultdict(IntervalTree)) -> Generator[ReadsDatum, None, None]:
+        allele_frequencies = {}
+        encodings_to_exclude = set()
+
+        print("recording filters and allele frequencies from input VCF")
+        pbar = tqdm(enumerate(cyvcf2.VCF(input_vcf)), mininterval=60)
+        for n, v in pbar:
+            # TODO: encode_variant, get_first_numeric_element should be moved to utils file
+            encoding = encode_variant(v, zero_based=True)
+            allele_frequencies[encoding] = 10 ** (-get_first_numeric_element(v, "POPAF"))
+            if overlapping_filters(v, filters_to_exclude):
+                encodings_to_exclude.add(encoding)
+
+        for datum in self.generate_reads_data():
+            contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
+            position = datum.get(Data.POSITION)
+            encoding = encode(contig_name, position, datum.get_ref_allele(), datum.get_alt_allele())
+
+            if not encoding in encodings_to_exclude:
+                # NOTE: we copy the float array because it needs to be modified
+                new_datum = ReadsDatum(int16_array=datum.int16_array, float16_array=datum.float16_array.copy(),
+                                       compressed_reads_re=datum.compressed_reads_re)
+
+                # these are default dicts, so if there's no segmentation for the contig we will get no overlaps but not an error
+                # For a general IntervalTree there is a list of potentially multiple overlaps but here there is either one or zero
+                allele_frequency = allele_frequencies[encoding]
+                segmentation_overlaps = segmentation[contig_name][position]
+                normal_segmentation_overlaps = normal_segmentation[contig_name][position]
+                maf = list(segmentation_overlaps)[0].data if segmentation_overlaps else 0.5
+                normal_maf = list(normal_segmentation_overlaps)[0].data if normal_segmentation_overlaps else 0.5
+
+                new_datum.set(Data.ALLELE_FREQUENCY, allele_frequency)
+                new_datum.set(Data.MAF, maf)
+                new_datum.set(Data.NORMAL_MAF, normal_maf)
+                yield new_datum
+
+    def make_vcf_annotate_memory_mapped_data(self, input_vcf, contig_index_to_name_map, filters_to_exclude: Set[str],
+            segmentation=defaultdict(IntervalTree), normal_segmentation=defaultdict(IntervalTree)) -> MemoryMappedData:
+        generator = self.generate_vcf_annotated_data(input_vcf=input_vcf, contig_index_to_name_map=contig_index_to_name_map,
+            filters_to_exclude=filters_to_exclude, segmentation=segmentation, normal_segmentation=normal_segmentation)
+        return MemoryMappedData.from_generator(reads_datum_source=generator, estimated_num_data=self.num_data, estimated_num_reads=self.num_reads)
+
+
 
     def save_to_tarfile(self, output_tarfile):
         """

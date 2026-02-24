@@ -13,7 +13,6 @@ from permutect import constants
 from permutect.architecture.posterior_model import PosteriorModel
 from permutect.architecture.artifact_model import ArtifactModel, load_model
 from permutect.data import plain_text_data
-from permutect.data.batch import BatchIndexedTensor
 from permutect.data.datum import Datum, Data
 from permutect.data.memory_mapped_posterior_data import MemoryMappedPosteriorData
 from permutect.data.posterior_data import PosteriorDatum, PosteriorBatch
@@ -25,8 +24,8 @@ from permutect.data.count_binning import MAX_ALT_COUNT, alt_count_bin_index, alt
 from permutect.metrics.evaluation_metrics import EvaluationMetrics, EmbeddingMetrics
 from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.metrics.posterior_result import PosteriorResult
-from permutect.misc_utils import report_memory_usage, gpu_if_available
-from permutect.utils.allele_utils import trim_alleles_on_right, find_variant_type, truncate_bases_if_necessary
+from permutect.misc_utils import report_memory_usage, gpu_if_available, encode, encode_datum, encode_variant, Timer
+from permutect.utils.allele_utils import find_variant_type
 from permutect.utils.enums import Variation, Call, Epoch, Label
 from permutect.utils.math_utils import prob_to_logit, inverse_sigmoid
 
@@ -41,31 +40,8 @@ NORMAL_LOG_LIKELIHOOD_INFO_KEY = 'NORMLL'
 FILTER_NAMES = [call_type.name.lower() for call_type in Call]
 
 
-def get_first_numeric_element(variant, key):
-    tuple_or_scalar = variant.INFO[key]
-    return tuple_or_scalar[0] if type(tuple_or_scalar) is tuple else tuple_or_scalar
-
-
-# TODO: contigs stored as integer index must be converted back to string to compare VCF variants with dataset variants!!!
-def encode(contig: str, position: int, ref: str, alt: str):
-    trimmed_ref, trimmed_alt = trim_alleles_on_right(ref, alt)
-    return contig + ':' + str(position) + ':' + truncate_bases_if_necessary(trimmed_alt)
-
-
-def encode_datum(datum: Datum, contig_index_to_name_map):
-    contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
-    return encode(contig_name, datum.get(Data.POSITION), datum.get_ref_allele(), datum.get_alt_allele())
-
-
-def encode_variant(v: cyvcf2.Variant, zero_based=False):
-    alt = v.ALT[0]  # TODO: we're assuming biallelic
-    ref = v.REF
-    start = (v.start + 1) if zero_based else v.start
-    return encode(v.CHROM, start, ref, alt)
-
-
-def filters_to_keep_from_m2(v: cyvcf2.Variant) -> Set[str]:
-    return set([]) if v.FILTER is None else set(v.FILTER.split(";")).intersection(TRUSTED_M2_FILTERS)
+def overlapping_filters(v: cyvcf2.Variant, filters_set: Set[str]) -> Set[str]:
+    return set([]) if v.FILTER is None else set(v.FILTER.split(";")).intersection(filters_set)
 
 
 def parse_arguments():
@@ -192,23 +168,6 @@ def generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model:
     dataset.annotate_allele_frequencies_and_mafs(input_vcf=input_vcf, contig_index_to_name_map=contig_index_to_name_map,
                                          segmentation=segmentation, normal_segmentation=normal_segmentation)
 
-    # TODO: "filters to keep" is too crude an idea -- some filters, such as contamination are not just used in the
-    # TODO: output Permutect VCF (i.e. trusted) but they also mean data should be excluded from the test dataset as they would
-    # TODO: throw off the posterior model (eg contamination would mess up the somatic AF spectrum)
-    # TODO: on the other hand, some M2 filters are valid data and won't mess up the posterior model.  We simply
-
-    # TODO: however, for now let's just have a method on the ReadsDataset (i.e. while it's still a readsDataset, nefore
-    # TODO: we create a posterior dataset) to restrict by M2 filters
-
-    m2_filtering_to_keep = set()
-
-    print("recording M2 filters from input VCF")
-    pbar = tqdm(enumerate(cyvcf2.VCF(input_vcf)), mininterval=60)
-    for n, v in pbar:
-        encoding = encode_variant(v, zero_based=True)
-        if filters_to_keep_from_m2(v):
-            m2_filtering_to_keep.add(encoding)
-
     # pass through the dataset, running the artifact model
     # to get artifact logits, which we record in a dict keyed by variant strings.  These will later be added to PosteriorDatum objects.
     loader = dataset.make_data_loader(batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
@@ -217,25 +176,24 @@ def generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model:
     batch: ReadsBatch
     for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
         artifact_logits_b, _, alt_means_be, _ = model.calculate_logits(batch)
-
         for int16_array, float16_array, logit, embedding in zip(batch.get_int16_data_be(), batch.get_float16_data_be(),
                 artifact_logits_b.detach().tolist(), alt_means_be.cpu()):
-            datum = Datum(int16_array, float16_array)
-            contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
-            position = datum.get(Data.POSITION)
-            encoding = encode(contig_name, position, datum.get_ref_allele(), datum.get_alt_allele())
-            # TODO: only yield if datum allele frequency is not NaN (to duplicate previous behavior)
-            if encoding not in m2_filtering_to_keep:
-                posterior_datum = PosteriorDatum.create(int16_array, float16_array, logit, embedding.numpy())
-                yield posterior_datum
+            posterior_datum = PosteriorDatum.create(int16_array, float16_array, logit, embedding.numpy())
+            yield posterior_datum
 
 @torch.inference_mode()
 def make_posterior_data_loader(dataset_file, input_vcf, contig_index_to_name_map, model: ArtifactModel,
                                batch_size: int, num_workers: int, segmentation=defaultdict(IntervalTree), normal_segmentation=defaultdict(IntervalTree)):
+    normalizing_timer = Timer("Normalizing data. . .")
     normalized_mmap_data = plain_text_data.make_normalized_mmap_data(dataset_files=[dataset_file])
+    normalizing_timer.report("Time to normalize test data:")
 
-    report_memory_usage("Creating ReadsDataset.")
-    dataset = ReadsDataset(memory_mapped_data=normalized_mmap_data)
+    report_memory_usage("Creating ReadsDataset with AF and MAF.")
+    annotation_timer = Timer("Annotating data with AF and MAF from VCF. . .")
+    annotated_mmap_data = normalized_mmap_data.make_vcf_annotate_memory_mapped_data(input_vcf, contig_index_to_name_map,
+        filters_to_exclude=TRUSTED_M2_FILTERS, segmentation=segmentation, normal_segmentation=normal_segmentation)
+    dataset = ReadsDataset(memory_mapped_data=annotated_mmap_data)
+    annotation_timer.report("Time to annotate data with AF and MAF:")
 
     posterior_generator = generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model,
         batch_size, num_workers, segmentation, normal_segmentation)
@@ -330,7 +288,7 @@ def apply_filtering_to_vcf(input_vcf, output_vcf, contig_index_to_name_map, erro
 
     missing_encodings = []
     for n, v in pbar:
-        filters = filters_to_keep_from_m2(v)
+        filters = overlapping_filters(v, TRUSTED_M2_FILTERS)
 
         # TODO: in germline mode, somatic doesn't exist (or is just highly irrelevant) and germline is not an error!
         encoding = encode_variant(v, zero_based=True)  # cyvcf2 is zero-based

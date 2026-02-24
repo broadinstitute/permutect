@@ -1,8 +1,6 @@
 import gc
 from collections import defaultdict
 
-import cyvcf2
-import numpy as np
 import psutil
 import random
 from typing import  List
@@ -10,15 +8,12 @@ from typing import  List
 import torch
 from intervaltree import IntervalTree
 from torch.utils.data import DataLoader, IterableDataset
-from tqdm import tqdm
 
-from permutect.data.datum import Datum, Data
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.reads_datum import ReadsDatum
 from permutect.data.reads_batch import ReadsBatch
 from permutect.data.batch import BatchProperty, BatchIndexedTensor
 from permutect.misc_utils import ConsistentValue, Timer, report_memory_usage
-from permutect.tools.filter_variants import encode_variant, get_first_numeric_element, encode
 from permutect.utils.enums import Variation, Label
 
 WEIGHT_PSEUDOCOUNT = 10
@@ -196,55 +191,6 @@ class ReadsDataset(IterableDataset):
     def make_data_loader(self, batch_size: int, pin_memory=False, num_workers: int = 0):
         return DataLoader(dataset=self, batch_size=batch_size, collate_fn=ReadsBatch, pin_memory=pin_memory,
                           num_workers=num_workers, prefetch_factor=2 if num_workers > 0 else None, persistent_workers=num_workers > 0)
-
-    def annotate_allele_frequencies_and_mafs(self, input_vcf, contig_index_to_name_map,
-        segmentation=defaultdict(IntervalTree), normal_segmentation=defaultdict(IntervalTree)):
-
-        allele_frequencies = {}
-
-        print("recording M2 filters and allele frequencies from input VCF")
-        pbar = tqdm(enumerate(cyvcf2.VCF(input_vcf)), mininterval=60)
-        for n, v in pbar:
-            # TODO: encode_variant, get_first_numeric_element should be moved to utils file
-            encoding = encode_variant(v, zero_based=True)
-            allele_frequencies[encoding] = 10 ** (-get_first_numeric_element(v, "POPAF"))
-
-        # open the float16 mmap data in r+ (read/write) mode -- the same data in a different mmap object -- in order
-        # to overwrite the data file with allele frequency, MAF, and normal MAF
-        original_int16_mmap = self.memory_mapped_data.int16_mmap
-        original_float16_mmap = self.memory_mapped_data.float16_mmap
-        float16_overwrite_mmap = np.memmap(original_float16_mmap.filename, dtype=original_float16_mmap.filename.dtype,
-            mode='r+', shape=(self.memory_mapped_data.num_data, original_float16_mmap.shape[-1]))
-
-        for idx in range(self.memory_mapped_data.num_data):
-            # NOTE: we load the original int array because int data is not overwritten.
-            # The datum constructor does not copy data, so the Datum::set method modifies the mmap, hence
-            # writes to the backing file.
-            datum = Datum(int16_array=original_int16_mmap[idx], float16_array=float16_overwrite_mmap[idx])
-
-            contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
-            position = datum.get(Data.POSITION)
-            # TODO: encode should be moved to utils file
-            encoding = encode(contig_name, position, datum.get_ref_allele(), datum.get_alt_allele())
-
-            # these are default dicts, so if there's no segmentation for the contig we will get no overlaps but not an error
-            # For a general IntervalTree there is a list of potentially multiple overlaps but here there is either one or zero
-            allele_frequency = allele_frequencies[encoding]
-            segmentation_overlaps = segmentation[contig_name][position]
-            normal_segmentation_overlaps = normal_segmentation[contig_name][position]
-            maf = list(segmentation_overlaps)[0].data if segmentation_overlaps else 0.5
-            normal_maf = list(normal_segmentation_overlaps)[0].data if normal_segmentation_overlaps else 0.5
-
-            datum.set(Data.ALLELE_FREQUENCY, allele_frequency)
-            datum.set(Data.MAF, maf)
-            datum.set(Data.NORMAL_MAF, normal_maf)
-
-        float16_overwrite_mmap.flush()
-        # TODO: debug here and set breakpoint, double-check that the backing file has been modified and that it is
-        # TODO: reflected in the original mmap
-
-
-
 
 # ex: chunk([a,b,c,d,e], 3) = [[a,b,c], [d,e]]
 def chunk(lis, chunk_size):
