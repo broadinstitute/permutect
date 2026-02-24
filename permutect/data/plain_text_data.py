@@ -30,6 +30,8 @@ GTCCTGGACACGCTGTTGGCC
 -11.327
 -0.000
 """
+from __future__ import annotations
+
 import math
 from queue import PriorityQueue
 from typing import List, Generator
@@ -40,9 +42,7 @@ from sklearn.preprocessing import QuantileTransformer
 
 from permutect.data.count_binning import cap_ref_count, cap_alt_count
 from permutect.data.memory_mapped_data import MemoryMappedData
-from permutect.data.reads_datum import ReadsDatum, NUMBER_OF_BYTES_IN_PACKED_READ, \
-    convert_quantile_normalized_to_uint8
-from permutect.data.datum import FLOAT_DTYPE, Datum, Data
+from permutect.data.datum import FLOAT_DTYPE, Datum, Data, NUMBER_OF_BYTES_IN_PACKED_READ
 
 from permutect.misc_utils import ConsistentValue
 from permutect.utils.enums import Variation, Label
@@ -173,7 +173,7 @@ def write_raw_unnormalized_data_to_memory_maps(dataset_files, sources: List[int]
     return memory_mapped_data
 
 
-def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[ReadsDatum, None, None]:
+def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Datum, None, None]:
     int_mmap_ve = raw_mmap_data.int_mmap
     float_mmap_ve = raw_mmap_data.float_mmap
     reads_mmap_re = raw_mmap_data.reads_mmap
@@ -281,7 +281,7 @@ def get_normalization_set(raw_int_array_ve, raw_float_array_ve) -> List[int]:
 
 
 # this normalizes the buffer and also prepends new features to the info tensor
-def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> List[ReadsDatum]:
+def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> List[Datum]:
     # 2D array.  Rows are ref/alt reads, columns are read features
     all_reads_re = np.vstack([datum.reads_re for datum in buffer])
 
@@ -423,7 +423,8 @@ def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> Lis
         extra_info_e = np.hstack((alt_distance_medians_e, alt_boolean_means_e))
 
         output_reads_re = output_uint8_reads_array[ref_start_index:alt_end_index]
-        output_datum: ReadsDatum = ReadsDatum(int_array=raw_datum.int_array, float_array=raw_datum.float_array, reads_re=output_reads_re)
+        output_datum: Datum = Datum(int_array=raw_datum.int_array, float_array=raw_datum.float_array,
+                                              reads_re=output_reads_re, compressed_reads=True)
 
         output_datum.set_info_1d(np.hstack((all_info_transformed_ve[n], extra_info_e)))
         normalized_result.append(output_datum)
@@ -450,3 +451,15 @@ def read_integers(line: str):
 
 def read_float(line: str):
     return float(line.strip().split()[0])
+
+
+
+# quantile-normalized data is generally some small number of standard deviations from 0.  We can store as uint8 by
+# mapping x --> 32x + 128 and restricting to the range [0,255], which maps -4 and +4 standard deviations to the limits
+# of uint8
+def convert_quantile_normalized_to_uint8(data: np.ndarray):
+    return np.ndarray.astype(np.clip(data * 32 + 128, 0, 255), np.uint8)
+
+
+def convert_uint8_to_quantile_normalized(data: np.ndarray):
+    return np.ndarray.astype((data - 128) / 32, FLOAT_DTYPE)

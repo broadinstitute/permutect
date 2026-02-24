@@ -5,12 +5,11 @@ from torch.utils.tensorboard import SummaryWriter
 
 from permutect import constants
 from permutect.architecture.spectra.artifact_spectra import ArtifactSpectra
-from permutect.data.datum import Data
+from permutect.data.datum import Data, Datum
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.training.model_training import train_artifact_model
 from permutect.architecture.artifact_model import load_model
 from permutect.data.reads_dataset import ReadsDataset, all_but_the_last_fold, last_fold_only
-from permutect.data.reads_datum import ReadsDatum
 from permutect.parameters import add_training_params_to_parser, parse_training_params
 from permutect.misc_utils import report_memory_usage
 from permutect.utils.enums import Variation, Label
@@ -20,7 +19,7 @@ def learn_artifact_priors_and_spectra(dataset: ReadsDataset, genomic_span_of_dat
     artifact_counts = torch.zeros(len(Variation))
     types_list, depths_list, alt_counts_list = [], [], []
 
-    datum: ReadsDatum
+    datum: Datum
     for datum in dataset:
         if datum.get(Data.LABEL) != Label.ARTIFACT:
             continue

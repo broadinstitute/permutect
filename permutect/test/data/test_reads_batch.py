@@ -1,7 +1,6 @@
 import torch
 
 import permutect.data.reads_batch
-import permutect.data.reads_datum
 from permutect.data.datum import Datum
 
 

@@ -10,8 +10,8 @@ from torch import Tensor
 from torch_scatter import segment_csr
 
 from permutect.data.batch import Batch
-from permutect.data.datum import FLOAT_DTYPE, Data
-from permutect.data.reads_datum import ReadsDatum, convert_uint8_to_quantile_normalized, NUMBER_OF_BYTES_IN_PACKED_READ
+from permutect.data.datum import FLOAT_DTYPE, Data, Datum, NUMBER_OF_BYTES_IN_PACKED_READ
+from permutect.data.plain_text_data import convert_uint8_to_quantile_normalized
 
 
 class ReadsBatch(Batch):
@@ -32,7 +32,7 @@ class ReadsBatch(Batch):
     inside the model, the counts will be used to separate the reads into sets
     """
 
-    def __init__(self, data: List[ReadsDatum]):
+    def __init__(self, data: List[Datum]):
         super().__init__(data)
         compressed_ref_arrays = [item.get_compressed_ref_reads_re() for item in data]
         compressed_alt_arrays = [item.get_compressed_alt_reads_re() for item in data]

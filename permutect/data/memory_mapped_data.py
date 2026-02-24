@@ -14,7 +14,6 @@ from intervaltree import IntervalTree
 from tqdm import tqdm
 
 from permutect.data.datum import Datum, Data
-from permutect.data.reads_datum import ReadsDatum, COMPRESSED_READS_ARRAY_DTYPE
 from permutect.misc_utils import Timer, encode_variant, get_first_numeric_element, encode, overlapping_filters
 
 # numpy.save appends .npy if the extension doesn't already include it.  We preempt this behavior.
@@ -28,8 +27,8 @@ class MemoryMappedData:
     """
     wrapper for
         1) memory-mapped numpy file for stacked 1D data arrays.  The nth row of this array is the 1D array for the nth Datum.
-        2) memory-mapped numpy file for 2D stacked reads array.  The rows of this array are the ref reads of the 0th ReadsDatum,
-            the alt reads of the 0th ReadsDatum, the ref reads of the 1st ReadsDatum etc.
+        2) memory-mapped numpy file for 2D stacked reads array.  The rows of this array are the ref reads of the 0th Datum,
+            the alt reads of the 0th Datum, the ref reads of the 1st Datum etc.
 
         NOTE: the memory-mapped files may be larger than necessary.  That is, there may be junk space in the files that
         does not correspond to actual data.  The num_data and num_reads tell us how far into the files is actual data.
@@ -55,9 +54,9 @@ class MemoryMappedData:
     def size_in_bytes(self):
         return self.int_mmap.nbytes + self.float_mmap.nbytes + (0 if self.reads_mmap is None else self.reads_mmap.nbytes)
 
-    def generate_reads_data(self, num_folds: int = None, folds_to_use: List[int] = None, keep_probs_by_label_l = None) -> Generator[ReadsDatum, None, None]:
+    def generate_reads_data(self, num_folds: int = None, folds_to_use: List[int] = None, keep_probs_by_label_l = None) -> Generator[Datum, None, None]:
         folds_set = None if folds_to_use is None else set(folds_to_use)
-        print("Generating ReadsDatum objects from memory-mapped data.")
+        print("Generating Datum objects from memory-mapped data.")
         assert self.reads_mmap is None or self.reads_mmap.dtype == COMPRESSED_READS_ARRAY_DTYPE
         count = 0
         for idx in range(self.num_data):
@@ -66,7 +65,7 @@ class MemoryMappedData:
                 float_array = self.float_mmap[idx]
                 reads_array = np.zeros((0,0), dtype=COMPRESSED_READS_ARRAY_DTYPE) if self.reads_mmap is None else \
                     self.reads_mmap[0 if idx == 0 else self.read_end_indices[idx - 1]:self.read_end_indices[idx]]
-                datum = ReadsDatum(int_array=int_array, float_array=float_array, reads_re=reads_array)
+                datum = Datum(int_array=int_array, float_array=float_array, reads_re=reads_array, compressed_reads=True)
                 if keep_probs_by_label_l is None or random.random() < keep_probs_by_label_l[datum.get(Data.LABEL)]:
                     yield datum
                     count += 1
@@ -109,7 +108,7 @@ class MemoryMappedData:
     Additionally, skip data that have a given set of filters in the VCF.
     """
     def generate_vcf_annotated_data(self, input_vcf, contig_index_to_name_map, filters_to_exclude: Set[str],
-            segmentation=defaultdict(IntervalTree), normal_segmentation=defaultdict(IntervalTree)) -> Generator[ReadsDatum, None, None]:
+            segmentation=defaultdict(IntervalTree), normal_segmentation=defaultdict(IntervalTree)) -> Generator[Datum, None, None]:
         allele_frequencies = {}
         encodings_to_exclude = set()
 
@@ -128,8 +127,8 @@ class MemoryMappedData:
 
             if encoding in allele_frequencies and not encoding in encodings_to_exclude:
                 # NOTE: we copy the float array because it needs to be modified
-                new_datum = ReadsDatum(int_array=datum.int_array, float_array=datum.float_array.copy(),
-                                       reads_re=datum.reads_re)
+                new_datum = Datum(int_array=datum.int_array, float_array=datum.float_array.copy(),
+                                       reads_re=datum.reads_re, compressed_reads=datum.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE)
 
                 # these are default dicts, so if there's no segmentation for the contig we will get no overlaps but not an error
                 # For a general IntervalTree there is a list of potentially multiple overlaps but here there is either one or zero
@@ -221,10 +220,10 @@ class MemoryMappedData:
     @classmethod
     def from_generator(cls, reads_datum_source, estimated_num_data, estimated_num_reads) -> MemoryMappedData:
         """
-        Write RawUnnormalizedReadsDatum or ReadsDatum data to memory maps.  We set the file sizes to initial guesses but if these are outgrown we copy
+        Write Datum objects to memory maps.  We set the file sizes to initial guesses but if these are outgrown we copy
         data to larger files, just like the amortized O(N) append operation on lists.
 
-        :param reads_datum_source: an Iterable or Generator of ReadsDatum
+        :param reads_datum_source: an Iterable or Generator of Datum
         :param estimated_num_data: initial estimate of how much capacity is needed
         :param estimated_num_reads:
         :return:
@@ -233,11 +232,11 @@ class MemoryMappedData:
         data_capacity, reads_capacity = 0, 0
         int_mmap, float_mmap, reads_mmap = None, None, None
 
-        datum: ReadsDatum
+        datum: Datum
         for datum in reads_datum_source:
             int_array = datum.get_int_array()
             float_array = datum.get_float_array()
-            reads_array = datum.get_reads_array_re()    # this works both for raw unnormalized data and the compressed reads of ReadsDatum
+            reads_array = datum.get_reads_array_re()    # this works both for raw unnormalized data and the compressed reads of Datum
 
             num_data += 1
             num_reads += len(reads_array)

@@ -1,6 +1,7 @@
 import argparse
 from typing import List, Generator
 
+from permutect.data.datum import Datum
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.training.model_training import train_artifact_model
 from permutect.architecture.artifact_model import ArtifactModel, load_model
@@ -11,7 +12,6 @@ from torch.utils.tensorboard import SummaryWriter
 
 from permutect import constants
 from permutect.data.reads_batch import ReadsBatch
-from permutect.data.reads_datum import ReadsDatum
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.data.batch import BatchProperty
 from permutect.parameters import add_training_params_to_parser, TrainingParameters
@@ -113,7 +113,7 @@ def generated_pruned_data_for_fold(art_threshold: float, nonart_threshold: float
 
         for art_prob, labeled_as_art, int_array, float_array, reads_re, is_labeled in zip(art_probs_b.tolist(), art_label_mask.tolist(),
                                                                                               reads_batch.get_int_array_be(), reads_batch.get_float_array_be(), reads_batch.get_list_of_reads_re(), is_labeled_mask.tolist()):
-            datum = ReadsDatum(int_array, float_array, reads_re)
+            datum = Datum(int_array, float_array, reads_re, compressed_reads=True)
             if not is_labeled:
                 yield datum
             elif (labeled_as_art and art_prob < art_threshold) or ((not labeled_as_art) and (1-art_prob) < nonart_threshold):
@@ -123,7 +123,7 @@ def generated_pruned_data_for_fold(art_threshold: float, nonart_threshold: float
                 yield datum # this is a ReadSet
 
 
-def generate_pruned_data_for_all_folds(fold_datasets: List[ReadsDataset], model: ArtifactModel, training_params: TrainingParameters, tensorboard_dir) -> Generator[ReadsDatum, None, None]:
+def generate_pruned_data_for_all_folds(fold_datasets: List[ReadsDataset], model: ArtifactModel, training_params: TrainingParameters, tensorboard_dir) -> Generator[Datum, None, None]:
     # for each fold in turn, train an artifact model on all other folds and prune the chosen fold
     use_gpu = torch.cuda.is_available()
 

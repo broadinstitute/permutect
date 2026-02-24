@@ -84,7 +84,7 @@ class Datum:
     """
     TODO: need documentation
     """
-    def __init__(self, int_array: np.ndarray, float_array: np.ndarray, reads_re: np.ndarray = None):
+    def __init__(self, int_array: np.ndarray, float_array: np.ndarray, reads_re: np.ndarray = None, compressed_reads: bool = False):
         # note: this constructor does no checking eg of whether the arrays are consistent with their purported lengths
         # or of whether ref, alt alleles have been trimmed
         assert int_array.ndim == 1 and len(int_array) >= Data.NUM_SCALAR_INT_ELEMENTS
@@ -93,7 +93,7 @@ class Datum:
         self.float_array: np.ndarray = np.ndarray.astype(float_array, FLOAT_DTYPE)
 
         self.reads_re: np.ndarray = np.zeros((0,0), dtype=RAW_READS_ARRAY_DTYPE) if reads_re is None else reads_re
-        assert self.reads_re.dtype == RAW_READS_ARRAY_DTYPE or self.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
+        assert self.reads_re.dtype == (COMPRESSED_READS_ARRAY_DTYPE if compressed_reads else RAW_READS_ARRAY_DTYPE)
 
     # this is what we get from GATK plain text data.  It must be normalized and processed before becoming the
     # data used by Permutect

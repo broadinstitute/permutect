@@ -1,9 +1,4 @@
-from permutect.test.test_utils import artificial_data
-from permutect.data.reads_dataset import ReadsDataset, make_test_data_loader
-from permutect.data.reads_datum import ReadsDatum
-from typing import Iterable
-from permutect.parameters import ArtifactModelParameters, ModelParameters
-from permutect.tools.refine_artifact_model import TrainingParameters
+
 
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 import tempfile
@@ -28,7 +23,7 @@ SMALL_MODEL_PARAMS = None   # TODO: this whole file is broken
 
 # Note that the test methods in this class also cover batching, samplers, datasets, and data loaders
 def train_model_and_write_summary(hyperparams: ModelParameters, training_params: TrainingParameters,
-                                  data: Iterable[ReadsDatum], summary_writer: SummaryWriter = None):
+                                  data: Iterable[Datum], summary_writer: SummaryWriter = None):
     dataset = ReadsDataset(data=data)
     big_dataset = BigReadSetDataset(batch_size=training_params.batch_size, dataset=dataset, num_workers=2)
 
