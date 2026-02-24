@@ -87,7 +87,7 @@ class Datum:
         self.float_array: np.ndarray = np.ndarray.astype(float_array, FLOAT_DTYPE)
 
         self.reads_re: np.ndarray = np.zeros((0,0), dtype=RAW_READS_ARRAY_DTYPE) if reads_re is None else reads_re
-        assert reads_re.dtype == RAW_READS_ARRAY_DTYPE or reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
+        assert self.reads_re.dtype == RAW_READS_ARRAY_DTYPE or self.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
 
     # this is what we get from GATK plain text data.  It must be normalized and processed before becoming the
     # data used by Permutect
@@ -108,7 +108,7 @@ class Datum:
         info_array = np.hstack([gatk_info_array, str_info])
         ref_seq_array = make_1d_sequence_tensor(ref_sequence_string)
 
-        ref_hap, alt_hap = get_ref_and_alt_sequences(ref_seq_array, ref_allele, alt_allele)
+        ref_hap, alt_hap = get_ref_and_alt_sequences(ref_seq_array, trimmed_ref, trimmed_alt)
         assert len(ref_hap) == len(ref_seq_array) and len(alt_hap) == len(ref_seq_array)
         haplotypes = np.hstack((ref_hap, alt_hap))
 
@@ -130,8 +130,8 @@ class Datum:
         result.set(Data.ORIGINAL_NORMAL_ALT_COUNT, original_normal_alt_count)
         result.set(Data.CONTIG, contig)
         result.set(Data.POSITION, position)
-        result.set(Data.REF_ALLELE_AS_BASE_5, bases_as_base5_int(ref_allele))
-        result.set(Data.ALT_ALLELE_AS_BASE_5, bases_as_base5_int(alt_allele))
+        result.set(Data.REF_ALLELE_AS_BASE_5, bases_as_base5_int(trimmed_ref))
+        result.set(Data.ALT_ALLELE_AS_BASE_5, bases_as_base5_int(trimmed_alt))
         result.int_array[Data.HAPLOTYPES_START_IDX:] = haplotypes
 
         result.set(Data.SEQ_ERROR_LOG_LK, seq_error_log_lk)  # this is -log10ToLog(TLOD) - log(tumorDepth + 1)
