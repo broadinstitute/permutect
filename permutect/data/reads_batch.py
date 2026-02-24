@@ -35,32 +35,6 @@ class ReadsBatch(Batch):
     def __init__(self, data: List[Datum]):
         super().__init__(data)
 
-    def get_one_hot_haplotypes_bcs(self) -> Tensor:
-        num_channels = 5
-        # each row of haplotypes_2d is a ref haplotype concatenated horizontally with an alt haplotype of equal length
-        # indices are b for batch, s index along DNA sequence, and later c for one-hot channel
-        # h denotes horizontally concatenated sequences, first ref, then alt
-        haplotypes_bh = self.get_haplotypes_bs()
-        batch_size = len(haplotypes_bh)
-        seq_length = haplotypes_bh.shape[1] // 2 # ref and alt have equal length and are h-stacked
-
-        # num_classes = 5 for A, C, G, T, and deletion / insertion
-        one_hot_haplotypes_bhc = torch.nn.functional.one_hot(haplotypes_bh, num_classes=num_channels)
-        one_hot_haplotypes_bch = torch.permute(one_hot_haplotypes_bhc, (0, 2, 1))
-
-        # interleave the 5 channels of ref and 5 channels of alt with a reshape
-        # for each batch index we get 10 rows: the ref A channel sequence, then the alt A channel, then the ref C channel etc
-        return one_hot_haplotypes_bch.reshape(batch_size, 2 * num_channels, seq_length)
-
-    # useful for regenerating original data, for example in pruning.  Each original datum has its own reads_2d of ref
-    # followed by alt
-    def get_list_of_reads_re(self):
-        ref_counts, alt_counts = self.get(Data.REF_COUNT), self.get(Data.ALT_COUNT)
-        total_ref = torch.sum(ref_counts).item()
-        ref_reads_re, alt_reads_re = self.get_reads_re()[:total_ref], self.get_reads_re()[total_ref:]
-        ref_splits, alt_splits = torch.cumsum(ref_counts)[:-1], torch.cumsum(alt_counts)[:-1]
-        ref_list, alt_list = torch.tensor_split(ref_reads_re, ref_splits), torch.tensor_split(alt_reads_re, alt_splits)
-        return [torch.vstack((refs, alts)).numpy() for refs, alts in zip(ref_list, alt_list)]
 
 
 class DownsampledReadsBatch(ReadsBatch):
