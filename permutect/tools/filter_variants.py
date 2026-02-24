@@ -174,7 +174,7 @@ def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_
             # TODO: to throw an error?
             empty_reads = np.zeros((0,0), dtype=COMPRESSED_READS_ARRAY_DTYPE)
             empty_haplotypes = np.zeros((0,), dtype=INT_DTYPE)
-            output_datum = ReadsDatum(int_array=int_array, float_array=float_array, compressed_reads_re=empty_reads)
+            output_datum = ReadsDatum(int_array=int_array, float_array=float_array, reads_re=empty_reads)
             output_datum.set(Data.REF_COUNT, 0)
             output_datum.set(Data.ALT_COUNT, 0)
             output_datum.set(Data.CACHED_ARTIFACT_LOGIT, logit)

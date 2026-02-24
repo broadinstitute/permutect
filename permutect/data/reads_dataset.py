@@ -151,7 +151,7 @@ class ReadsDataset(IterableDataset):
             for idx in indices:
                 read_start_idx = 0 if idx == 0 else chunk_read_end_indices[idx - 1]
                 read_end_idx = chunk_read_end_indices[idx]
-                datum = ReadsDatum(int_array=chunk_int_data_ve[idx], float_array=chunk_float_data_ve[idx], compressed_reads_re=chunk_reads_re[read_start_idx:read_end_idx])
+                datum = ReadsDatum(int_array=chunk_int_data_ve[idx], float_array=chunk_float_data_ve[idx], reads_re=chunk_reads_re[read_start_idx:read_end_idx])
                 #assert datum.get_ref_count() + datum.get_alt_count() == len(datum.get_reads_array_re())
                 yield datum
 

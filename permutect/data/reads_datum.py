@@ -7,11 +7,7 @@ from permutect.data.datum import Datum, FLOAT_DTYPE, Data
 
 # base strings longer than this when encoding data
 
-# on disk and in datasets before creating batches, read tensors are stored with dtype np.uint8
-# the leading columns are from binary quantities (either inherently binary or one-hot-encoded categorical) with np.packbits
-# applied (this converts bool tensors into byte tensors, each byte holding eight bools)
-# if the number of boolean bits is not a multiple of 8, it gets padded with zeros.  This isn't a problem.
-NUMBER_OF_BYTES_IN_PACKED_READ = 7
+
 COMPRESSED_READS_ARRAY_DTYPE = np.uint8
 
 
@@ -44,37 +40,19 @@ def make_sequence_tensor(sequence_string: str) -> np.ndarray:
 
 
 class ReadsDatum(Datum):
-    def __init__(self, int_array: np.ndarray, float_array: np.ndarray, compressed_reads_re: np.ndarray):
+    # TODO: switch all constructor invocations to Datum
+    # TODO: make sure that shape=(0,0) and dtype = COMPRESSED (which we use for posterior model) is okay
+    def __init__(self, int_array: np.ndarray, float_array: np.ndarray, reads_re: np.ndarray):
         super().__init__(int_array, float_array)
-        assert compressed_reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
+        assert reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
 
         # Reads are in a compressed, unusable form.  Binary columns must be unpacked and float
         # columns must be transformed back from uint8
-        self.compressed_reads_re = compressed_reads_re
+        self.reads_re = reads_re
 
-    def size_in_bytes(self):
-        return self.compressed_reads_re.nbytes + self.get_nbytes()
 
-    def get_reads_array_re(self) -> np.ndarray:
-        return self.compressed_reads_re
 
-    def get_compressed_reads_re(self) -> np.ndarray:
-        return self.compressed_reads_re
 
-    # this is the number of read features in a PyTorch float tensor, after unpacking the compressed binaries
-    def num_read_features(self) -> int:
-        if self.compressed_reads_re.shape[1] == 0:
-            return 0
-        num_read_uint8s = self.compressed_reads_re.shape[1]
-        num_nonbinary_features = num_read_uint8s - NUMBER_OF_BYTES_IN_PACKED_READ
-        # 8 bits per byte.  In general the last few features will be extraneous padded zeros, but that's okay.
-        # the nonbinary features are converted to float, but it's one-to-one so no multiplicative factor
-        return 8 * NUMBER_OF_BYTES_IN_PACKED_READ + num_nonbinary_features
 
-    def get_compressed_ref_reads_re(self) -> np.ndarray:
-        return self.compressed_reads_re[:-self.get(Data.ALT_COUNT)]
-
-    def get_compressed_alt_reads_re(self) -> np.ndarray:
-        return self.compressed_reads_re[-self.get(Data.ALT_COUNT):]
 
 

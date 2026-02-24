@@ -66,7 +66,7 @@ class MemoryMappedData:
                 float_array = self.float_mmap[idx]
                 reads_array = np.zeros((0,0), dtype=COMPRESSED_READS_ARRAY_DTYPE) if self.reads_mmap is None else \
                     self.reads_mmap[0 if idx == 0 else self.read_end_indices[idx - 1]:self.read_end_indices[idx]]
-                datum = ReadsDatum(int_array=int_array, float_array=float_array, compressed_reads_re=reads_array)
+                datum = ReadsDatum(int_array=int_array, float_array=float_array, reads_re=reads_array)
                 if keep_probs_by_label_l is None or random.random() < keep_probs_by_label_l[datum.get(Data.LABEL)]:
                     yield datum
                     count += 1
@@ -129,7 +129,7 @@ class MemoryMappedData:
             if encoding in allele_frequencies and not encoding in encodings_to_exclude:
                 # NOTE: we copy the float array because it needs to be modified
                 new_datum = ReadsDatum(int_array=datum.int_array, float_array=datum.float_array.copy(),
-                                       compressed_reads_re=datum.compressed_reads_re)
+                                       reads_re=datum.reads_re)
 
                 # these are default dicts, so if there's no segmentation for the contig we will get no overlaps but not an error
                 # For a general IntervalTree there is a list of potentially multiple overlaps but here there is either one or zero

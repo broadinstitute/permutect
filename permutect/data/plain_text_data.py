@@ -423,7 +423,7 @@ def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> Lis
         extra_info_e = np.hstack((alt_distance_medians_e, alt_boolean_means_e))
 
         output_reads_re = output_uint8_reads_array[ref_start_index:alt_end_index]
-        output_datum: ReadsDatum = ReadsDatum(int_array=raw_datum.int_array, float_array=raw_datum.float_array, compressed_reads_re=output_reads_re)
+        output_datum: ReadsDatum = ReadsDatum(int_array=raw_datum.int_array, float_array=raw_datum.float_array, reads_re=output_reads_re)
 
         output_datum.set_info_1d(np.hstack((all_info_transformed_ve[n], extra_info_e)))
         normalized_result.append(output_datum)

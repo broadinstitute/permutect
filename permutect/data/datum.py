@@ -23,6 +23,12 @@ COMPRESSED_READS_ARRAY_DTYPE = np.uint8
 BIGGEST_UINT16 = 65535
 BIGGEST_INT16 = 32767
 
+# on disk and in datasets before creating batches, read tensors are stored with dtype np.uint8
+# the leading columns are from binary quantities (either inherently binary or one-hot-encoded categorical) with np.packbits
+# applied (this converts bool tensors into byte tensors, each byte holding eight bools)
+# if the number of boolean bits is not a multiple of 8, it gets padded with zeros.  This isn't a problem.
+NUMBER_OF_BYTES_IN_PACKED_READ = 7
+
 DEFAULT_GPU_FLOAT = torch.float32
 DEFAULT_CPU_FLOAT = torch.float32
 
@@ -218,6 +224,33 @@ class Datum:
 
     def get_alt_reads_re(self) -> np.ndarray:
         return self.reads_re[-self.get(Data.ALT_COUNT):]
+
+    # only applies after normalization and compression
+    def get_compressed_ref_reads_re(self) -> np.ndarray:
+        assert self.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
+        return self.reads_re[:-self.get(Data.ALT_COUNT)]
+
+    # only applies after normalization and compression
+    def get_compressed_alt_reads_re(self) -> np.ndarray:
+        assert self.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
+        return self.reads_re[-self.get(Data.ALT_COUNT):]
+
+    def get_compressed_reads_re(self) -> np.ndarray:
+        assert self.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
+        return self.reads_re
+
+    # this is the number of read features in a PyTorch float tensor, after unpacking the compressed binaries
+    def num_read_features(self) -> int:
+        if self.reads_re.dtype == RAW_READS_ARRAY_DTYPE:
+            return self.reads_re.shape[1]
+        elif self.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE:
+            num_read_uint8s = self.reads_re.shape[1]
+            num_nonbinary_features = num_read_uint8s - NUMBER_OF_BYTES_IN_PACKED_READ
+            # 8 bits per byte.  In general the last few features will be extraneous padded zeros, but that's okay.
+            # the nonbinary features are converted to float, but it's one-to-one so no multiplicative factor
+            return 8 * NUMBER_OF_BYTES_IN_PACKED_READ + num_nonbinary_features
+        else:
+            assert False, "Unsupported data type"
 
     def get_nbytes(self) -> int:
         return self.int_array.nbytes + self.float_array.nbytes + self.reads_re.nbytes
