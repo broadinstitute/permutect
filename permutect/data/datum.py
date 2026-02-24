@@ -5,7 +5,6 @@ import enum
 import numpy as np
 import torch
 
-from permutect.data.reads_datum import COMPRESSED_READS_ARRAY_DTYPE
 from permutect.utils.allele_utils import bases_as_base5_int, bases5_as_base_string, get_ref_and_alt_sequences, \
     trim_alleles_on_right, get_str_info_array, make_1d_sequence_tensor
 from permutect.utils.enums import Label, Variation
@@ -20,6 +19,7 @@ INTEGER_DTYPE = np.int16
 LARGE_INTEGER_DTYPE = np.uint32
 FLOAT_DTYPE = np.float16
 RAW_READS_ARRAY_DTYPE = np.float16
+COMPRESSED_READS_ARRAY_DTYPE = np.uint8
 BIGGEST_UINT16 = 65535
 BIGGEST_INT16 = 32767
 

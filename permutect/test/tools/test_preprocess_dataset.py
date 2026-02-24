@@ -7,7 +7,7 @@ from permutect.tools import preprocess_dataset
 from permutect import constants
 from permutect.test.test_file_names import *
 
-OVERWRITE_SAVED_TARFILE = False
+OVERWRITE_SAVED_TARFILE = True
 
 def test_on_10_megabases_singular():
     training_datasets = [SMALL_PLAIN_TEXT_DATA]
