@@ -35,25 +35,6 @@ class ReadsBatch(Batch):
     def __init__(self, data: List[Datum]):
         super().__init__(data)
 
-
-    # pin memory for all tensors that are sent to the GPU
-    def pin_memory(self):
-        super().pin_memory()
-        self.reads_re = self.reads_re.pin_memory()
-
-        return self
-
-    def copy_to(self, device, dtype):
-        is_cuda = device.type == 'cuda'
-        new_batch = copy.copy(self)
-        new_batch.reads_re = self.reads_re.to(device=device, dtype=dtype, non_blocking=is_cuda)
-        new_batch.int_tensor = self.int_tensor.to(device, non_blocking=is_cuda)  # don't cast dtype -- needs to stay integral!
-        new_batch.float_tensor = self.float_tensor.to(device, non_blocking=is_cuda)  # don't cast dtype -- needs to stay integral!
-        return new_batch
-
-    def get_reads_re(self) -> Tensor:
-        return self.reads_re
-
     def get_one_hot_haplotypes_bcs(self) -> Tensor:
         num_channels = 5
         # each row of haplotypes_2d is a ref haplotype concatenated horizontally with an alt haplotype of equal length

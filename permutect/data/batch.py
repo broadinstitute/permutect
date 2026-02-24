@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from enum import IntEnum
 from turtledemo.clock import datum
 from typing import List, Tuple
@@ -86,11 +87,23 @@ class Batch:
         # each row is 1D array of integer array reference and alt haplotypes concatenated -- A, C, G, T, deletion = 0, 1, 2, 3, 4
         return self.int_tensor[:, Data.HAPLOTYPES_START_IDX:]
 
+    def get_reads_re(self) -> Tensor:
+        return self.reads_re
+
     # pin memory for all tensors that are sent to the GPU
     def pin_memory(self):
         self.int_tensor = self.int_tensor.pin_memory()
         self.float_tensor = self.float_tensor.pin_memory()
+        self.reads_re = self.reads_re.pin_memory()
         return self
+
+    def copy_to(self, device, dtype):
+        is_cuda = device.type == 'cuda'
+        new_batch = copy.copy(self)
+        new_batch.reads_re = self.reads_re.to(device=device, dtype=dtype, non_blocking=is_cuda)
+        new_batch.int_tensor = self.int_tensor.to(device, non_blocking=is_cuda)  # don't cast dtype -- needs to stay integral!
+        new_batch.float_tensor = self.float_tensor.to(device, non_blocking=is_cuda)  # don't cast dtype -- needs to stay integral!
+        return new_batch
 
     def get_int_array_be(self) -> np.ndarray:
         return self.int_tensor.cpu().numpy()
