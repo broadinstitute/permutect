@@ -25,7 +25,7 @@ from permutect.metrics.loss_metrics import LossMetrics
 from permutect.data.batch import BatchProperty, Batch
 from permutect.data.count_binning import alt_count_bin_index, round_alt_count_to_bin_center, alt_count_bin_name
 from permutect.parameters import TrainingParameters
-from permutect.misc_utils import report_memory_usage, backpropagate, freeze, unfreeze, Timer
+from permutect.misc_utils import report_memory_usage, backpropagate, freeze, unfreeze, Timer, check_for_nan
 from permutect.training.training_losses import TrainingLosses
 from permutect.utils.enums import Variation, Epoch, Label
 
@@ -134,16 +134,9 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
 
                 if epoch_type == Epoch.TRAIN:
                     backpropagate(train_optimizer, loss, params_to_clip=model.parameters())
-
-                    nan_found = False
-                    for name, param in model.named_parameters():
-                        if param.grad is not None:
-                            if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                                print(f"Invalid gradient (NaN or Inf) found in parameter: {name}")
-                                nan_found = True
-                    assert not nan_found
-
+                    
                 # done with this batch
+            check_for_nan(model)
             # done with one epoch type -- training or validation -- for this epoch
             if epoch_type == Epoch.TRAIN:
                 # TODO: what is it's unsupefvised-only training?
