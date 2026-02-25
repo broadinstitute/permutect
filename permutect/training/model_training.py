@@ -13,6 +13,7 @@ from tqdm import trange, tqdm
 from permutect import constants
 from permutect.architecture.feature_clustering import MAX_LOGIT
 from permutect.training.balancer import Balancer
+from permutect.training.checkpoint import Checkpoint
 from permutect.training.downsampler import Downsampler
 from permutect.architecture.artifact_model import ArtifactModel, record_embeddings
 from permutect.data.batch import DownsampledBatch
@@ -39,13 +40,10 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
     ce = nn.CrossEntropyLoss(reduction='none')  # likewise
     balancer = Balancer(num_sources=train_dataset.num_sources(), device=device).to(device=device, dtype=dtype)
     downsampler: Downsampler = Downsampler(num_sources=train_dataset.num_sources()).to(device=device, dtype=dtype)
+    downsampler.optimize_downsampling_balance(train_dataset.totals_slvra.to(device=device))
 
     # save the model after every epoch in order to restore it if training goes off the rails
-    checkpoint_file = tempfile.NamedTemporaryFile(suffix=".pt")
-    best_checkpoint = None
-
-    print("fitting downsampler parameters to the dataset")
-    downsampler.optimize_downsampling_balance(train_dataset.totals_slvra.to(device=device))
+    checkpoint = Checkpoint(device=device)
 
     num_sources = train_dataset.validate_sources()
     train_dataset.report_totals()
@@ -58,9 +56,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
         threshold=0.001, min_lr=(training_params.learning_rate / 100), verbose=True)
 
     train_loader = train_dataset.make_data_loader(training_params.batch_size, is_cuda, training_params.num_workers)
-    report_memory_usage(f"Train loader created.")
     valid_loader = valid_dataset.make_data_loader(training_params.inference_batch_size, is_cuda, training_params.num_workers)
-    report_memory_usage(f"Validation loader created.")
 
     first_epoch, last_epoch = 1, training_params.num_epochs + training_params.num_calibration_epochs
     for epoch in trange(1, last_epoch + 1, desc="Epoch"):
@@ -198,32 +194,15 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
 
             if not is_calibration_epoch and epoch_type == Epoch.TRAIN:
                 mean_over_labels = torch.mean(loss_metrics.get_marginal(BatchProperty.LABEL))
-                isnan = torch.isnan(mean_over_labels).any()
-                mean_over_labels = mean_over_labels.item()
+                checkpoint.save_checkpoint_if_needed(model, train_optimizer, epoch, loss=mean_over_labels)
+                checkpoint.load_checkpoint_if_needed(model, train_optimizer, loss=mean_over_labels)
 
-                # If this is the lowest loss so far, overwrite the checkpoint state.
-                # If training has gone terribly awry due to an exploding gradient or some other freak occurrence, restore
-                # the state dict to a checkpoint
-                if best_checkpoint is None or mean_over_labels < best_checkpoint['loss']:
-                    print(f"New best mean loss: {mean_over_labels:.1f}, saving new checkpoint.")
-                    save_data = {constants.STATE_DICT_NAME: model.state_dict(),
-                                 constants.OPTIMIZER_STATE_DICT_NAME: train_optimizer.state_dict()}
-                    torch.save(save_data, checkpoint_file.name)
-                    best_checkpoint = {'epoch': epoch, 'loss': mean_over_labels}
-                elif isnan or mean_over_labels > 2 * best_checkpoint['loss']:
-                    print(f"Anomalously large mean loss: {mean_over_labels:.1f}, loading checkpoint.")
-                    saved = torch.load(checkpoint_file.name, map_location=device)
-                    model.load_state_dict(saved[constants.STATE_DICT_NAME])
-                    train_optimizer.load_state_dict(saved[constants.OPTIMIZER_STATE_DICT_NAME])
-        # done with training and validation for this epoch
-        report_memory_usage(f"End of epoch {epoch}.")
+        report_memory_usage(f"Done with training and validation for epoch {epoch}.")
         print(f"Time elapsed(s): {time.time() - start_of_epoch:.1f}")
         # note that we have not learned the AF spectrum yet
     # done with training
     report_memory_usage(f"Training complete, recording embeddings for tensorboard.")
-    embeddings_timer = Timer("Creating training and validation datasets")
     record_embeddings(model, train_loader, summary_writer)
-    embeddings_timer.report("Time to record embeddings for tensorboard.")
 
 @torch.inference_mode()
 def collect_evaluation_data(model: ArtifactModel, num_sources: int, balancer: Balancer, downsampler: Downsampler,
