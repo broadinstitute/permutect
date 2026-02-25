@@ -30,8 +30,9 @@ from permutect.utils.enums import Variation, Epoch, Label
 WORST_OFFENDERS_QUEUE_SIZE = 100
 
 
-def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, valid_dataset: ReadsDataset, training_params: TrainingParameters, summary_writer: SummaryWriter,
-                         epochs_per_evaluation: int = None, calibration_sources: List[int] = None, embedding_dataset: ReadsDataset = None):
+def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, valid_dataset: ReadsDataset,
+                         training_params: TrainingParameters, summary_writer: SummaryWriter,
+                         epochs_per_evaluation: int = None, calibration_sources: List[int] = None):
     #torch.autograd.set_detect_anomaly(True)
     device, dtype = model._device, model._dtype
     bce = nn.BCEWithLogitsLoss(reduction='none')  # no reduction because we may want to first multiply by weights for unbalanced data
@@ -57,8 +58,6 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
         threshold=0.001, min_lr=(training_params.learning_rate / 100), verbose=True)
 
     train_loader = train_dataset.make_data_loader(training_params.batch_size, is_cuda, training_params.num_workers)
-    embeddings_loader = train_loader if embedding_dataset is None else \
-        embedding_dataset.make_data_loader(training_params.batch_size, is_cuda, training_params.num_workers)
     report_memory_usage(f"Train loader created.")
     valid_loader = valid_dataset.make_data_loader(training_params.inference_batch_size, is_cuda, training_params.num_workers)
     report_memory_usage(f"Validation loader created.")
@@ -223,7 +222,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
     # done with training
     report_memory_usage(f"Training complete, recording embeddings for tensorboard.")
     embeddings_timer = Timer("Creating training and validation datasets")
-    record_embeddings(model, embeddings_loader, summary_writer)
+    record_embeddings(model, train_loader, summary_writer)
     embeddings_timer.report("Time to record embeddings for tensorboard.")
 
 @torch.inference_mode()

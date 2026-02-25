@@ -91,7 +91,8 @@ def main_without_parsing(args):
     valid_dataset = ReadsDataset(memory_mapped_data=memory_mapped_data, num_folds=num_folds,
                                  folds_to_use=last_fold_only(num_folds))
 
-    train_artifact_model(model, train_dataset, valid_dataset, training_params, summary_writer, epochs_per_evaluation=10, calibration_sources=calibration_sources)
+    train_artifact_model(model, train_dataset, valid_dataset, training_params, summary_writer, epochs_per_evaluation=10,
+                         calibration_sources=calibration_sources)
 
     report_memory_usage("Finished training.")
 
