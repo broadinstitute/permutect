@@ -1,8 +1,7 @@
 import torch
 
-import permutect.data.reads_batch
-import permutect.data.reads_datum
-from permutect.data.reads_datum import ReadsDatum, RawUnnormalizedReadsDatum
+from permutect.data.batch import Batch
+from permutect.data.datum import Datum
 
 
 # make a three-datum batch
@@ -28,9 +27,9 @@ def test_reads_batch():
     labels = [Label.ARTIFACT, Label.VARIANT, Label.ARTIFACT]
     sources = [0,0,0]
 
-    data = [RawUnnormalizedReadsDatum.from_gatk(ref_sequence_strings[n], variant_types[n], ref_tensors[n], alt_tensors[n], gatk_info_tensors[n], labels[n], sources[n]) for n in range(size)]
+    data = [Datum.from_gatk(ref_sequence_strings[n], variant_types[n], ref_tensors[n], alt_tensors[n], gatk_info_tensors[n], labels[n], sources[n]) for n in range(size)]
 
-    batch = permutect.data.reads_batch.ReadsBatch(data)
+    batch = Batch(data)
 
     assert torch.equal(batch.get_one_hot_haplotypes_bcs(),
                        torch.tensor([

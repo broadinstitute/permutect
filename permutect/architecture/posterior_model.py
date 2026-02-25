@@ -8,8 +8,8 @@ from tqdm.autonotebook import trange, tqdm
 
 from permutect.architecture.posterior_model_priors import PosteriorModelPriors
 from permutect.architecture.spectra.posterior_model_spectra import PosteriorModelSpectra
-from permutect.data.datum import DEFAULT_GPU_FLOAT, DEFAULT_CPU_FLOAT
-from permutect.data.posterior_data import PosteriorBatch
+from permutect.data.batch import Batch
+from permutect.data.datum import DEFAULT_GPU_FLOAT, DEFAULT_CPU_FLOAT, Data
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.metrics import plotting
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS, count_from_alt_bin_index, alt_count_bin_index
@@ -34,14 +34,14 @@ class PosteriorModel(torch.nn.Module):
 
         self.to(device=self._device, dtype=self._dtype)
 
-    def posterior_probabilities_bc(self, batch: PosteriorBatch) -> Tensor:
+    def posterior_probabilities_bc(self, batch: Batch) -> Tensor:
         """
         :param batch:
         :return: non-log probabilities as a 2D tensor, indexed by batch 'b', Call type 'c'
         """
         return torch.nn.functional.softmax(self.log_relative_posteriors_bc(batch), dim=1)
 
-    def error_probabilities_b(self, batch: PosteriorBatch, germline_mode: bool = False) -> Tensor:
+    def error_probabilities_b(self, batch: Batch, germline_mode: bool = False) -> Tensor:
         """
         :param germline_mode: if True, germline classification is not considered an error mode
         :param batch:
@@ -50,7 +50,7 @@ class PosteriorModel(torch.nn.Module):
         assert not (germline_mode and self.no_germline_mode), "germline mode and no-germline mode are incompatible"
         return 1 - self.posterior_probabilities_bc(batch)[:, Call.GERMLINE if germline_mode else Call.SOMATIC]     # 0th column is variant
 
-    def log_posterior_and_ingredients(self, batch: PosteriorBatch) -> Tensor:
+    def log_posterior_and_ingredients(self, batch: Batch) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """
         :param batch:
         :batch.seq_error_log_likelihoods() is the probability that these *particular* reads exhibit the alt allele given a
@@ -60,25 +60,25 @@ class PosteriorModel(torch.nn.Module):
         of length batch_size.
         :return:
         """
-        var_types_b = batch.get_variant_types()
+        var_types_b = batch.get(Data.VARIANT_TYPE)
 
         # All log likelihood/relative posterior tensors below have shape batch.size() x len(CallType)
         # spectra tensors contain the likelihood that these *particular* reads (that is, not just the read count) are alt
         # normal log likelihoods contain everything going on in the matched normal sample
-        log_priors_bc = self.priors.log_priors_bc(var_types_b, batch.get_allele_frequencies())
+        log_priors_bc = self.priors.log_priors_bc(var_types_b, batch.get(Data.ALLELE_FREQUENCY))
         spectra_log_lks_bc, normal_log_lks_bc = self.spectra.spectra_log_likelihoods_bc(batch)
 
         log_posteriors_bc = log_priors_bc + spectra_log_lks_bc + normal_log_lks_bc
-        log_posteriors_bc[:, Call.ARTIFACT] += batch.get_artifact_logits()
-        log_posteriors_bc[:, Call.NORMAL_ARTIFACT] += batch.get_artifact_logits()
+        log_posteriors_bc[:, Call.ARTIFACT] += batch.get(Data.CACHED_ARTIFACT_LOGIT)
+        log_posteriors_bc[:, Call.NORMAL_ARTIFACT] += batch.get(Data.CACHED_ARTIFACT_LOGIT)
 
         # TODO: HACK / EXPERIMENT: make it impossible to call an artifact when the artifact logits are negative
-        log_posteriors_bc[:, Call.ARTIFACT] = torch.where(batch.get_artifact_logits() < 0, -9999, log_posteriors_bc[:, Call.ARTIFACT])
+        log_posteriors_bc[:, Call.ARTIFACT] = torch.where(batch.get(Data.CACHED_ARTIFACT_LOGIT) < 0, -9999, log_posteriors_bc[:, Call.ARTIFACT])
         # TODO: END OF HACK / EXPERIMENT
 
         return log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, log_posteriors_bc
 
-    def log_relative_posteriors_bc(self, batch: PosteriorBatch) -> Tensor:
+    def log_relative_posteriors_bc(self, batch: Batch) -> Tensor:
         _, _, _, log_posteriors_bc = self.log_posterior_and_ingredients(batch)
         return log_posteriors_bc
 
@@ -101,14 +101,14 @@ class PosteriorModel(torch.nn.Module):
             # data for M step
             posterior_totals_tc = torch.zeros((len(Variation), len(Call)), device=self._device)
 
-            batch: PosteriorBatch
+            batch: Batch
             for batch in tqdm(prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)):
                 relative_posteriors = self.log_relative_posteriors_bc(batch)
                 log_evidence = torch.logsumexp(relative_posteriors, dim=1)
 
                 # the next line performs "for b in batch: posterior_total_tc[var_types[b],:] += posteriors_bc[b, :]"
                 posteriors_bc = torch.softmax(relative_posteriors, dim=-1).detach()
-                posterior_totals_tc.index_add_(dim=0, index=batch.get_variant_types(), source=posteriors_bc)
+                posterior_totals_tc.index_add_(dim=0, index=batch.get(Data.VARIANT_TYPE), source=posteriors_bc)
 
                 # confidence_mask = torch.logical_or(batch.get_artifact_logits() < 0, batch.get_artifact_logits() > 3)
                 loss = -torch.mean(log_evidence)
@@ -160,14 +160,14 @@ class PosteriorModel(torch.nn.Module):
 
         # TODO: use the EvaluationMetrics class to generate the theoretical ROC curve
         # TODO: then delete plotting.plot_theoretical_roc_on_axis
-        batch: PosteriorBatch
+        batch: Batch
         for batch in tqdm(prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)):
             # TODO: should this be the original alt counts instead?
-            alt_counts_b = batch.get_alt_counts().cpu().tolist()
+            alt_counts_b = batch.get(Data.ALT_COUNT).cpu().tolist()
             # 0th column is true variant, subtract it from 1 to get error prob
             error_probs_b = self.error_probabilities_b(batch, germline_mode).cpu().tolist()
 
-            for var_type, alt_count, error_prob in zip(batch.get_variant_types().cpu().tolist(), alt_counts_b, error_probs_b):
+            for var_type, alt_count, error_prob in zip(batch.get(Data.VARIANT_TYPE).cpu().tolist(), alt_counts_b, error_probs_b):
                 error_probs_by_type[var_type].append(error_prob)
                 error_probs_by_type_by_cnt[var_type][alt_count_bin_index(alt_count)].append(error_prob)
 

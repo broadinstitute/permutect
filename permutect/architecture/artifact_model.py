@@ -1,22 +1,17 @@
-from itertools import chain
-
 import torch
-from torch import Tensor, IntTensor
-from torch.nn import Parameter
+from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.autonotebook import tqdm
 
 from permutect import constants
 from permutect.architecture.adversarial import Adversarial
 from permutect.architecture.feature_clustering import FeatureClustering
+from permutect.data.batch import Batch
 from permutect.training.balancer import Balancer
-from permutect.architecture.calibration import Calibration
 from permutect.architecture.dna_sequence_convolution import DNASequenceConvolution
 from permutect.architecture.gated_mlp import GatedRefAltMLP
 from permutect.architecture.mlp import MLP
-from permutect.architecture.set_pooling import SetPooling
-from permutect.data.datum import DEFAULT_GPU_FLOAT, DEFAULT_CPU_FLOAT
-from permutect.data.reads_batch import ReadsBatch
+from permutect.data.datum import DEFAULT_GPU_FLOAT, DEFAULT_CPU_FLOAT, Data
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.metrics.evaluation_metrics import EmbeddingMetrics
 from permutect.data.count_binning import alt_count_bin_index, alt_count_bin_name, MAX_ALT_COUNT
@@ -128,14 +123,14 @@ class ArtifactModel(torch.nn.Module):
             freeze(self.parameters())
 
     # I really don't like the forward method of torch.nn.Module with its implicit calling that PyCharm doesn't recognize
-    def forward(self, batch: ReadsBatch):
+    def forward(self, batch: Batch):
         pass
 
     # here 'b' is the batch index, 'r' is the flattened read index, and 'e' means an embedding dimension
     # so, for example, "re" means a 2D tensor with all reads in the batch stacked and "bre" means a 3D tensor indexed
     # first by variant within the batch, then the read within the variant
-    def calculate_features(self, batch: ReadsBatch, weight_range: float = 0) -> tuple[RaggedSets, RaggedSets, Tensor]:
-        ref_counts_b, alt_counts_b = batch.get_ref_counts(), batch.get_alt_counts()
+    def calculate_features(self, batch: Batch, weight_range: float = 0) -> tuple[RaggedSets, RaggedSets, Tensor]:
+        ref_counts_b, alt_counts_b = batch.get(Data.REF_COUNT), batch.get(Data.ALT_COUNT)
         total_ref, total_alt = torch.sum(ref_counts_b).item(), torch.sum(alt_counts_b).item()
 
         read_embeddings_re = self.read_embedding.forward(batch.get_reads_re().to(dtype=self._dtype))
@@ -169,32 +164,32 @@ class ArtifactModel(torch.nn.Module):
 
         return reduced_ref_bre, reduced_alt_bre, ref_seq_embeddings_be # ref seq embeddings are useful later
 
-    def calculate_logits(self, batch: ReadsBatch):
+    def calculate_logits(self, batch: Batch):
         ref_bre, alt_bre, _ = self.calculate_features(batch)    # ragged sets of reduced and transformed reads
 
-        logits_b, logits_bk = self.feature_clustering.calculate_logits(ref_bre, alt_bre, ref_counts_b=batch.get_ref_counts(),
-            alt_counts_b=batch.get_alt_counts(), var_types_b=batch.get_variant_types())
+        logits_b, logits_bk = self.feature_clustering.calculate_logits(ref_bre, alt_bre, ref_counts_b=batch.get(Data.REF_COUNT),
+                                                                       alt_counts_b=batch.get(Data.ALT_COUNT), var_types_b=batch.get(Data.VARIANT_TYPE))
 
         # feature clustering shifts reads to be centered around the origin
         recentered_alt_bre = self.feature_clustering.transform_reads(alt_bre)
         recentered_ref_bre = self.feature_clustering.transform_reads(ref_bre)
         return logits_b, logits_bk, recentered_alt_bre.means_over_sets(), recentered_ref_bre.means_over_sets()
 
-    def compute_source_prediction_losses(self, features_be: Tensor, batch: ReadsBatch) -> Tensor:
+    def compute_source_prediction_losses(self, features_be: Tensor, batch: Batch) -> Tensor:
         if self.num_sources > 1:
             source_logits_bs = self.source_predictor.adversarial_forward(features_be)
             source_probs_bs = torch.nn.functional.softmax(source_logits_bs, dim=-1)
-            source_targets_bs = torch.nn.functional.one_hot(batch.get_sources().long(), self.num_sources)
+            source_targets_bs = torch.nn.functional.one_hot(batch.get(Data.SOURCE).long(), self.num_sources)
             return torch.sum(torch.square(source_probs_bs - source_targets_bs), dim=-1)
         else:
             return torch.zeros(batch.size(), device=self._device, dtype=self._dtype)
 
-    def compute_alt_count_losses(self, features_be: Tensor, batch: ReadsBatch):
+    def compute_alt_count_losses(self, features_be: Tensor, batch: Batch):
         alt_count_pred_b = torch.sigmoid(self.alt_count_predictor.adversarial_forward(features_be).view(-1))
-        alt_count_target_b = batch.get_alt_counts().to(dtype=alt_count_pred_b.dtype) / MAX_ALT_COUNT
+        alt_count_target_b = batch.get(Data.ALT_COUNT).to(dtype=alt_count_pred_b.dtype) / MAX_ALT_COUNT
         return self.alt_count_loss_func(alt_count_pred_b, alt_count_target_b)
 
-    def compute_batch_output(self, batch: ReadsBatch, balancer: Balancer):
+    def compute_batch_output(self, batch: Batch, balancer: Balancer):
         weights_b, source_weights_b = balancer.process_batch_and_compute_weights(batch)
         calibrated_logits_b, calibrated_logits_bk, alt_means_be, ref_means_be = self.calculate_logits(batch)
         return BatchOutput(features_be=alt_means_be, calibrated_logits_b=calibrated_logits_b,
@@ -254,7 +249,7 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
     embedding_metrics = EmbeddingMetrics()
     ref_alt_seq_metrics = EmbeddingMetrics()
 
-    batch: ReadsBatch
+    batch: Batch
     for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
         ref_bre, alt_bre, ref_alt_seq_embeddings_be = model.calculate_features(batch, weight_range=model._params.reweighting_range)
 
@@ -271,8 +266,8 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
         for (metrics, embeddings, ref_features_be) in [(embedding_metrics, alt_means_be, ref_means_be), (ref_alt_seq_metrics, ref_alt_seq_embeddings_be, None)]:
             metrics.label_metadata.extend(labels)
             metrics.correct_metadata.extend(["unknown"] * batch.size())
-            metrics.type_metadata.extend([Variation(idx).name for idx in batch.get_variant_types().tolist()])
-            alt_count_strings = [alt_count_bin_name(alt_count_bin_index(ac)) for ac in batch.get_alt_counts().tolist()]
+            metrics.type_metadata.extend([Variation(idx).name for idx in batch.get(Data.VARIANT_TYPE).tolist()])
+            alt_count_strings = [alt_count_bin_name(alt_count_bin_index(ac)) for ac in batch.get(Data.ALT_COUNT).tolist()]
             metrics.truncated_count_metadata.extend(alt_count_strings)
             metrics.features.append(embeddings)
             if ref_features_be is not None:

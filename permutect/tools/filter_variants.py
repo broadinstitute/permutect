@@ -1,6 +1,5 @@
 import argparse
 from collections import defaultdict
-from typing import Set
 
 import cyvcf2
 import numpy as np
@@ -13,20 +12,18 @@ from permutect import constants
 from permutect.architecture.posterior_model import PosteriorModel
 from permutect.architecture.artifact_model import ArtifactModel, load_model
 from permutect.data import plain_text_data
-from permutect.data.batch import BatchIndexedTensor
-from permutect.data.datum import Datum
-from permutect.data.memory_mapped_posterior_data import MemoryMappedPosteriorData
-from permutect.data.posterior_data import PosteriorDatum, PosteriorBatch
-from permutect.data.posterior_dataset import PosteriorDataset
+from permutect.data.batch import Batch
+from permutect.data.datum import Datum, Data, COMPRESSED_READS_ARRAY_DTYPE
+from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.prefetch_generator import prefetch_generator
-from permutect.data.reads_batch import ReadsBatch
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.data.count_binning import MAX_ALT_COUNT, alt_count_bin_index, alt_count_bin_name
 from permutect.metrics.evaluation_metrics import EvaluationMetrics, EmbeddingMetrics
 from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.metrics.posterior_result import PosteriorResult
-from permutect.misc_utils import report_memory_usage, gpu_if_available
-from permutect.utils.allele_utils import trim_alleles_on_right, find_variant_type, truncate_bases_if_necessary
+from permutect.misc_utils import report_memory_usage, gpu_if_available, encode_datum, encode_variant, Timer, \
+    overlapping_filters
+from permutect.utils.allele_utils import find_variant_type
 from permutect.utils.enums import Variation, Call, Epoch, Label
 from permutect.utils.math_utils import prob_to_logit, inverse_sigmoid
 
@@ -39,33 +36,6 @@ SPECTRA_LOG_LIKELIHOOD_INFO_KEY = 'SPECLL'
 NORMAL_LOG_LIKELIHOOD_INFO_KEY = 'NORMLL'
 
 FILTER_NAMES = [call_type.name.lower() for call_type in Call]
-
-
-def get_first_numeric_element(variant, key):
-    tuple_or_scalar = variant.INFO[key]
-    return tuple_or_scalar[0] if type(tuple_or_scalar) is tuple else tuple_or_scalar
-
-
-# TODO: contigs stored as integer index must be converted back to string to compare VCF variants with dataset variants!!!
-def encode(contig: str, position: int, ref: str, alt: str):
-    trimmed_ref, trimmed_alt = trim_alleles_on_right(ref, alt)
-    return contig + ':' + str(position) + ':' + truncate_bases_if_necessary(trimmed_alt)
-
-
-def encode_datum(datum: Datum, contig_index_to_name_map):
-    contig_name = contig_index_to_name_map[datum.get_contig()]
-    return encode(contig_name, datum.get_position(), datum.get_ref_allele(), datum.get_alt_allele())
-
-
-def encode_variant(v: cyvcf2.Variant, zero_based=False):
-    alt = v.ALT[0]  # TODO: we're assuming biallelic
-    ref = v.REF
-    start = (v.start + 1) if zero_based else v.start
-    return encode(v.CHROM, start, ref, alt)
-
-
-def filters_to_keep_from_m2(v: cyvcf2.Variant) -> Set[str]:
-    return set([]) if v.FILTER is None else set(v.FILTER.split(";")).intersection(TRUSTED_M2_FILTERS)
 
 
 def parse_arguments():
@@ -186,66 +156,51 @@ def make_filtered_vcf(artifact_model_path, initial_log_variant_prior: float, ini
 
 
 @torch.inference_mode()
-def generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model: ArtifactModel,
-                               batch_size: int, num_workers: int, segmentation=defaultdict(IntervalTree), normal_segmentation=defaultdict(IntervalTree)):
-    print("Reading test dataset")
+def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_workers: int, INT_DTYPE=None):
 
-    m2_filtering_to_keep = set()
-    allele_frequencies = {}
-
-    print("recording M2 filters and allele frequencies from input VCF")
-    pbar = tqdm(enumerate(cyvcf2.VCF(input_vcf)), mininterval=60)
-    for n, v in pbar:
-        encoding = encode_variant(v, zero_based=True)
-        if filters_to_keep_from_m2(v):
-            m2_filtering_to_keep.add(encoding)
-        allele_frequencies[encoding] = 10 ** (-get_first_numeric_element(v, "POPAF"))
-
-    # pass through the plain text dataset, normalizing and creating ReadSetDatasets as we go, running the artifact model
+    # pass through the dataset, running the artifact model
     # to get artifact logits, which we record in a dict keyed by variant strings.  These will later be added to PosteriorDatum objects.
-    report_memory_usage("Parsing and normalizing plain text data.")
-
     loader = dataset.make_data_loader(batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
 
     print("creating posterior data...")
-    batch: ReadsBatch
+    batch: Batch
     for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
         artifact_logits_b, _, alt_means_be, _ = model.calculate_logits(batch)
-
-        for datum_array, logit, embedding in zip(batch.get_data_be(), artifact_logits_b.detach().tolist(), alt_means_be.cpu()):
-            datum = Datum(datum_array)
-            contig_name = contig_index_to_name_map[datum.get_contig()]
-            position = datum.get_position()
-            encoding = encode(contig_name, position, datum.get_ref_allele(), datum.get_alt_allele())
-            if encoding in allele_frequencies and encoding not in m2_filtering_to_keep:
-                allele_frequency = allele_frequencies[encoding]
-
-                # these are default dicts, so if there's no segmentation for the contig we will get no overlaps but not an error
-                # For a general IntervalTree there is a list of potentially multiple overlaps but here there is either one or zero
-                segmentation_overlaps = segmentation[contig_name][position]
-                normal_segmentation_overlaps = normal_segmentation[contig_name][position]
-                maf = list(segmentation_overlaps)[0].data if segmentation_overlaps else 0.5
-                normal_maf = list(normal_segmentation_overlaps)[0].data if normal_segmentation_overlaps else 0.5
-
-                posterior_datum = PosteriorDatum.create(datum_array, allele_frequency, logit, maf, normal_maf, embedding.numpy())
-                yield posterior_datum
+        for int_array, float_array, logit, embedding in zip(batch.get_int_array_be(), batch.get_float_array_be(),
+                                                                artifact_logits_b.detach().tolist(), alt_means_be.cpu()):
+            # make a Datum with no reads or haplotypes whose 1D info array is the embedding
+            empty_reads = np.zeros((0,0), dtype=COMPRESSED_READS_ARRAY_DTYPE)
+            empty_haplotypes = np.zeros((0,), dtype=INT_DTYPE)
+            output_datum = Datum(int_array=int_array, float_array=float_array, reads_re=empty_reads, compressed_reads=True)
+            output_datum.set(Data.REF_COUNT, 0)
+            output_datum.set(Data.ALT_COUNT, 0)
+            output_datum.set(Data.CACHED_ARTIFACT_LOGIT, logit)
+            output_datum.set_info_1d(embedding)
+            output_datum.set_haplotypes_1d(empty_haplotypes)
+            yield output_datum
 
 @torch.inference_mode()
 def make_posterior_data_loader(dataset_file, input_vcf, contig_index_to_name_map, model: ArtifactModel,
                                batch_size: int, num_workers: int, segmentation=defaultdict(IntervalTree), normal_segmentation=defaultdict(IntervalTree)):
+    normalizing_timer = Timer("Normalizing data. . .")
     normalized_mmap_data = plain_text_data.make_normalized_mmap_data(dataset_files=[dataset_file])
+    normalizing_timer.report("Time to normalize test data:")
 
-    report_memory_usage("Creating ReadsDataset.")
-    dataset = ReadsDataset(memory_mapped_data=normalized_mmap_data)
+    report_memory_usage("Creating ReadsDataset with AF and MAF.")
+    annotation_timer = Timer("Annotating data with AF and MAF from VCF. . .")
+    annotated_mmap_data = normalized_mmap_data.make_vcf_annotate_memory_mapped_data(input_vcf, contig_index_to_name_map,
+        filters_to_exclude=TRUSTED_M2_FILTERS, segmentation=segmentation, normal_segmentation=normal_segmentation)
+    dataset = ReadsDataset(memory_mapped_data=annotated_mmap_data)
+    annotation_timer.report("Time to annotate data with AF and MAF:")
 
-    posterior_generator = generate_posterior_data(dataset, input_vcf, contig_index_to_name_map, model,
-        batch_size, num_workers, segmentation, normal_segmentation)
-    posterior_mmap = MemoryMappedPosteriorData.from_generator(posterior_generator, estimated_num_data=len(dataset))
+    # Generate Datum objects without reads or haplotypes, where the INFO array is the embedding, and with the
+    # cached artifact logit computed from the model
+    posterior_generator = generate_posterior_data(dataset, model, batch_size, num_workers)
+    posterior_mmap = MemoryMappedData.from_generator(posterior_generator, estimated_num_data=len(dataset), estimated_num_reads=0)
     print(f"Size of filtering dataset: {len(posterior_mmap)}")
 
-
-    posterior_dataset = PosteriorDataset(posterior_mmap)
-    report_memory_usage("Finished creating PosteriorDataset.")
+    posterior_dataset = ReadsDataset(posterior_mmap)
+    report_memory_usage("Finished creating posterior ReadsDataset.")
     return posterior_dataset.make_data_loader(batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
 
 
@@ -261,7 +216,7 @@ def apply_filtering_to_vcf(input_vcf, output_vcf, contig_index_to_name_map, erro
     artifact_logit_metrics = AccuracyMetrics.create(num_sources=len(Call))
     encoding_to_posterior_results = {}
 
-    batch: PosteriorBatch
+    batch: Batch
     for batch in tqdm(prefetch_generator(posterior_loader), mininterval=60, total=len(posterior_loader)):
         # posterior, along with intermediate tensors for debugging/interpretation
         log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, log_posteriors_bc = \
@@ -275,19 +230,21 @@ def apply_filtering_to_vcf(input_vcf, output_vcf, contig_index_to_name_map, erro
         # TODO: maybe also have an option to record relative to the computed probability thresholds.
         # TODO: this code here treats posterior_prob = 1/2 as the threshold
         # TODO: we could perhaps subtract the threshold to re-center at zero
-        evaluation_metrics.record_batch(Epoch.TEST, batch, logits=error_logits_b)
+        evaluation_metrics.record_batch(Epoch.TEST, batch, logits=error_logits_b, use_original_counts=True)
 
         most_confident_probs_b, most_confident_calls_b = torch.max(posterior_probs_bc, dim=-1)
         artifact_logit_metrics.record_with_sources_and_logits(batch, values=most_confident_probs_b,
-            sources_override=most_confident_calls_b, logits=batch.get_artifact_logits())
+            sources_override=most_confident_calls_b, logits=batch.get(Data.CACHED_ARTIFACT_LOGIT))
 
-        artifact_logits = batch.get_artifact_logits().cpu().tolist()
-        data = [Datum(datum_array) for datum_array in batch.get_data_be()]
-        for datum, post_probs, logit, log_prior, log_spec, log_normal, embedding in zip(data, posterior_probs_bc, artifact_logits, log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, batch.embeddings):
+        artifact_logits = batch.get(Data.CACHED_ARTIFACT_LOGIT).cpu().tolist()
+        data = [Datum(int_array, float_array) for (int_array, float_array) in zip(batch.get_int_array_be(), batch.get_float_array_be())]
+        # NOTE: for posterior data, batch.get_info_be actually gets the embedding array!!!!!
+        # TODO: perhaps make this safer
+        for datum, post_probs, logit, log_prior, log_spec, log_normal, embedding in zip(data, posterior_probs_bc, artifact_logits, log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, batch.get_info_be()):
             encoding = encode_datum(datum, contig_index_to_name_map)
             encoding_to_posterior_results[encoding] = PosteriorResult(artifact_logit=logit, posterior_probabilities=post_probs.tolist(),
-                log_priors=log_prior, spectra_lls=log_spec, normal_lls=log_normal, label=datum.get_label(),
-                alt_count=datum.get_original_alt_count(), depth=datum.get_original_depth(), var_type=datum.get_variant_type(), embedding=embedding)
+                log_priors=log_prior, spectra_lls=log_spec, normal_lls=log_normal, label=datum.get(Data.LABEL),
+                alt_count=datum.get(Data.ORIGINAL_ALT_COUNT), depth=datum.get(Data.ORIGINAL_DEPTH), var_type=datum.get(Data.VARIANT_TYPE), embedding=embedding)
 
     print("Applying threshold")
     unfiltered_vcf = cyvcf2.VCF(input_vcf)
@@ -331,7 +288,7 @@ def apply_filtering_to_vcf(input_vcf, output_vcf, contig_index_to_name_map, erro
 
     missing_encodings = []
     for n, v in pbar:
-        filters = filters_to_keep_from_m2(v)
+        filters = overlapping_filters(v, TRUSTED_M2_FILTERS)
 
         # TODO: in germline mode, somatic doesn't exist (or is just highly irrelevant) and germline is not an error!
         encoding = encode_variant(v, zero_based=True)  # cyvcf2 is zero-based

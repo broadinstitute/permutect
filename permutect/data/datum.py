@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import enum
+
 import numpy as np
 import torch
 
-from permutect.utils.allele_utils import bases_as_base5_int, bases5_as_base_string, get_ref_and_alt_sequences
+from permutect.utils.allele_utils import bases_as_base5_int, bases5_as_base_string, get_ref_and_alt_sequences, \
+    trim_alleles_on_right, get_str_info_array, make_1d_sequence_tensor
 from permutect.utils.enums import Label, Variation
 
 # the range is -32,768 to 32,767
@@ -12,236 +15,260 @@ from permutect.utils.enums import Label, Variation
 # haplotypes are represented as A = 0, C = 1, G = 2, T = 3 so 16 bits are easily enough (and we could compress further)
 # the position needs 32 bits (to get up to 2 billion or so) so we give it two int16s
 # the ref and alt alleles also need 32 bits to handle up to 13 bases
-DATUM_ARRAY_DTYPE = np.int16
+INTEGER_DTYPE = np.int16
+LARGE_INTEGER_DTYPE = np.uint32
+FLOAT_DTYPE = np.float16
+RAW_READS_ARRAY_DTYPE = np.float16
+COMPRESSED_READS_ARRAY_DTYPE = np.uint8
 BIGGEST_UINT16 = 65535
 BIGGEST_INT16 = 32767
-FLOAT_TO_LONG_MULTIPLIER = 30
 
-MAX_FLOAT = BIGGEST_INT16 / FLOAT_TO_LONG_MULTIPLIER
+# on disk and in datasets before creating batches, read tensors are stored with dtype np.uint8
+# the leading columns are from binary quantities (either inherently binary or one-hot-encoded categorical) with np.packbits
+# applied (this converts bool tensors into byte tensors, each byte holding eight bools)
+# if the number of boolean bits is not a multiple of 8, it gets padded with zeros.  This isn't a problem.
+NUMBER_OF_BYTES_IN_PACKED_READ = 7
 
-
-def float_to_clipped_int16(float_number: float) -> int:
-    unbounded_int = round(float_number * FLOAT_TO_LONG_MULTIPLIER)
-    return max(min(unbounded_int, BIGGEST_INT16), -BIGGEST_INT16)
-
-
-def int16_to_float(int16_number_or_tensor):
-    return int16_number_or_tensor / FLOAT_TO_LONG_MULTIPLIER
-
+DEFAULT_GPU_FLOAT = torch.float32
+DEFAULT_CPU_FLOAT = torch.float32
 
 def uint32_to_two_int16s(num: int):
     uint16_1, uint16_2 = num // BIGGEST_UINT16, num % BIGGEST_UINT16
     return uint16_1 - (BIGGEST_INT16 + 1), uint16_2 - (BIGGEST_INT16 + 1)
 
 
-def uint32_from_two_int16s(int16_1: int, int16_2: int) -> int:
+def uint32_from_two_int16s(int16_1, int16_2):
     shifted1, shifted2 = int16_1 + (BIGGEST_INT16 + 1), int16_2 + (BIGGEST_INT16 + 1)
     return BIGGEST_UINT16 * shifted1 + shifted2
 
+class Data(enum.Enum):
+    # int array elements
+    REF_COUNT = (INTEGER_DTYPE, 0)
+    ALT_COUNT = (INTEGER_DTYPE, 1)
+    LABEL = (INTEGER_DTYPE, 2)
+    VARIANT_TYPE = (INTEGER_DTYPE, 3)
+    SOURCE = (INTEGER_DTYPE, 4)
+    ORIGINAL_DEPTH = (INTEGER_DTYPE, 5)
+    ORIGINAL_ALT_COUNT = (INTEGER_DTYPE, 6)
+    ORIGINAL_NORMAL_DEPTH = (INTEGER_DTYPE, 7)
+    ORIGINAL_NORMAL_ALT_COUNT = (INTEGER_DTYPE, 8)
+    CONTIG = (INTEGER_DTYPE, 9)
+    POSITION = (LARGE_INTEGER_DTYPE, 10)              # NOTE: uint32 takes TWO uint16s!
+    REF_ALLELE_AS_BASE_5 = (LARGE_INTEGER_DTYPE, 12)  # NOTE: uint32 takes TWO uint16s!
+    ALT_ALLELE_AS_BASE_5 = (LARGE_INTEGER_DTYPE, 14)  # NOTE: uint32 takes TWO uint16s!
+    # after this, at the end of the int16 array comes the sub-array containing the ref sequence haplotype
+
+    # float array elements
+    # allele frequency, maf, normal maf, and cached artifact logit are not used until the posterior model
+    # are are set to
+    SEQ_ERROR_LOG_LK = (FLOAT_DTYPE, 0)
+    NORMAL_SEQ_ERROR_LOG_LK = (FLOAT_DTYPE, 1)
+    ALLELE_FREQUENCY = (FLOAT_DTYPE, 2)
+    MAF = (FLOAT_DTYPE, 3)
+    NORMAL_MAF = (FLOAT_DTYPE, 4)
+    CACHED_ARTIFACT_LOGIT = (FLOAT_DTYPE, 5)
+    # TODO: left off here -- I added these constants to the enum but haven't yet initialized them in the constructor
+    # TODO: nor have I cleaned up how they interact with the posterior datum
+    # after this, at the end of the float16 array comes the sub-array containing the INFO vector
+
+    def __init__(self, dtype: np.dtype, idx: int):
+        self.dtype = dtype
+        self.idx = idx
+
+Data.NUM_SCALAR_INT_ELEMENTS = 16    # in Python 3.11+ can use enum.nonmember
+Data.HAPLOTYPES_START_IDX = 16          # in Python 3.11+ can use enum.nonmember
+Data.NUM_SCALAR_FLOAT_ELEMENTS = 6    # in Python 3.11+ can use enum.nonmember
+Data.INFO_START_IDX = 6          # in Python 3.11+ can use enum.nonmember
 
 class Datum:
     """
-    contains data that apply to a candidate mutation as a whole i.e. not the read sets.  These are organized into a single
-    LongTensor, containing some quantities that are inherently integral and some that are cast as longs by multiplying
-    with a large number and rounding.
+    TODO: need documentation
     """
-
-    # indices of inherently integral quantities
-    REF_COUNT_IDX = 0               # potentially downsampled -- the actual size of the ref reads tensor
-    ALT_COUNT_IDX = 1               # potentially downsampled -- the actual size of the alt reads tensor
-    HAPLOTYPES_LENGTH_IDX = 2       # length of the sub-array encoding the reference and alt haplotype sequences
-    INFO_LENGTH_IDX = 3             # length of the sub-array encoding the info vector
-    LABEL_IDX = 4                   # the IntEnum label
-    VARIANT_TYPE_IDX = 5            # the IntEnum variant type
-    SOURCE_IDX = 6                  # the integer encoding the source
-
-    ORIGINAL_DEPTH_IDX = 7          # the original depth of the sequencing data before downsampling
-    ORIGINAL_ALT_COUNT_IDX = 8      # the original alt count of the sequencing data before downsampling
-    ORIGINAL_NORMAL_DEPTH_IDX = 9   # the original matched normal sample depth of the sequencing data before downsampling
-    ORIGINAL_NORMAL_ALT_COUNT_IDX = 10     # the original matched normal sample alt count of the sequencing data before downsampling
-
-    CONTIG_IDX = 11                 # the index of the contig/chromosome
-
-    # NOTE: the next three elements all require TWO int16s i.e. 32 bits to represent!!!!
-    POSITION_IDX = 12               # the position of the variant start within the contig
-    REF_ALLELE_AS_BASE_5_IDX = 14   # the reference allele encoded as a single base 5 integer
-    ALT_ALLELE_AS_BASE_5_IDX = 16   # the reference allele encoded as a single base 5 integer
-
-    # FloatTensor indices
-    SEQ_ERROR_LOG_LK_IDX = 18
-    NORMAL_SEQ_ERROR_LOG_LK_IDX = 19
-
-    NUM_SCALAR_ELEMENTS = NORMAL_SEQ_ERROR_LOG_LK_IDX + 1
-    HAPLOTYPES_START_IDX = 20
-
-    # after these come the variable-length sub-arrays (not within a single dataset, but in principle variable length for
-    # different versions of Permutect or different sequencing) for the reference sequence context and the info tensor
-
-    def __init__(self, array: np.ndarray):
+    def __init__(self, int_array: np.ndarray, float_array: np.ndarray, reads_re: np.ndarray = None, compressed_reads: bool = False):
         # note: this constructor does no checking eg of whether the arrays are consistent with their purported lengths
         # or of whether ref, alt alleles have been trimmed
-        assert array.ndim == 1 and len(array) >= Datum.NUM_SCALAR_ELEMENTS
-        self.array: np.ndarray = np.ndarray.astype(array, DATUM_ARRAY_DTYPE)
+        assert int_array.ndim == 1 and len(int_array) >= Data.NUM_SCALAR_INT_ELEMENTS
+        self.int_array: np.ndarray = np.ndarray.astype(int_array, np.int16)
+        assert float_array.ndim == 1 and len(float_array) >= Data.NUM_SCALAR_FLOAT_ELEMENTS
+        self.float_array: np.ndarray = np.ndarray.astype(float_array, FLOAT_DTYPE)
 
+        self.reads_re: np.ndarray = np.zeros((0,0), dtype=RAW_READS_ARRAY_DTYPE) if reads_re is None else reads_re
+        assert self.reads_re.dtype == (COMPRESSED_READS_ARRAY_DTYPE if compressed_reads else RAW_READS_ARRAY_DTYPE)
+
+    # this is what we get from GATK plain text data.  It must be normalized and processed before becoming the
+    # data used by Permutect
+    # gatk_info tensor comes from GATK and does not include one-hot encoding of variant type
     @classmethod
-    def make_datum_without_reads(cls, label: Label, variant_type: Variation, source: int,
-        original_depth: int, original_alt_count: int, original_normal_depth: int, original_normal_alt_count: int,
-        contig: int, position: int, ref_allele: str, alt_allele: str,
-        seq_error_log_lk: float, normal_seq_error_log_lk: float, ref_seq_array: np.ndarray, info_array: np.ndarray) -> Datum:
-        """
-        We are careful about our float to long conversions here and in the getters!
-        """
-        ref_hap, alt_hap = get_ref_and_alt_sequences(ref_seq_array, ref_allele, alt_allele)
+    def from_gatk(cls, label: Label, variant_type: Variation, source: int,
+                    original_depth: int, original_alt_count: int, original_normal_depth: int,
+                    original_normal_alt_count: int,
+                    contig: int, position: int, ref_allele: str, alt_allele: str,
+                    seq_error_log_lk: float, normal_seq_error_log_lk: float,
+                    ref_sequence_string: str, gatk_info_array: np.ndarray,
+                    ref_reads_array_re: np.ndarray, alt_reads_array_re: np.ndarray) -> Datum:
+        # note: it is very important to trim here, as early as possible, because truncating to 13 or fewer bases
+        # does not commute with trimming!!!  If we are not consistent about trimming first, dataset variants and
+        # VCF variants might get inconsistent encodings!!!
+        trimmed_ref, trimmed_alt = trim_alleles_on_right(ref_allele, alt_allele)
+        str_info = get_str_info_array(ref_sequence_string, trimmed_ref, trimmed_alt)
+        info_array = np.hstack([gatk_info_array, str_info])
+        ref_seq_array = make_1d_sequence_tensor(ref_sequence_string)
+
+        ref_hap, alt_hap = get_ref_and_alt_sequences(ref_seq_array, trimmed_ref, trimmed_alt)
         assert len(ref_hap) == len(ref_seq_array) and len(alt_hap) == len(ref_seq_array)
         haplotypes = np.hstack((ref_hap, alt_hap))
 
         haplotypes_length, info_length = len(haplotypes), len(info_array)
-        result = cls(np.zeros(Datum.NUM_SCALAR_ELEMENTS + haplotypes_length + info_length, dtype=DATUM_ARRAY_DTYPE))
-        # ref count and alt count remain zero
-        result.array[Datum.HAPLOTYPES_LENGTH_IDX] = haplotypes_length
-        result.array[Datum.INFO_LENGTH_IDX] = info_length
+        zeroed_int_array = np.zeros(Data.NUM_SCALAR_INT_ELEMENTS + haplotypes_length, dtype=INTEGER_DTYPE)
+        zeroed_float_array = np.zeros(Data.NUM_SCALAR_FLOAT_ELEMENTS + info_length, dtype=FLOAT_DTYPE)
+        reads_array_re = np.vstack(
+            [ref_reads_array_re, alt_reads_array_re]) if ref_reads_array_re is not None else alt_reads_array_re
 
-        result.array[Datum.LABEL_IDX] = label
-        result.array[Datum.VARIANT_TYPE_IDX] = variant_type
-        result.array[Datum.SOURCE_IDX] = source
+        result = cls(int_array=zeroed_int_array, float_array=zeroed_float_array, reads_re=reads_array_re)
+        result.set(Data.REF_COUNT, 0 if ref_reads_array_re is None else len(ref_reads_array_re))
+        result.set(Data.ALT_COUNT, 0 if alt_reads_array_re is None else len(alt_reads_array_re))
+        result.set(Data.LABEL, label)
+        result.set(Data.VARIANT_TYPE, variant_type)
+        result.set(Data.SOURCE, source)
+        result.set(Data.ORIGINAL_DEPTH, original_depth)
+        result.set(Data.ORIGINAL_ALT_COUNT, original_alt_count)
+        result.set(Data.ORIGINAL_NORMAL_DEPTH, original_normal_depth)
+        result.set(Data.ORIGINAL_NORMAL_ALT_COUNT, original_normal_alt_count)
+        result.set(Data.CONTIG, contig)
+        result.set(Data.POSITION, position)
+        result.set(Data.REF_ALLELE_AS_BASE_5, bases_as_base5_int(trimmed_ref))
+        result.set(Data.ALT_ALLELE_AS_BASE_5, bases_as_base5_int(trimmed_alt))
+        result.int_array[Data.HAPLOTYPES_START_IDX:] = haplotypes
 
-        result.array[Datum.ORIGINAL_DEPTH_IDX] = original_depth
-        result.array[Datum.ORIGINAL_ALT_COUNT_IDX] = original_alt_count
-        result.array[Datum.ORIGINAL_NORMAL_DEPTH_IDX] = original_normal_depth
-        result.array[Datum.ORIGINAL_NORMAL_ALT_COUNT_IDX] = original_normal_alt_count
+        result.set(Data.SEQ_ERROR_LOG_LK, seq_error_log_lk)  # this is -log10ToLog(TLOD) - log(tumorDepth + 1)
+        result.set(Data.NORMAL_SEQ_ERROR_LOG_LK,
+                   normal_seq_error_log_lk)  # this is -log10ToLog(NALOD) - log(normalDepth + 1)
 
-        result.array[Datum.CONTIG_IDX] = contig
+        result.set(Data.ALLELE_FREQUENCY, np.nan)
+        result.set(Data.MAF, np.nan)
+        result.set(Data.NORMAL_MAF, np.nan)
+        result.set(Data.CACHED_ARTIFACT_LOGIT, np.nan)
 
-        result.store_uint32_as_two_int16s(position, Datum.POSITION_IDX)
-        result.store_uint32_as_two_int16s(bases_as_base5_int(ref_allele), Datum.REF_ALLELE_AS_BASE_5_IDX)
-        result.store_uint32_as_two_int16s(bases_as_base5_int(alt_allele), Datum.ALT_ALLELE_AS_BASE_5_IDX)
-
-        result.store_float_as_int16(seq_error_log_lk, Datum.SEQ_ERROR_LOG_LK_IDX)
-        result.store_float_as_int16(normal_seq_error_log_lk, Datum.NORMAL_SEQ_ERROR_LOG_LK_IDX)
-
-        haplotypes_start = Datum.HAPLOTYPES_START_IDX
-        haplotypes_end = haplotypes_start + haplotypes_length
-        info_end = haplotypes_end + info_length
-        result.array[haplotypes_start:haplotypes_end] = haplotypes  # haplotypes array is uint8
-        result.array[haplotypes_end:info_end] = np.ndarray.astype(info_array * FLOAT_TO_LONG_MULTIPLIER, DATUM_ARRAY_DTYPE)
-
+        result.float_array[Data.INFO_START_IDX:] = info_array
         return result
 
-    def store_uint32_as_two_int16s(self, uint32_number, start_index):
-        int16_1, int16_2 = uint32_to_two_int16s(uint32_number)
-        self.array[start_index] = int16_1
-        self.array[start_index + 1] = int16_2
 
-    def get_uint32_from_two_int16s(self, start_index):
-        return uint32_from_two_int16s(self.array[start_index], self.array[start_index + 1])
+    def get(self, data_field: Data):
+        index = data_field.idx
+        if data_field.dtype == INTEGER_DTYPE:
+            return self.int_array[index]
+        elif data_field.dtype == LARGE_INTEGER_DTYPE:
+            return uint32_from_two_int16s(self.int_array[index], self.int_array[index + 1])
+        elif data_field.dtype == FLOAT_DTYPE:
+            return self.float_array[index]
+        else:
+            assert False, "Unsupported data type"
 
-    def store_float_as_int16(self, float_number, index):
-        self.array[index] = float_to_clipped_int16(float_number)
-
-    def get_float_from_int16(self, index):
-        return int16_to_float(self.array[index])
-
-    def get_ref_count(self) -> int:
-        return self.array[Datum.REF_COUNT_IDX]
-
-    def get_alt_count(self) -> int:
-        return self.array[Datum.ALT_COUNT_IDX]
+    def set(self, data_field: Data, value):
+        index = data_field.idx
+        if data_field.dtype == INTEGER_DTYPE:
+            self.int_array[index] = value
+        elif data_field.dtype == LARGE_INTEGER_DTYPE:
+            int_1, int_2 = uint32_to_two_int16s(value)
+            self.int_array[index] = int_1
+            self.int_array[index + 1] = int_2
+        elif data_field.dtype == FLOAT_DTYPE:
+            self.float_array[index] = value
+        else:
+            assert False, "Unsupported data type"
 
     def get_read_count(self) -> int:
-        return self.get_alt_count() + self.get_ref_count()
-
-    def get_haplotypes_array_length(self) -> int:
-        return self.array[Datum.HAPLOTYPES_LENGTH_IDX]
-
-    def get_info_array_length(self) -> int:
-        return self.array[Datum.INFO_LENGTH_IDX]
-
-    def get_label(self) -> int:
-        return self.array[Datum.LABEL_IDX]
+        return self.get(Data.ALT_COUNT) + self.get(Data.REF_COUNT)
 
     def is_labeled(self):
-        return self.get_label() != Label.UNLABELED
-
-    def set_label(self, label: Label):
-        self.array[Datum.LABEL_IDX] = label
-
-    def get_variant_type(self) -> int:
-        return self.array[Datum.VARIANT_TYPE_IDX]
-
-    def get_source(self) -> int:
-        return self.array[Datum.SOURCE_IDX]
-
-    def set_source(self, source: int):
-        self.array[Datum.SOURCE_IDX] = source
-
-    def get_original_depth(self) -> int:
-        return self.array[Datum.ORIGINAL_DEPTH_IDX]
-
-    def get_original_alt_count(self) -> int:
-        return self.array[Datum.ORIGINAL_ALT_COUNT_IDX]
-
-    def get_original_normal_depth(self) -> int:
-        return self.array[Datum.ORIGINAL_NORMAL_DEPTH_IDX]
-
-    def get_original_normal_alt_count(self) -> int:
-        return self.array[Datum.ORIGINAL_NORMAL_ALT_COUNT_IDX]
-
-    def get_contig(self) -> int:
-        return self.array[Datum.CONTIG_IDX]
-
-    def get_position(self) -> int:
-        return self.get_uint32_from_two_int16s(Datum.POSITION_IDX)
+        return self.get(Data.LABEL) != Label.UNLABELED
 
     def get_ref_allele(self) -> str:
-        return bases5_as_base_string(self.get_uint32_from_two_int16s(Datum.REF_ALLELE_AS_BASE_5_IDX))
+        return bases5_as_base_string(self.get(Data.REF_ALLELE_AS_BASE_5))
 
     def get_alt_allele(self) -> str:
-        return bases5_as_base_string(self.get_uint32_from_two_int16s(Datum.ALT_ALLELE_AS_BASE_5_IDX))
+        return bases5_as_base_string(self.get(Data.ALT_ALLELE_AS_BASE_5))
 
-    def get_seq_error_log_lk(self) -> float:
-        return self.get_float_from_int16(Datum.SEQ_ERROR_LOG_LK_IDX)
-
-    def get_normal_seq_error_log_lk(self) -> float:
-        return self.get_float_from_int16(Datum.NORMAL_SEQ_ERROR_LOG_LK_IDX)
+    def get_haplotypes_array_size(self):
+        return len(self.int_array) - Data.NUM_SCALAR_INT_ELEMENTS
 
     def get_haplotypes_1d(self) -> np.ndarray:
         # 1D array of integer array reference and alt haplotypes concatenated -- A, C, G, T, deletion = 0, 1, 2, 3, 4
-        start = Datum.HAPLOTYPES_START_IDX
-        haplotypes_length = self.array[Datum.HAPLOTYPES_LENGTH_IDX]
-        assert haplotypes_length > 0, "trying to get ref seq array when none exists"
-        return self.array[start:start + haplotypes_length]
+        assert len(self.int_array) > Data.NUM_SCALAR_INT_ELEMENTS, "trying to get ref seq array when none exists"
+        return self.int_array[Data.HAPLOTYPES_START_IDX:]
 
     def get_info_1d(self) -> np.ndarray:
-        start = Datum.HAPLOTYPES_START_IDX + self.array[Datum.HAPLOTYPES_LENGTH_IDX]
-        info_length = self.array[Datum.INFO_LENGTH_IDX]
-        assert info_length > 0, "trying to get info array when none exists"
-        return self.array[start:start + info_length] / FLOAT_TO_LONG_MULTIPLIER
+        assert len(self.float_array) > Data.NUM_SCALAR_FLOAT_ELEMENTS, "trying to get info array when none exists"
+        return self.float_array[Data.INFO_START_IDX:]
 
-    # note: this potentially resizes the array and requires the leading info tensor size element to be modified
+    # note: this potentially resizes the array
     # we do this in preprocessing when adding extra info to the info from GATK.
     # this method should not otherwise be used!!!
     def set_info_1d(self, new_info: np.ndarray):
-        new_info_as_long = np.ndarray.astype(new_info * FLOAT_TO_LONG_MULTIPLIER, DATUM_ARRAY_DTYPE)
-        old_info_start = Datum.HAPLOTYPES_START_IDX + self.array[Datum.HAPLOTYPES_LENGTH_IDX]
-        self.array = np.hstack((self.array[:old_info_start], new_info_as_long))
-        self.array[Datum.INFO_LENGTH_IDX] = len(new_info)
+        self.float_array = np.hstack((self.float_array[:Data.INFO_START_IDX], new_info))
 
-    def get_array_1d(self) -> np.ndarray:
-        return self.array
+    def set_haplotypes_1d(self, new_haplotypes: np.ndarray):
+        self.int_array = np.hstack((self.int_array[:Data.HAPLOTYPES_START_IDX], new_haplotypes))
+
+    def get_int_array(self) -> np.ndarray:
+        return self.int_array
+
+    def get_float_array(self) -> np.ndarray:
+        return self.float_array
+
+    def get_reads_array_re(self) -> np.ndarray:
+        return self.reads_re
+
+    def get_ref_reads_re(self) -> np.ndarray:
+        return self.reads_re[:-self.get(Data.ALT_COUNT)]
+
+    def get_alt_reads_re(self) -> np.ndarray:
+        return self.reads_re[-self.get(Data.ALT_COUNT):]
+
+    # only applies after normalization and compression
+    def get_compressed_ref_reads_re(self) -> np.ndarray:
+        assert self.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
+        return self.reads_re[:-self.get(Data.ALT_COUNT)]
+
+    # only applies after normalization and compression
+    def get_compressed_alt_reads_re(self) -> np.ndarray:
+        assert self.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
+        return self.reads_re[-self.get(Data.ALT_COUNT):]
+
+    def get_compressed_reads_re(self) -> np.ndarray:
+        assert self.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
+        return self.reads_re
+
+    # this is the number of read features in a PyTorch float tensor, after unpacking the compressed binaries
+    def num_read_features(self) -> int:
+        if self.reads_re.dtype == RAW_READS_ARRAY_DTYPE or self.reads_re.shape[1] == 0:
+            return self.reads_re.shape[1]
+        elif self.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE:
+            num_read_uint8s = self.reads_re.shape[1]
+            num_nonbinary_features = num_read_uint8s - NUMBER_OF_BYTES_IN_PACKED_READ
+            # 8 bits per byte.  In general the last few features will be extraneous padded zeros, but that's okay.
+            # the nonbinary features are converted to float, but it's one-to-one so no multiplicative factor
+            return 8 * NUMBER_OF_BYTES_IN_PACKED_READ + num_nonbinary_features
+        else:
+            assert False, "Unsupported data type"
 
     def get_nbytes(self) -> int:
-        return self.array.nbytes
+        return self.int_array.nbytes + self.float_array.nbytes + self.reads_re.nbytes
 
-    @classmethod
-    def copy_data_without_haplotypes_and_info(cls, data_array: np.ndarray) -> np.ndarray:
-        result = data_array[:Datum.NUM_SCALAR_ELEMENTS].copy()
-        result[Datum.HAPLOTYPES_LENGTH_IDX] = 0
-        result[Datum.INFO_LENGTH_IDX] = 0
-        return result
+    def copy_with_downsampled_reads(self, ref_downsample: int, alt_downsample: int) -> Datum:
+        old_alt_count = self.get(Data.ALT_COUNT)
+        old_ref_count = len(self.reads_re) - old_alt_count
+        new_ref_count = min(old_ref_count, ref_downsample)
+        new_alt_count = min(self.get(Data.ALT_COUNT), alt_downsample)
 
-
-DEFAULT_NUMPY_FLOAT = np.float16
-DEFAULT_GPU_FLOAT = torch.float32
-DEFAULT_CPU_FLOAT = torch.float32
-MAX_FLOAT_16 = torch.finfo(torch.float16).max
-MIN_FLOAT_16 = torch.finfo(torch.float16).min
+        if new_ref_count == old_ref_count and new_alt_count == old_alt_count:
+            return self
+        else:
+            # new reads are random selection of ref reads vstacked on top of all the alts
+            random_ref_read_indices = torch.randperm(old_ref_count)[:new_ref_count]
+            random_alt_read_indices = old_ref_count + torch.randperm(old_alt_count)[:new_alt_count]
+            new_reads = np.vstack((self.reads_re[random_ref_read_indices], self.reads_re[random_alt_read_indices]))
+            result = Datum(int_array=self.int_array.copy(), float_array=self.float_array.copy(), reads_re=new_reads)
+            result.set(Data.REF_COUNT, new_ref_count)
+            result.set(Data.ALT_COUNT, new_alt_count)
+            return result

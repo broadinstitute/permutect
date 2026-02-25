@@ -2,7 +2,7 @@ import numpy as np
 import torch
 
 import permutect.utils.allele_utils
-from permutect.data.reads_datum import ReadsDatum, RawUnnormalizedReadsDatum
+from permutect.data.datum import Datum, Data
 from permutect.utils.enums import Variation, Label
 
 
@@ -18,14 +18,14 @@ def test_reads_datum():
     label = Label.ARTIFACT
     source = 0
 
-    snv_datum = RawUnnormalizedReadsDatum.from_gatk("AC", Variation.SNV, ref_tensor, alt_tensor, gatk_info_tensor, label, source)
+    snv_datum = Datum.from_gatk("AC", Variation.SNV, ref_tensor, alt_tensor, gatk_info_tensor, label, source)
 
     assert torch.equal(snv_datum.reads_re, np.vstack([ref_tensor, alt_tensor]))
     assert permutect.utils.allele_utils.get_variant_type() == Variation.SNV
-    assert snv_datum.get_label() == label
+    assert snv_datum.get(Data.LABEL) == label
 
-    insertion_datum = RawUnnormalizedReadsDatum.from_gatk("GT", Variation.INSERTION, ref_tensor, alt_tensor, gatk_info_tensor, label, source)
-    deletion_datum = RawUnnormalizedReadsDatum.from_gatk("TT", Variation.DELETION, ref_tensor, alt_tensor, gatk_info_tensor, label, source)
+    insertion_datum = Datum.from_gatk("GT", Variation.INSERTION, ref_tensor, alt_tensor, gatk_info_tensor, label, source)
+    deletion_datum = Datum.from_gatk("TT", Variation.DELETION, ref_tensor, alt_tensor, gatk_info_tensor, label, source)
     assert permutect.utils.allele_utils.get_variant_type() == Variation.INSERTION
     assert permutect.utils.allele_utils.get_variant_type() == Variation.DELETION
 

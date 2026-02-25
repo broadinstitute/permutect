@@ -1,6 +1,7 @@
 import argparse
 from typing import List, Generator
 
+from permutect.data.datum import Datum
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.training.model_training import train_artifact_model
 from permutect.architecture.artifact_model import ArtifactModel, load_model
@@ -10,10 +11,8 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from permutect import constants
-from permutect.data.reads_batch import ReadsBatch
-from permutect.data.reads_datum import ReadsDatum
 from permutect.data.prefetch_generator import prefetch_generator
-from permutect.data.batch import BatchProperty
+from permutect.data.batch import BatchProperty, Batch
 from permutect.parameters import add_training_params_to_parser, TrainingParameters
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.tools.refine_artifact_model import parse_training_params
@@ -24,7 +23,7 @@ NUM_FOLDS = 3
 
 
 # labeled only pruning loader must be constructed with options to emit batches of all-labeled data
-def calculate_pruning_thresholds(labeled_only_pruning_loader, model: ArtifactModel, label_art_frac: float, training_params: TrainingParameters) -> List[int]:
+def calculate_pruning_thresholds(labeled_only_pruning_loader, model: ArtifactModel, label_art_frac: float, training_params: TrainingParameters) -> tuple[float, float]:
     for fold in range(NUM_FOLDS):
         average_artifact_confidence, average_nonartifact_confidence = StreamingAverage(), StreamingAverage()
         # TODO: eventually this should all be segregated by variant type and maybe also alt count
@@ -32,7 +31,7 @@ def calculate_pruning_thresholds(labeled_only_pruning_loader, model: ArtifactMod
         # the 0th/1st element is a list of predicted probabilities that data labeled as non-artifact/artifact are actually non-artifact/artifact
         probs_of_agreeing_with_label = [[],[]]
         print("calculating average confidence and gathering predicted probabilities")
-        batch: ReadsBatch
+        batch: Batch
         for batch in tqdm(prefetch_generator(labeled_only_pruning_loader), mininterval=60, total=len(labeled_only_pruning_loader)):
             # TODO: should we use likelihoods as in evaluation or posteriors as in training???
             # TODO: does it even matter??
@@ -104,16 +103,16 @@ def calculate_pruning_thresholds(labeled_only_pruning_loader, model: ArtifactMod
 # generates data from the original dataset that *pass* the pruning thresholds
 def generated_pruned_data_for_fold(art_threshold: float, nonart_threshold: float, pruning_base_data_loader, model: ArtifactModel) -> List[int]:
     print("pruning the dataset")
-    reads_batch: ReadsBatch
-    for reads_batch in tqdm(prefetch_generator(pruning_base_data_loader), mininterval=60, total=len(pruning_base_data_loader)):
-        art_logits_b, _, _, _ = model.calculate_logits(reads_batch)
+    batch: Batch
+    for batch in tqdm(prefetch_generator(pruning_base_data_loader), mininterval=60, total=len(pruning_base_data_loader)):
+        art_logits_b, _, _, _ = model.calculate_logits(batch)
         art_probs_b = torch.sigmoid(art_logits_b.detach())
-        art_label_mask = (reads_batch.get_training_labels() > 0.5)
-        is_labeled_mask = (reads_batch.get_is_labeled_mask() > 0.5)
+        art_label_mask = (batch.get_training_labels() > 0.5)
+        is_labeled_mask = (batch.get_is_labeled_mask() > 0.5)
 
-        for art_prob, labeled_as_art, data_1d, reads_re, is_labeled in zip(art_probs_b.tolist(), art_label_mask.tolist(),
-                reads_batch.get_data_be(), reads_batch.get_list_of_reads_re(), is_labeled_mask.tolist()):
-            datum = ReadsDatum(data_1d, reads_re)
+        for art_prob, labeled_as_art, int_array, float_array, reads_re, is_labeled in zip(art_probs_b.tolist(), art_label_mask.tolist(),
+                                                                                              batch.get_int_array_be(), batch.get_float_array_be(), batch.get_list_of_reads_re(), is_labeled_mask.tolist()):
+            datum = Datum(int_array, float_array, reads_re, compressed_reads=True)
             if not is_labeled:
                 yield datum
             elif (labeled_as_art and art_prob < art_threshold) or ((not labeled_as_art) and (1-art_prob) < nonart_threshold):
@@ -123,7 +122,7 @@ def generated_pruned_data_for_fold(art_threshold: float, nonart_threshold: float
                 yield datum # this is a ReadSet
 
 
-def generate_pruned_data_for_all_folds(fold_datasets: List[ReadsDataset], model: ArtifactModel, training_params: TrainingParameters, tensorboard_dir) -> Generator[ReadsDatum, None, None]:
+def generate_pruned_data_for_all_folds(fold_datasets: List[ReadsDataset], model: ArtifactModel, training_params: TrainingParameters, tensorboard_dir) -> Generator[Datum, None, None]:
     # for each fold in turn, train an artifact model on all other folds and prune the chosen fold
     use_gpu = torch.cuda.is_available()
 

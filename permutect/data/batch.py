@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import copy
 from enum import IntEnum
+from random import randint
 from typing import List, Tuple
 
 import torch
 from torch import IntTensor, FloatTensor, Tensor
+from torch_scatter import segment_csr
 import numpy as np
 
 from permutect.data.count_binning import ref_count_bin_name, NUM_REF_COUNT_BINS, alt_count_bin_name, NUM_ALT_COUNT_BINS, \
     logit_bin_name, NUM_LOGIT_BINS, ref_count_bin_indices, alt_count_bin_indices, logit_bin_indices, \
     ref_count_bin_index, alt_count_bin_index
-from permutect.data.datum import Datum, int16_to_float
+from permutect.data.datum import Datum, Data, uint32_from_two_int16s, INTEGER_DTYPE, FLOAT_DTYPE, LARGE_INTEGER_DTYPE, \
+    NUMBER_OF_BYTES_IN_PACKED_READ, COMPRESSED_READS_ARRAY_DTYPE
+from permutect.data.plain_text_data import convert_uint8_to_quantile_normalized
 from permutect.misc_utils import gpu_if_available
 from permutect.utils.array_utils import flattened_indices
 from permutect.utils.enums import Label, Variation
@@ -18,87 +23,121 @@ from permutect.utils.enums import Label, Variation
 
 class Batch:
     def __init__(self, data: List[Datum]):
-        self.data = torch.from_numpy(np.vstack([d.get_array_1d() for d in data])).to(torch.long)
-        self._finish_initializiation_from_data_array()
+        self.int_tensor = torch.from_numpy(np.vstack([d.get_int_array() for d in data])).to(torch.long)
+        self.float_tensor = torch.from_numpy(np.vstack([d.get_float_array() for d in data])).to(torch.float)
 
-    def _finish_initializiation_from_data_array(self):
-        self._size = len(self.data)
-        self.haplotypes_start = Datum.HAPLOTYPES_START_IDX
-        self.haplotypes_end = Datum.HAPLOTYPES_START_IDX + self.data[0, Datum.HAPLOTYPES_LENGTH_IDX]
-        self.info_start = self.haplotypes_end
-        info_length = self.data[0, Datum.INFO_LENGTH_IDX]
-        self.info_end = self.info_start + info_length
+        ref_arrays = [datum.get_ref_reads_re() for datum in data]
+        alt_arrays = [datum.get_alt_reads_re() for datum in data]
+        reads_re = np.vstack(ref_arrays + alt_arrays)
+
+        reads_are_compressed = data[0].reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
+
+        if reads_are_compressed:
+            packed_binary_columns_re = reads_re[:, :NUMBER_OF_BYTES_IN_PACKED_READ]
+            compressed_float_columns_re = reads_re[:, NUMBER_OF_BYTES_IN_PACKED_READ:]
+            binary_columns_re = np.ndarray.astype(np.unpackbits(packed_binary_columns_re, axis=1), FLOAT_DTYPE)
+            float_columns_re = convert_uint8_to_quantile_normalized(compressed_float_columns_re)
+            self.reads_re = torch.from_numpy(np.hstack((binary_columns_re, float_columns_re)))
+        else:
+            self.reads_re = torch.from_numpy(reads_re)
+
+        # assert that the decompression got the expected tensor shape
+        assert self.reads_re.shape[1] == data[0].num_read_features()
+        self._finish_initializiation_from_arrays()
+
+    def _finish_initializiation_from_arrays(self):
+        self._size = len(self.int_tensor)
         self.lazy_batch_indices = None
 
-    def batch_indices(self) -> BatchIndices:
+    def batch_indices(self, use_original_counts: bool = False) -> BatchIndices:
         if self.lazy_batch_indices is not None:
             return self.lazy_batch_indices
         else:
-            self.lazy_batch_indices = BatchIndices(sources=self.get_sources(), labels=self.get_labels(),
-                var_types=self.get_variant_types(), ref_counts=self.get_ref_counts(), alt_counts=self.get_alt_counts())
+            ref_counts = (self.get(Data.ORIGINAL_DEPTH) - self.get(Data.ORIGINAL_ALT_COUNT)) if use_original_counts \
+                else self.get(Data.REF_COUNT)
+            alt_counts = self.get(Data.ORIGINAL_ALT_COUNT if use_original_counts else Data.ALT_COUNT)
+            self.lazy_batch_indices = BatchIndices(sources=self.get(Data.SOURCE), labels=self.get(Data.LABEL),
+                var_types=self.get(Data.VARIANT_TYPE), ref_counts=ref_counts, alt_counts=alt_counts)
             return self.lazy_batch_indices
 
-    # get the original IntEnum format (VARIANT = 0, ARTIFACT = 1, UNLABELED = 2) labels
-    def get_labels(self) -> IntTensor:
-        return self.data[:, Datum.LABEL_IDX]
+    def get(self, data_field: Data):
+        index = data_field.idx
+        if data_field.dtype == INTEGER_DTYPE:
+            return self.int_tensor[:, index]
+        elif data_field.dtype == LARGE_INTEGER_DTYPE:
+            return uint32_from_two_int16s(self.int_tensor[:, index], self.int_tensor[:, index + 1])
+        elif data_field.dtype == FLOAT_DTYPE:
+            return self.float_tensor[:, index]
+        else:
+            assert False, "Unsupported data type"
 
     # convert to the training format of 0.0 / 0.5 / 1.0 for variant / unlabeled / artifact
     # the 0.5 for unlabeled data is reasonable but should never actually be used due to the is_labeled mask
     def get_training_labels(self) -> FloatTensor:
-        int_enum_labels = self.get_labels()
+        int_enum_labels = self.get(Data.LABEL)
         return 1.0 * (int_enum_labels == Label.ARTIFACT) + 0.5 * (int_enum_labels == Label.UNLABELED)
 
     def get_is_labeled_mask(self) -> IntTensor:
-        int_enum_labels = self.get_labels()
+        int_enum_labels = self.get(Data.LABEL)
         return (int_enum_labels != Label.UNLABELED).int()
 
-    def get_sources(self) -> IntTensor:
-        return self.data[:, Datum.SOURCE_IDX]
-
-    def get_variant_types(self) -> IntTensor:
-        result = self.data[:, Datum.VARIANT_TYPE_IDX]
-        return result
-
-    def get_ref_counts(self) -> IntTensor:
-        return self.data[:, Datum.REF_COUNT_IDX]
-
-    def get_alt_counts(self) -> IntTensor:
-        return self.data[:, Datum.ALT_COUNT_IDX]
-
-    def get_original_alt_counts(self) -> IntTensor:
-        return self.data[:, Datum.ORIGINAL_ALT_COUNT_IDX]
-
-    def get_original_depths(self) -> IntTensor:
-        return self.data[:, Datum.ORIGINAL_DEPTH_IDX]
-
-    def get_original_normal_alt_counts(self) -> IntTensor:
-        return self.data[:, Datum.ORIGINAL_NORMAL_ALT_COUNT_IDX]
-
-    def get_original_normal_depths(self) -> IntTensor:
-        return self.data[:, Datum.ORIGINAL_NORMAL_DEPTH_IDX]
-
     def get_info_be(self) -> Tensor:
-        return int16_to_float(self.data[:, self.info_start:self.info_end])
-
-    # this is -log10ToLog(TLOD) - log(tumorDepth + 1);
-    def get_seq_error_log_lks(self) -> Tensor:
-        return int16_to_float(self.data[:, Datum.SEQ_ERROR_LOG_LK_IDX])
-
-    # this is -log10ToLog(NALOD) - log(normalDepth + 1)
-    def get_normal_seq_error_log_lks(self) -> Tensor:
-        return int16_to_float(self.data[:, Datum.NORMAL_SEQ_ERROR_LOG_LK_IDX])
+        return self.float_tensor[:, Data.INFO_START_IDX:]
 
     def get_haplotypes_bs(self) -> IntTensor:
         # each row is 1D array of integer array reference and alt haplotypes concatenated -- A, C, G, T, deletion = 0, 1, 2, 3, 4
-        return self.data[:, self.haplotypes_start:self.haplotypes_end]
+        return self.int_tensor[:, Data.HAPLOTYPES_START_IDX:]
+
+    def get_one_hot_haplotypes_bcs(self) -> Tensor:
+        num_channels = 5
+        # each row of haplotypes_2d is a ref haplotype concatenated horizontally with an alt haplotype of equal length
+        # indices are b for batch, s index along DNA sequence, and later c for one-hot channel
+        # h denotes horizontally concatenated sequences, first ref, then alt
+        haplotypes_bh = self.get_haplotypes_bs()
+        batch_size = len(haplotypes_bh)
+        seq_length = haplotypes_bh.shape[1] // 2 # ref and alt have equal length and are h-stacked
+
+        # num_classes = 5 for A, C, G, T, and deletion / insertion
+        one_hot_haplotypes_bhc = torch.nn.functional.one_hot(haplotypes_bh, num_classes=num_channels)
+        one_hot_haplotypes_bch = torch.permute(one_hot_haplotypes_bhc, (0, 2, 1))
+
+        # interleave the 5 channels of ref and 5 channels of alt with a reshape
+        # for each batch index we get 10 rows: the ref A channel sequence, then the alt A channel, then the ref C channel etc
+        return one_hot_haplotypes_bch.reshape(batch_size, 2 * num_channels, seq_length)
+
+    def get_reads_re(self) -> Tensor:
+        return self.reads_re
+
+    # useful for regenerating original data, for example in pruning.  Each original datum has its own reads_2d of ref
+    # followed by alt
+    def get_list_of_reads_re(self):
+        ref_counts, alt_counts = self.get(Data.REF_COUNT), self.get(Data.ALT_COUNT)
+        total_ref = torch.sum(ref_counts).item()
+        ref_reads_re, alt_reads_re = self.get_reads_re()[:total_ref], self.get_reads_re()[total_ref:]
+        ref_splits, alt_splits = torch.cumsum(ref_counts)[:-1], torch.cumsum(alt_counts)[:-1]
+        ref_list, alt_list = torch.tensor_split(ref_reads_re, ref_splits), torch.tensor_split(alt_reads_re, alt_splits)
+        return [torch.vstack((refs, alts)).numpy() for refs, alts in zip(ref_list, alt_list)]
 
     # pin memory for all tensors that are sent to the GPU
     def pin_memory(self):
-        self.data = self.data.pin_memory()
+        self.int_tensor = self.int_tensor.pin_memory()
+        self.float_tensor = self.float_tensor.pin_memory()
+        self.reads_re = self.reads_re.pin_memory()
         return self
 
-    def get_data_be(self) -> np.ndarray:
-        return self.data.cpu().numpy()
+    def copy_to(self, device, dtype):
+        is_cuda = device.type == 'cuda'
+        new_batch = copy.copy(self)
+        new_batch.reads_re = self.reads_re.to(device=device, dtype=dtype, non_blocking=is_cuda)
+        new_batch.int_tensor = self.int_tensor.to(device, non_blocking=is_cuda)  # don't cast dtype -- needs to stay integral!
+        new_batch.float_tensor = self.float_tensor.to(device, non_blocking=is_cuda)  # don't cast dtype -- needs to stay integral!
+        return new_batch
+
+    def get_int_array_be(self) -> np.ndarray:
+        return self.int_tensor.cpu().numpy()
+
+    def get_float_array_be(self) -> np.ndarray:
+        return self.float_tensor.cpu().numpy()
 
     def size(self) -> int:
         return self._size
@@ -239,19 +278,19 @@ class BatchIndexedTensor(Tensor):
     # TODO: move to subclass as in comments below
     def record_datum(self, datum: Datum, value: float = 1.0, grow_source_if_necessary: bool = True):
         assert not self.has_logits(), "this only works when not including logits"
-        source = datum.get_source()
+        source = datum.get(Data.SOURCE)
         if source >= self.num_sources():
             if grow_source_if_necessary:
                 self.resize_sources(source + 1)
             else:
                 raise Exception("Datum source doesn't fit.")
         # no logits here
-        ref_idx, alt_idx = ref_count_bin_index(datum.get_ref_count()), alt_count_bin_index(datum.get_alt_count())
-        self[source, datum.get_label(), datum.get_variant_type(), ref_idx, alt_idx] += value
+        ref_idx, alt_idx = ref_count_bin_index(datum.get(Data.REF_COUNT)), alt_count_bin_index(datum.get(Data.ALT_COUNT))
+        self[source, datum.get(Data.LABEL), datum.get(Data.VARIANT_TYPE), ref_idx, alt_idx] += value
 
     # TODO: move to a metrics subclass -- this class should really only be for indexing, not recording
-    def record(self, batch: Batch, values: Tensor, logits: Tensor=None):
-        batch.batch_indices().increment_tensor(self, values=values, logits=logits)
+    def record(self, batch: Batch, values: Tensor, logits: Tensor=None, use_original_counts: bool = False):
+        batch.batch_indices(use_original_counts).increment_tensor(self, values=values, logits=logits)
 
     def get_marginal(self, *properties: Tuple[BatchProperty, ...]) -> Tensor:
         """
@@ -262,4 +301,80 @@ class BatchIndexedTensor(Tensor):
         num_dims = len(BatchProperty) - (0 if self.has_logits() else 1)
         other_dims = tuple(n for n in range(num_dims) if n not in property_set)
         return torch.sum(self, dim=other_dims)
+
+class DownsampledBatch(Batch):
+    """
+    wrapper class that downsamples reads on the fly without copying data
+    This lets us produce multiple count augmentations from a single batch very efficiently
+    """
+    def __init__(self, original_batch: Batch, ref_fracs_b: Tensor, alt_fracs_b: Tensor):
+        """
+        This is delicate.  We're constructing it without calling super().__init__
+        """
+        self.int_tensor = original_batch.int_tensor # note: no copy -- we never modify it!!!
+        self.float_tensor = original_batch.float_tensor # note: no copy -- we never modify it!!!
+        self.device = self.int_tensor.device
+        self.reads_re = original_batch.reads_re
+        self._finish_initializiation_from_arrays()
+        # at this point all member variables needed by the parent class are available
+
+        old_ref_counts, old_alt_counts = original_batch.get(Data.REF_COUNT), original_batch.get(Data.ALT_COUNT)
+        old_total_ref, old_total_alt = torch.sum(old_ref_counts), torch.sum(old_alt_counts)
+
+        ref_probs_r = torch.repeat_interleave(ref_fracs_b, dim=0, repeats=old_ref_counts)
+        alt_probs_r = torch.repeat_interleave(alt_fracs_b, dim=0, repeats=old_alt_counts)
+        keep_ref_mask = torch.zeros(old_total_ref, device=self.device, dtype=torch.int64)
+        keep_ref_mask.bernoulli_(p=ref_probs_r)    # fills in-place with Bernoulli samples
+        keep_alt_mask = torch.zeros(old_total_alt, device=self.device, dtype=torch.int64)
+        keep_alt_mask.bernoulli_(p=alt_probs_r)    # fills in-place with Bernoulli samples
+
+        # unlike ref, we need to ensure at least one alt read.  One way to do that is to set one random element from each range of alts
+        # to be masked to keep.  If e.g. we have alt counts of 3, 4, 7, 2 in the batch, the cumsums starting from zero are
+        # 0, 3, 7, 14.  If we simply set indices 0, 3, 7, 14 of the mask to 1, we non-randomly guarantee that at least one alt read
+        # (the first) is kept.  If we do torch.remainder(torch.tensor([random integer]), alt counts) we get offsets within each group of
+        # alts.  For example if the random integer is 11 the offsets are [2,3,4,1].  Adding these offsets to the zero-based cumsums
+        # gives mask indices 2, 6, 11, 15 to set to 1
+        random_int = randint(0, 100)
+
+        prepend_zero = torch.tensor([0], device=self.device, dtype=torch.int64)
+        ref_bounds = torch.cumsum(torch.hstack((prepend_zero, old_ref_counts)), dim=0)
+        alt_bounds = torch.cumsum(torch.hstack((prepend_zero, old_alt_counts)), dim=0)
+        alt_cumsums = alt_bounds[:-1]
+
+        alt_override_idx = alt_cumsums + torch.remainder(torch.tensor([random_int], device=self.device, dtype=torch.int64), old_alt_counts)
+        keep_alt_mask[alt_override_idx] = 1
+
+        # the alt counts are the sums of the mask within the ranges of each datum
+        self.ref_counts = segment_csr(keep_ref_mask, ref_bounds, reduce="sum")
+        self.alt_counts = segment_csr(keep_alt_mask, alt_bounds, reduce="sum")
+        # randomly assign ref reads to keep
+
+        kept_ref_indices = torch.nonzero(keep_ref_mask).view(-1)
+        kept_alt_indices = torch.nonzero(keep_alt_mask).view(-1)
+
+        self.read_indices = torch.hstack((kept_ref_indices, kept_alt_indices))
+
+    #override for downsampled counts
+    def get(self, data_field: Data):
+        if data_field == Data.REF_COUNT:
+            return self.ref_counts
+        elif data_field == Data.ALT_COUNT:
+            return self.alt_counts
+        else:
+            return super().get(data_field)
+
+    # override
+    def get_int_array_be(self) -> np.ndarray:
+        result = self.int_tensor.cpu().numpy(force=True)  # force it to make a copy because we modify it
+        result[:, Data.REF_COUNT.idx] = self.ref_counts.cpu().numpy()
+        result[:, Data.ALT_COUNT.idx] = self.alt_counts.cpu().numpy()
+        return result
+
+    # override
+    def get_reads_re(self) -> Tensor:
+        return self.reads_re[self.read_indices]
+
+
+
+
 

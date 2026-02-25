@@ -1,5 +1,4 @@
 import math
-import random
 import tempfile
 import time
 from collections import defaultdict
@@ -16,13 +15,13 @@ from permutect.architecture.feature_clustering import MAX_LOGIT
 from permutect.training.balancer import Balancer
 from permutect.training.downsampler import Downsampler
 from permutect.architecture.artifact_model import ArtifactModel, record_embeddings
-from permutect.data.reads_batch import DownsampledReadsBatch, ReadsBatch
+from permutect.data.batch import DownsampledBatch
 from permutect.data.reads_dataset import ReadsDataset
-from permutect.data.datum import Datum
+from permutect.data.datum import Datum, Data
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.metrics.evaluation_metrics import EmbeddingMetrics, EvaluationMetrics
 from permutect.metrics.loss_metrics import LossMetrics
-from permutect.data.batch import BatchProperty
+from permutect.data.batch import BatchProperty, Batch
 from permutect.data.count_binning import alt_count_bin_index, round_alt_count_to_bin_center, alt_count_bin_name
 from permutect.parameters import TrainingParameters
 from permutect.misc_utils import report_memory_usage, backpropagate, freeze, unfreeze, Timer
@@ -88,20 +87,20 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
 
             loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
 
-            batch: ReadsBatch
-            parent_batch: ReadsBatch
+            batch: Batch
+            parent_batch: Batch
             for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
                 # TODO: really to get the assumed balance we should only train on downsampled batches.  But using one
                 # TODO: downsampled batch with the proper balance will still go a long way
                 ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
-                downsampled_batch1 = DownsampledReadsBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
+                downsampled_batch1 = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
                 ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
-                downsampled_batch2 = DownsampledReadsBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
+                downsampled_batch2 = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
                 batches = [downsampled_batch1, downsampled_batch2]
                 outputs = [model.compute_batch_output(batch, balancer) for batch in batches]
                 # parent_output = model.compute_batch_output(parent_batch, balancer)
 
-                sources = parent_batch.get_sources()
+                sources = parent_batch.get(Data.SOURCE)
                 source_mask_b = 1 if (calibration_sources is None or not is_calibration_epoch) else \
                     torch.sum(torch.vstack([(sources == source).int() for source in calibration_sources]), dim=-1)
 
@@ -239,36 +238,36 @@ def collect_evaluation_data(model: ArtifactModel, num_sources: int, balancer: Ba
         assert epoch_type == Epoch.TRAIN or epoch_type == Epoch.VALID  # not doing TEST here
         loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
 
-        parent_batch: ReadsBatch
+        parent_batch: Batch
         for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
             # TODO: magic constant
             for _ in range(3):
                 ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
-                batch = DownsampledReadsBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
+                batch = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
                 output = model.compute_batch_output(batch, balancer)
 
                 evaluation_metrics.record_batch(epoch_type, batch, logits=output.calibrated_logits_b, weights=output.weights)
 
                 if report_worst:
-                    for datum_array, predicted_logit in zip(batch.get_data_be(), output.calibrated_logits_b.detach().cpu().tolist()):
-                        datum = Datum(datum_array)
-                        wrong_call = (datum.get_label() == Label.ARTIFACT and predicted_logit < 0) or \
-                                     (datum.get_label() == Label.VARIANT and predicted_logit > 0)
+                    for int_array, float_array, predicted_logit in zip(batch.get_int_array_be(), batch.get_float_array_be(), output.calibrated_logits_b.detach().cpu().tolist()):
+                        datum = Datum(int_array, float_array)
+                        wrong_call = (datum.get(Data.LABEL) == Label.ARTIFACT and predicted_logit < 0) or \
+                                     (datum.get(Data.LABEL) == Label.VARIANT and predicted_logit > 0)
                         if wrong_call:
-                            alt_count = datum.get_alt_count()
+                            alt_count = datum.get(Data.ALT_COUNT)
                             rounded_count = round_alt_count_to_bin_center(alt_count)
                             confidence = abs(predicted_logit)
 
                             # the 0th aka highest priority element in the queue is the one with the lowest confidence
-                            pqueue = worst_offenders_by_label_and_alt_count[(Label(datum.get_label()), rounded_count)]
+                            pqueue = worst_offenders_by_label_and_alt_count[(Label(datum.get(Data.LABEL)), rounded_count)]
 
                             # clear space if this confidence is more egregious
                             if pqueue.full() and pqueue.queue[0][0] < confidence:
                                 pqueue.get()  # discards the least confident bad call
 
                             if not pqueue.full():  # if space was cleared or if it wasn't full already
-                                pqueue.put((confidence, str(datum.get_contig()) + ":" + str(
-                                    datum.get_position()) + ':' + datum.get_ref_allele() + "->" + datum.get_alt_allele()))
+                                pqueue.put((confidence, str(datum.get(Data.CONTIG)) + ":" + str(
+                                    datum.get(Data.POSITION)) + ':' + datum.get_ref_allele() + "->" + datum.get_alt_allele()))
         # done with this epoch type
     # done collecting data
     return evaluation_metrics, worst_offenders_by_label_and_alt_count
@@ -298,7 +297,7 @@ def evaluate_model(model: ArtifactModel, epoch: int, num_sources: int, balancer:
         embedding_metrics = EmbeddingMetrics()
 
         # now go over just the validation data and generate feature vectors / metadata for tensorboard projectors
-        batch: ReadsBatch
+        batch: Batch
         for batch in tqdm(prefetch_generator(valid_loader), mininterval=60, total=len(valid_loader)):
             logits_b, _, alt_means_be, ref_means_be = model.calculate_logits(batch)
             pred_b = logits_b.detach().cpu()
@@ -314,8 +313,8 @@ def evaluate_model(model: ArtifactModel, epoch: int, num_sources: int, balancer:
 
             embedding_metrics.label_metadata.extend(label_strings)
             embedding_metrics.correct_metadata.extend(correct_strings)
-            embedding_metrics.type_metadata.extend([Variation(idx).name for idx in batch.get_variant_types().cpu().tolist()])
-            embedding_metrics.truncated_count_metadata.extend([alt_count_bin_name(alt_count_bin_index(alt_count)) for alt_count in batch.get_alt_counts().cpu().tolist()])
+            embedding_metrics.type_metadata.extend([Variation(idx).name for idx in batch.get(Data.VARIANT_TYPE).cpu().tolist()])
+            embedding_metrics.truncated_count_metadata.extend([alt_count_bin_name(alt_count_bin_index(alt_count)) for alt_count in batch.get(Data.ALT_COUNT).cpu().tolist()])
             embedding_metrics.features.append(alt_means_be.detach().cpu())
             embedding_metrics.ref_features.append(ref_means_be.detach().cpu())
         embedding_metrics.output_to_summary_writer(summary_writer, epoch=epoch)

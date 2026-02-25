@@ -30,6 +30,8 @@ GTCCTGGACACGCTGTTGGCC
 -11.327
 -0.000
 """
+from __future__ import annotations
+
 import math
 from queue import PriorityQueue
 from typing import List, Generator
@@ -40,9 +42,7 @@ from sklearn.preprocessing import QuantileTransformer
 
 from permutect.data.count_binning import cap_ref_count, cap_alt_count
 from permutect.data.memory_mapped_data import MemoryMappedData
-from permutect.data.reads_datum import ReadsDatum, RawUnnormalizedReadsDatum, NUMBER_OF_BYTES_IN_PACKED_READ, \
-    convert_quantile_normalized_to_uint8
-from permutect.data.datum import DEFAULT_NUMPY_FLOAT, Datum
+from permutect.data.datum import FLOAT_DTYPE, Datum, Data, NUMBER_OF_BYTES_IN_PACKED_READ
 
 from permutect.misc_utils import ConsistentValue
 from permutect.utils.enums import Variation, Label
@@ -52,7 +52,6 @@ EPSILON = 0.00001
 QUANTILE_DATA_COUNT = 10000
 LOG10_TO_LN = 2.30258509299
 
-RAW_READS_DTYPE = DEFAULT_NUMPY_FLOAT
 MIN_NUM_DATA_FOR_NORMALIZATION = 1000
 MAX_NUM_DATA_FOR_NORMALIZATION = 100000
 NUM_RAW_DATA_TO_NORMALIZE_AT_ONCE = 10000
@@ -96,7 +95,7 @@ def count_number_of_data_and_reads_in_text_file(dataset_file):
     return num_data, num_reads
 
 
-def read_raw_unnormalized_data(dataset_file, only_artifacts: bool = False, source: int=0) -> Generator[RawUnnormalizedReadsDatum, None, None]:
+def read_raw_unnormalized_data(dataset_file, only_artifacts: bool = False, source: int=0) -> Generator[Datum, None, None]:
     """
     generator that yields data from a plain text dataset file.
     """
@@ -117,13 +116,13 @@ def read_raw_unnormalized_data(dataset_file, only_artifacts: bool = False, sourc
             ref_allele, alt_allele = mutation.strip().split("->")
 
             ref_sequence_string = file.readline().strip()
-            gatk_info_array = line_to_tensor(file.readline())
+            gatk_info_array = line_to_array(file.readline())
             ref_tensor_size, alt_tensor_size, normal_ref_tensor_size, normal_alt_tensor_size = map(int, file.readline().strip().split())
 
             # the first column is read group index, which we currently discard
             # later we're going to want to use this
-            ref_tensor = read_2d_tensor(file, ref_tensor_size)[:,1:] if ref_tensor_size > 0 else None
-            alt_tensor = read_2d_tensor(file, alt_tensor_size)[:,1:] if alt_tensor_size > 0 else None
+            ref_tensor = read_2d_array(file, ref_tensor_size)[:, 1:] if ref_tensor_size > 0 else None
+            alt_tensor = read_2d_array(file, alt_tensor_size)[:, 1:] if alt_tensor_size > 0 else None
 
             # normal_ref_tensor = read_2d_tensor(file, normal_ref_tensor_size)  # not currently used
             # normal_alt_tensor = read_2d_tensor(file, normal_alt_tensor_size)  # not currently used
@@ -136,27 +135,27 @@ def read_raw_unnormalized_data(dataset_file, only_artifacts: bool = False, sourc
             normal_seq_error_log_lk = read_float(file.readline())
 
             if alt_tensor_size > 0 and passes_label_filter:
-                datum = RawUnnormalizedReadsDatum.from_gatk(label=label, variant_type=Variation.get_type(ref_allele, alt_allele), source=source,
-                                           original_depth=original_depth, original_alt_count=original_alt_count,
-                                           original_normal_depth=original_normal_depth, original_normal_alt_count=original_normal_alt_count,
-                                           contig=contig, position=position, ref_allele=ref_allele, alt_allele=alt_allele,
-                                           seq_error_log_lk=seq_error_log_lk, normal_seq_error_log_lk=normal_seq_error_log_lk,
-                                           ref_sequence_string=ref_sequence_string, gatk_info_array=gatk_info_array,
-                                           ref_tensor=ref_tensor, alt_tensor=alt_tensor)
+                datum = Datum.from_gatk(label=label, variant_type=Variation.get_type(ref_allele, alt_allele), source=source,
+                                                            original_depth=original_depth, original_alt_count=original_alt_count,
+                                                            original_normal_depth=original_normal_depth, original_normal_alt_count=original_normal_alt_count,
+                                                            contig=contig, position=position, ref_allele=ref_allele, alt_allele=alt_allele,
+                                                            seq_error_log_lk=seq_error_log_lk, normal_seq_error_log_lk=normal_seq_error_log_lk,
+                                                            ref_sequence_string=ref_sequence_string, gatk_info_array=gatk_info_array,
+                                                            ref_reads_array_re=ref_tensor, alt_reads_array_re=alt_tensor)
 
-                ref_count = cap_ref_count(datum.get_ref_count())
-                alt_count = cap_alt_count(datum.get_alt_count())
+                ref_count = cap_ref_count(datum.get(Data.REF_COUNT))
+                alt_count = cap_alt_count(datum.get(Data.ALT_COUNT))
                 yield datum.copy_with_downsampled_reads(ref_count, alt_count)
 
 
-def generate_raw_data_from_text_files(dataset_files, sources: List[int]=None) -> Generator[RawUnnormalizedReadsDatum, None, None]:
+def generate_raw_data_from_text_files(dataset_files, sources: List[int]=None) -> Generator[Datum, None, None]:
     data_dim, reads_dim = ConsistentValue(), ConsistentValue()
 
     for n, dataset_file in enumerate(dataset_files):
         source = 0 if sources is None else (sources[0] if len(sources) == 1 else sources[n])
-        reads_datum: RawUnnormalizedReadsDatum
+        reads_datum: Datum
         for reads_datum in read_raw_unnormalized_data(dataset_file, source=source):
-            data_dim.check(len(reads_datum.array))
+            data_dim.check(len(reads_datum.int_array))
             reads_dim.check(reads_datum.reads_re.shape[-1])
             yield reads_datum
 
@@ -174,8 +173,9 @@ def write_raw_unnormalized_data_to_memory_maps(dataset_files, sources: List[int]
     return memory_mapped_data
 
 
-def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[ReadsDatum, None, None]:
-    data_mmap_ve = raw_mmap_data.data_mmap
+def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Datum, None, None]:
+    int_mmap_ve = raw_mmap_data.int_mmap
+    float_mmap_ve = raw_mmap_data.float_mmap
     reads_mmap_re = raw_mmap_data.reads_mmap
     read_end_indices = raw_mmap_data.read_end_indices
 
@@ -189,29 +189,31 @@ def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Read
         read_start_idx = 0 if start_idx == 0 else read_end_indices[start_idx - 1]
 
         read_quantile_transform = make_read_quantile_transform(
-            read_end_indices=(read_end_indices[start_idx:end_idx]-read_start_idx), data_ve=data_mmap_ve[start_idx:end_idx],
+            read_end_indices=(read_end_indices[start_idx:end_idx]-read_start_idx),
+            int_array_ve=int_mmap_ve[start_idx:end_idx],
+            float_array_ve=float_mmap_ve[start_idx:end_idx],
             reads_re=reads_mmap_re[read_start_idx:read_end_indices[end_idx - 1]],)
 
         raw_data_list = []
         for idx in range(start_idx, end_idx):
             reads = reads_mmap_re[0 if idx == 0 else read_end_indices[idx - 1]:read_end_indices[idx]]
-            raw_datum = RawUnnormalizedReadsDatum(datum_array=data_mmap_ve[idx], reads_re=reads)
+            raw_datum = Datum(int_array=int_mmap_ve[idx], float_array=float_mmap_ve[idx], reads_re=reads)
             raw_data_list.append(raw_datum)
 
         normalized_data_list = normalize_raw_data_list(raw_data_list, read_quantile_transform)
         for datum in normalized_data_list:
             yield datum
 
-def make_read_quantile_transform(read_end_indices, data_ve, reads_re):
+def make_read_quantile_transform(read_end_indices, int_array_ve, float_array_ve, reads_re):
     read_end_indices = read_end_indices
 
     # indices_for_normalization = get_normalization_set(data_ve)
     # revert to old behavior: use all ref data for normalization
-    indices_for_normalization = list(range(len(data_ve)))
+    indices_for_normalization = list(range(len(int_array_ve)))
 
     # define ref read ranges for each datum in the normalization set
     normalization_read_start_indices = [read_end_indices[max(idx - 1, 0)] for idx in indices_for_normalization]
-    normalization_ref_counts = [Datum(array=data_ve[idx]).get_ref_count() for idx in indices_for_normalization]
+    normalization_ref_counts = [Datum(int_array=int_array_ve[idx], float_array=float_array_ve[idx]).get(Data.REF_COUNT) for idx in indices_for_normalization]
     normalization_ref_end_indices = [(start + ref_count) for start, ref_count in zip(normalization_read_start_indices, normalization_ref_counts)]
 
     # for every index in the normalization set, get all the reads of the corresponding datum.  Stack all these reads to
@@ -220,16 +222,6 @@ def make_read_quantile_transform(read_end_indices, data_ve, reads_re):
     reads_for_normalization_distance_columns_re = reads_for_normalization_re[:, 6:7]
     read_quantile_transform = QuantileTransformer(n_quantiles=100, output_distribution='normal')
     read_quantile_transform.fit(reads_for_normalization_distance_columns_re)
-
-    # print out quantiles for debugging
-    print("Here are the percentiles of the read quantile transform:")
-    print(f"0: {read_quantile_transform.quantiles_[0]}")
-    print(f"10: {read_quantile_transform.quantiles_[10]}")
-    print(f"25: {read_quantile_transform.quantiles_[25]}")
-    print(f"50: {read_quantile_transform.quantiles_[50]}")
-    print(f"75: {read_quantile_transform.quantiles_[75]}")
-    print(f"90: {read_quantile_transform.quantiles_[90]}")
-    print(f"100: {read_quantile_transform.quantiles_[99]}")
 
     return read_quantile_transform
 
@@ -249,7 +241,7 @@ def make_normalized_mmap_data(dataset_files, sources: List[int]=None) -> MemoryM
         estimated_num_data=raw_memory_mapped_data.num_data, estimated_num_reads=raw_memory_mapped_data.num_reads)
 
 
-def get_normalization_set(raw_stacked_data_ve) -> List[int]:
+def get_normalization_set(raw_int_array_ve, raw_float_array_ve) -> List[int]:
     """
     # we need a set of data that are pretty reliably not artifacts for the quantile normalization.  If we don't do this
     # and naively use the quantiles from the data as a whole we create a nasty domain shift where the artifact/non-artifact
@@ -262,15 +254,15 @@ def get_normalization_set(raw_stacked_data_ve) -> List[int]:
     """
 
     indices_for_normalization_queue = PriorityQueue(maxsize=MAX_NUM_DATA_FOR_NORMALIZATION)
-    for n, raw_data_array in enumerate(raw_stacked_data_ve):
-        raw_datum = Datum(array=raw_data_array)
+    for n in range(len(raw_int_array_ve)):
+        raw_datum = Datum(int_array=raw_int_array_ve[n], float_array=raw_float_array_ve[n])
 
         if indices_for_normalization_queue.full():
             indices_for_normalization_queue.get()  # pop the lowest-priority element i.e. the worst-suited for normalization
 
         # priority is negative squared difference between original allele fraction and 1/2
         # thus most germline het-like data have highest priority
-        priority = -((raw_datum.get_original_alt_count() / raw_datum.get_original_depth()) - 0.5) ** 2
+        priority = -((raw_datum.get(Data.ORIGINAL_ALT_COUNT) / raw_datum.get(Data.ORIGINAL_DEPTH)) - 0.5) ** 2
 
         indices_for_normalization_queue.put((priority, n))
     all_indices_for_normalization = []
@@ -289,7 +281,7 @@ def get_normalization_set(raw_stacked_data_ve) -> List[int]:
 
 
 # this normalizes the buffer and also prepends new features to the info tensor
-def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quantile_transform) -> List[ReadsDatum]:
+def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> List[Datum]:
     # 2D array.  Rows are ref/alt reads, columns are read features
     all_reads_re = np.vstack([datum.reads_re for datum in buffer])
 
@@ -348,8 +340,8 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
         (hap_equiv_binary_1, hap_equiv_binary_2, hap_equiv_binary_3, edit_dist_binary, hap_dom_binary, str_info_array_ve))
 
     tlod_over_nalt = all_info_ve[:, 4]
-    orig_alt_counts = np.array([datum.get_original_alt_count() for datum in buffer])
-    orig_depths = np.array([datum.get_original_depth() for datum in buffer])
+    orig_alt_counts = np.array([datum.get(Data.ORIGINAL_ALT_COUNT) for datum in buffer])
+    orig_depths = np.array([datum.get(Data.ORIGINAL_DEPTH) for datum in buffer])
     orig_ref_counts = orig_depths - orig_alt_counts
 
     natural_log_tlod = LOG10_TO_LN * tlod_over_nalt * orig_alt_counts
@@ -418,11 +410,11 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
     output_uint8_reads_array = np.hstack((packed_output_array, distance_columns_output))
 
     normalized_result = []
-    raw_datum: RawUnnormalizedReadsDatum
+    raw_datum: Datum
     for n, raw_datum in enumerate(buffer):
         ref_start_index = 0 if n == 0 else read_index_ranges[n - 1]     # first index of this datum's reads
         alt_end_index = read_index_ranges[n]
-        alt_start_index = ref_start_index + raw_datum.get_ref_count()
+        alt_start_index = ref_start_index + raw_datum.get(Data.REF_COUNT)
 
         # TODO: maybe we could also have columnwise nonparametric test statistics, like for example we record the
         # TODO: quantiles over all ref reads
@@ -431,27 +423,26 @@ def normalize_raw_data_list(buffer: List[RawUnnormalizedReadsDatum], read_quanti
         extra_info_e = np.hstack((alt_distance_medians_e, alt_boolean_means_e))
 
         output_reads_re = output_uint8_reads_array[ref_start_index:alt_end_index]
-        output_datum: ReadsDatum = ReadsDatum(datum_array=raw_datum.array, compressed_reads_re=output_reads_re)
+        output_datum: Datum = Datum(int_array=raw_datum.int_array, float_array=raw_datum.float_array,
+                                              reads_re=output_reads_re, compressed_reads=True)
 
         output_datum.set_info_1d(np.hstack((all_info_transformed_ve[n], extra_info_e)))
         normalized_result.append(output_datum)
-        if len(output_datum.get_reads_array_re()) == 0:
-            j = 90
 
     return normalized_result
 
 
-def line_to_tensor(line: str) -> np.ndarray:
+def line_to_array(line: str) -> np.ndarray:
     tokens = line.strip().split()
     floats = [max(min(MAX_VALUE, float(token)), -MAX_VALUE) for token in tokens]
-    return np.array(floats, dtype=DEFAULT_NUMPY_FLOAT)
+    return np.array(floats, dtype=FLOAT_DTYPE)
 
 
-def read_2d_tensor(file, num_lines: int) -> np.ndarray:
+def read_2d_array(file, num_lines: int) -> np.ndarray:
     if num_lines == 0:
         return None
     lines = [file.readline() for _ in range(num_lines)]
-    return np.vstack([line_to_tensor(line) for line in lines])
+    return np.vstack([line_to_array(line) for line in lines])
 
 
 def read_integers(line: str):
@@ -460,3 +451,15 @@ def read_integers(line: str):
 
 def read_float(line: str):
     return float(line.strip().split()[0])
+
+
+
+# quantile-normalized data is generally some small number of standard deviations from 0.  We can store as uint8 by
+# mapping x --> 32x + 128 and restricting to the range [0,255], which maps -4 and +4 standard deviations to the limits
+# of uint8
+def convert_quantile_normalized_to_uint8(data: np.ndarray):
+    return np.ndarray.astype(np.clip(data * 32 + 128, 0, 255), np.uint8)
+
+
+def convert_uint8_to_quantile_normalized(data: np.ndarray):
+    return np.ndarray.astype((data - 128) / 32, FLOAT_DTYPE)

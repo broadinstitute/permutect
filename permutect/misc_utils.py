@@ -1,12 +1,16 @@
 import time
-from typing import Iterator
+from typing import Iterator, Set
 
+import cyvcf2
 import psutil
 import tarfile
 import os
 import torch
 from torch import Tensor, nn
 from torch.nn import Parameter
+
+from permutect.data.datum import Datum, Data
+from permutect.utils.allele_utils import trim_alleles_on_right, truncate_bases_if_necessary
 
 
 def report_memory_usage(message: str = ""):
@@ -119,3 +123,30 @@ def backpropagate(optimizer: torch.optim.Optimizer, loss: Tensor, params_to_clip
     loss.backward()
     nn.utils.clip_grad_norm_(params_to_clip, max_norm=1.0)
     optimizer.step()
+
+
+def get_first_numeric_element(variant, key):
+    tuple_or_scalar = variant.INFO[key]
+    return tuple_or_scalar[0] if type(tuple_or_scalar) is tuple else tuple_or_scalar
+
+
+def encode(contig: str, position: int, ref: str, alt: str):
+    # TODO: contigs stored as integer index must be converted back to string to compare VCF variants with dataset variants!!!
+    trimmed_ref, trimmed_alt = trim_alleles_on_right(ref, alt)
+    return contig + ':' + str(position) + ':' + truncate_bases_if_necessary(trimmed_alt)
+
+
+def encode_datum(datum: Datum, contig_index_to_name_map):
+    contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
+    return encode(contig_name, datum.get(Data.POSITION), datum.get_ref_allele(), datum.get_alt_allele())
+
+
+def encode_variant(v: cyvcf2.Variant, zero_based=False):
+    alt = v.ALT[0]  # TODO: we're assuming biallelic
+    ref = v.REF
+    start = (v.start + 1) if zero_based else v.start
+    return encode(v.CHROM, start, ref, alt)
+
+
+def overlapping_filters(v: cyvcf2.Variant, filters_set: Set[str]) -> Set[str]:
+    return set([]) if v.FILTER is None else set(v.FILTER.split(";")).intersection(filters_set)

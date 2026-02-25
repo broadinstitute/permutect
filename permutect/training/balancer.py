@@ -3,13 +3,11 @@ import math
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
-from torch import Tensor
 from torch.distributions import Beta
 from torch.nn import Module, Parameter
 from torch.utils.tensorboard import SummaryWriter
 
 from permutect.data.batch import Batch, BatchIndexedTensor
-from permutect.data.reads_batch import ReadsBatch
 from permutect.data.count_binning import ALT_COUNT_BIN_BOUNDS, REF_COUNT_BIN_BOUNDS
 from permutect.metrics import plotting
 from permutect.utils.enums import Label, Variation, Epoch
@@ -57,7 +55,7 @@ class Balancer(Module):
 
         return ref_fractions_b, alt_fractions_b
 
-    def process_batch_and_compute_weights(self, batch: ReadsBatch):
+    def process_batch_and_compute_weights(self, batch: Batch):
         # this updates the counts that are used to compute weights, recomputes the weights, and returns the weights
         # increment counts by 1
         batch.batch_indices().increment_tensor(self.counts_slvra, values=torch.ones(batch.size(), device=self.device))
