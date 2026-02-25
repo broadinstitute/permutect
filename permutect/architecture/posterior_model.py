@@ -8,9 +8,9 @@ from tqdm.autonotebook import trange, tqdm
 
 from permutect.architecture.posterior_model_priors import PosteriorModelPriors
 from permutect.architecture.spectra.posterior_model_spectra import PosteriorModelSpectra
+from permutect.data.batch import Batch
 from permutect.data.datum import DEFAULT_GPU_FLOAT, DEFAULT_CPU_FLOAT, Data
 from permutect.data.prefetch_generator import prefetch_generator
-from permutect.data.reads_batch import ReadsBatch
 from permutect.metrics import plotting
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS, count_from_alt_bin_index, alt_count_bin_index
 from permutect.misc_utils import StreamingAverage, gpu_if_available, backpropagate
@@ -34,14 +34,14 @@ class PosteriorModel(torch.nn.Module):
 
         self.to(device=self._device, dtype=self._dtype)
 
-    def posterior_probabilities_bc(self, batch: ReadsBatch) -> Tensor:
+    def posterior_probabilities_bc(self, batch: Batch) -> Tensor:
         """
         :param batch:
         :return: non-log probabilities as a 2D tensor, indexed by batch 'b', Call type 'c'
         """
         return torch.nn.functional.softmax(self.log_relative_posteriors_bc(batch), dim=1)
 
-    def error_probabilities_b(self, batch: ReadsBatch, germline_mode: bool = False) -> Tensor:
+    def error_probabilities_b(self, batch: Batch, germline_mode: bool = False) -> Tensor:
         """
         :param germline_mode: if True, germline classification is not considered an error mode
         :param batch:
@@ -50,7 +50,7 @@ class PosteriorModel(torch.nn.Module):
         assert not (germline_mode and self.no_germline_mode), "germline mode and no-germline mode are incompatible"
         return 1 - self.posterior_probabilities_bc(batch)[:, Call.GERMLINE if germline_mode else Call.SOMATIC]     # 0th column is variant
 
-    def log_posterior_and_ingredients(self, batch: ReadsBatch) -> Tensor:
+    def log_posterior_and_ingredients(self, batch: Batch) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """
         :param batch:
         :batch.seq_error_log_likelihoods() is the probability that these *particular* reads exhibit the alt allele given a
@@ -78,7 +78,7 @@ class PosteriorModel(torch.nn.Module):
 
         return log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, log_posteriors_bc
 
-    def log_relative_posteriors_bc(self, batch: ReadsBatch) -> Tensor:
+    def log_relative_posteriors_bc(self, batch: Batch) -> Tensor:
         _, _, _, log_posteriors_bc = self.log_posterior_and_ingredients(batch)
         return log_posteriors_bc
 
@@ -101,7 +101,7 @@ class PosteriorModel(torch.nn.Module):
             # data for M step
             posterior_totals_tc = torch.zeros((len(Variation), len(Call)), device=self._device)
 
-            batch: ReadsBatch
+            batch: Batch
             for batch in tqdm(prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)):
                 relative_posteriors = self.log_relative_posteriors_bc(batch)
                 log_evidence = torch.logsumexp(relative_posteriors, dim=1)
@@ -160,7 +160,7 @@ class PosteriorModel(torch.nn.Module):
 
         # TODO: use the EvaluationMetrics class to generate the theoretical ROC curve
         # TODO: then delete plotting.plot_theoretical_roc_on_axis
-        batch: ReadsBatch
+        batch: Batch
         for batch in tqdm(prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)):
             # TODO: should this be the original alt counts instead?
             alt_counts_b = batch.get(Data.ALT_COUNT).cpu().tolist()

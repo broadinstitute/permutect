@@ -12,10 +12,10 @@ from permutect import constants
 from permutect.architecture.posterior_model import PosteriorModel
 from permutect.architecture.artifact_model import ArtifactModel, load_model
 from permutect.data import plain_text_data
+from permutect.data.batch import Batch
 from permutect.data.datum import Datum, Data, COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.prefetch_generator import prefetch_generator
-from permutect.data.reads_batch import ReadsBatch
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.data.count_binning import MAX_ALT_COUNT, alt_count_bin_index, alt_count_bin_name
 from permutect.metrics.evaluation_metrics import EvaluationMetrics, EmbeddingMetrics
@@ -163,7 +163,7 @@ def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_
     loader = dataset.make_data_loader(batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
 
     print("creating posterior data...")
-    batch: ReadsBatch
+    batch: Batch
     for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
         artifact_logits_b, _, alt_means_be, _ = model.calculate_logits(batch)
         for int_array, float_array, logit, embedding in zip(batch.get_int_array_be(), batch.get_float_array_be(),
@@ -216,7 +216,7 @@ def apply_filtering_to_vcf(input_vcf, output_vcf, contig_index_to_name_map, erro
     artifact_logit_metrics = AccuracyMetrics.create(num_sources=len(Call))
     encoding_to_posterior_results = {}
 
-    batch: ReadsBatch
+    batch: Batch
     for batch in tqdm(prefetch_generator(posterior_loader), mininterval=60, total=len(posterior_loader)):
         # posterior, along with intermediate tensors for debugging/interpretation
         log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, log_posteriors_bc = \

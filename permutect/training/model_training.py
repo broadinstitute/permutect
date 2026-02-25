@@ -1,5 +1,4 @@
 import math
-import random
 import tempfile
 import time
 from collections import defaultdict
@@ -16,13 +15,13 @@ from permutect.architecture.feature_clustering import MAX_LOGIT
 from permutect.training.balancer import Balancer
 from permutect.training.downsampler import Downsampler
 from permutect.architecture.artifact_model import ArtifactModel, record_embeddings
-from permutect.data.reads_batch import DownsampledReadsBatch, ReadsBatch
+from permutect.data.reads_batch import DownsampledReadsBatch
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.data.datum import Datum, Data
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.metrics.evaluation_metrics import EmbeddingMetrics, EvaluationMetrics
 from permutect.metrics.loss_metrics import LossMetrics
-from permutect.data.batch import BatchProperty
+from permutect.data.batch import BatchProperty, Batch
 from permutect.data.count_binning import alt_count_bin_index, round_alt_count_to_bin_center, alt_count_bin_name
 from permutect.parameters import TrainingParameters
 from permutect.misc_utils import report_memory_usage, backpropagate, freeze, unfreeze, Timer
@@ -88,8 +87,8 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
 
             loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
 
-            batch: ReadsBatch
-            parent_batch: ReadsBatch
+            batch: Batch
+            parent_batch: Batch
             for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
                 # TODO: really to get the assumed balance we should only train on downsampled batches.  But using one
                 # TODO: downsampled batch with the proper balance will still go a long way
@@ -239,7 +238,7 @@ def collect_evaluation_data(model: ArtifactModel, num_sources: int, balancer: Ba
         assert epoch_type == Epoch.TRAIN or epoch_type == Epoch.VALID  # not doing TEST here
         loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
 
-        parent_batch: ReadsBatch
+        parent_batch: Batch
         for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
             # TODO: magic constant
             for _ in range(3):
@@ -298,7 +297,7 @@ def evaluate_model(model: ArtifactModel, epoch: int, num_sources: int, balancer:
         embedding_metrics = EmbeddingMetrics()
 
         # now go over just the validation data and generate feature vectors / metadata for tensorboard projectors
-        batch: ReadsBatch
+        batch: Batch
         for batch in tqdm(prefetch_generator(valid_loader), mininterval=60, total=len(valid_loader)):
             logits_b, _, alt_means_be, ref_means_be = model.calculate_logits(batch)
             pred_b = logits_b.detach().cpu()

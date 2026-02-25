@@ -10,8 +10,7 @@ from torch.utils.data import DataLoader, IterableDataset
 
 from permutect.data.datum import Datum, COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.memory_mapped_data import MemoryMappedData
-from permutect.data.reads_batch import ReadsBatch
-from permutect.data.batch import BatchProperty, BatchIndexedTensor
+from permutect.data.batch import BatchProperty, BatchIndexedTensor, Batch
 from permutect.misc_utils import ConsistentValue, Timer, report_memory_usage
 from permutect.utils.enums import Variation, Label
 
@@ -190,7 +189,7 @@ class ReadsDataset(IterableDataset):
         return num_sources
 
     def make_data_loader(self, batch_size: int, pin_memory=False, num_workers: int = 0):
-        return DataLoader(dataset=self, batch_size=batch_size, collate_fn=ReadsBatch, pin_memory=pin_memory,
+        return DataLoader(dataset=self, batch_size=batch_size, collate_fn=Batch, pin_memory=pin_memory,
                           num_workers=num_workers, prefetch_factor=2 if num_workers > 0 else None, persistent_workers=num_workers > 0)
 
 # ex: chunk([a,b,c,d,e], 3) = [[a,b,c], [d,e]]

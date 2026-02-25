@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 from random import randint
 from typing import List
 
@@ -63,7 +62,7 @@ class DownsampledReadsBatch(ReadsBatch):
         keep_alt_mask.bernoulli_(p=alt_probs_r)    # fills in-place with Bernoulli samples
 
         # unlike ref, we need to ensure at least one alt read.  One way to do that is to set one random element from each range of alts
-        # to be masked to keep.  If eg we have alt counts of 3, 4, 7, 2 in the batch, the cumsums starting from zero are
+        # to be masked to keep.  If e.g. we have alt counts of 3, 4, 7, 2 in the batch, the cumsums starting from zero are
         # 0, 3, 7, 14.  If we simply set indices 0, 3, 7, 14 of the mask to 1, we non-randomly guarantee that at least one alt read
         # (the first) is kept.  If we do torch.remainder(torch.tensor([random integer]), alt counts) we get offsets within each group of
         # alts.  For example if the random integer is 11 the offsets are [2,3,4,1].  Adding these offsets to the zero-based cumsums

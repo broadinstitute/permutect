@@ -4,8 +4,8 @@ from torch import nn
 from permutect.architecture.spectra.artifact_spectra import ArtifactSpectra
 from permutect.architecture.spectra.normal_artifact_spectrum import NormalArtifactSpectrum
 from permutect.architecture.spectra.somatic_spectrum import SomaticSpectrum
+from permutect.data.batch import Batch
 from permutect.data.datum import DEFAULT_GPU_FLOAT, DEFAULT_CPU_FLOAT, Data
-from permutect.data.reads_batch import ReadsBatch
 from permutect.misc_utils import gpu_if_available
 from permutect.utils.enums import Call
 from permutect.utils.stats_utils import beta_binomial_log_lk
@@ -60,7 +60,7 @@ class PosteriorModelSpectra(nn.Module):
         self.artifact_spectra = ArtifactSpectra()
         self.normal_artifact_spectra = NormalArtifactSpectrum()
 
-    def spectra_log_likelihoods_bc(self, batch: ReadsBatch) -> torch.Tensor:
+    def spectra_log_likelihoods_bc(self, batch: Batch) -> tuple[torch.Tensor, torch.Tensor]:
         """
         'bc' indexing denotes by datum within batch, then by Call type
         """
