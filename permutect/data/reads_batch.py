@@ -10,8 +10,7 @@ from torch import Tensor
 from torch_scatter import segment_csr
 
 from permutect.data.batch import Batch
-from permutect.data.datum import FLOAT_DTYPE, Data, Datum, NUMBER_OF_BYTES_IN_PACKED_READ
-from permutect.data.plain_text_data import convert_uint8_to_quantile_normalized
+from permutect.data.datum import Data, Datum
 
 
 class ReadsBatch(Batch):
