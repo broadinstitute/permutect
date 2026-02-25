@@ -15,7 +15,7 @@ from permutect.architecture.feature_clustering import MAX_LOGIT
 from permutect.training.balancer import Balancer
 from permutect.training.downsampler import Downsampler
 from permutect.architecture.artifact_model import ArtifactModel, record_embeddings
-from permutect.data.reads_batch import DownsampledReadsBatch
+from permutect.data.batch import DownsampledBatch
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.data.datum import Datum, Data
 from permutect.data.prefetch_generator import prefetch_generator
@@ -93,9 +93,9 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                 # TODO: really to get the assumed balance we should only train on downsampled batches.  But using one
                 # TODO: downsampled batch with the proper balance will still go a long way
                 ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
-                downsampled_batch1 = DownsampledReadsBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
+                downsampled_batch1 = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
                 ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
-                downsampled_batch2 = DownsampledReadsBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
+                downsampled_batch2 = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
                 batches = [downsampled_batch1, downsampled_batch2]
                 outputs = [model.compute_batch_output(batch, balancer) for batch in batches]
                 # parent_output = model.compute_batch_output(parent_batch, balancer)
@@ -243,7 +243,7 @@ def collect_evaluation_data(model: ArtifactModel, num_sources: int, balancer: Ba
             # TODO: magic constant
             for _ in range(3):
                 ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
-                batch = DownsampledReadsBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
+                batch = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
                 output = model.compute_batch_output(batch, balancer)
 
                 evaluation_metrics.record_batch(epoch_type, batch, logits=output.calibrated_logits_b, weights=output.weights)

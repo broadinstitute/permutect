@@ -241,7 +241,7 @@ class Datum:
 
     # this is the number of read features in a PyTorch float tensor, after unpacking the compressed binaries
     def num_read_features(self) -> int:
-        if self.reads_re.dtype == RAW_READS_ARRAY_DTYPE:
+        if self.reads_re.dtype == RAW_READS_ARRAY_DTYPE or self.reads_re.shape[1] == 0:
             return self.reads_re.shape[1]
         elif self.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE:
             num_read_uint8s = self.reads_re.shape[1]
