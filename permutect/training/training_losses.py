@@ -18,7 +18,8 @@ class TrainingLosses:
         is_labeled_b = batch.get_is_labeled_mask()
         self.supervised_loss_metrics.record(batch, supervised_losses_b, is_labeled_b * output.weights)
         self.unsupervised_loss_metrics.record(batch, unsupervised_losses_b, (1 - is_labeled_b) * output.weights)
-        self.source_prediction_loss_metrics.record(batch, source_losses_b, output.source_weights)
+        if self.source_prediction_loss_metrics is not None:
+            self.source_prediction_loss_metrics.record(batch, source_losses_b, output.source_weights)
         self.alt_count_loss_metrics.record(batch, alt_count_losses_b, output.weights)
 
     def write_to_summary_writer(self, epoch_type, epoch, summary_writer, make_plots: bool):
