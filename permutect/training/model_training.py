@@ -80,35 +80,24 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
 
             loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
 
-            batch: Batch
+
             parent_batch: Batch
             for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
-                # TODO: really to get the assumed balance we should only train on downsampled batches.  But using one
-                # TODO: downsampled batch with the proper balance will still go a long way
-                ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
-                downsampled_batch1 = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
-                ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
-                downsampled_batch2 = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
-                batches = [downsampled_batch1, downsampled_batch2]
-                outputs = [model.compute_batch_output(batch, balancer) for batch in batches]
+                labels_b = parent_batch.get_training_labels()
+                is_labeled_b = parent_batch.get_is_labeled_mask()
 
-                # first handle the labeled loss and the adversarial tasks, which treat the parent and downsampled batches independently
-                loss = 0
-                for n, (batch, output) in enumerate(zip(batches, outputs)):
-                    labels_b = batch.get_training_labels()
-                    is_labeled_b = batch.get_is_labeled_mask()
+                batch: DownsampledBatch
+                for downsampling_iteration in range(2):
+                    ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
+                    batch = DownsampledBatch(parent_batch, ref_fracs_b, alt_fracs_b)
+                    output = model.compute_batch_output(batch, balancer)
+
 
                     source_losses_b = model.compute_source_prediction_losses(output.features_be, batch)
                     alt_count_losses_b = model.compute_alt_count_losses(output.features_be, batch)
                     supervised_losses_b = is_labeled_b * bce(output.calibrated_logits_b, labels_b)
 
-                    # unsupervised loss is consistency not just between overall artifact / non-artifact predictions,
-                    # but between the particular cluster predictions.
-                    # TODO: should we detach() torch.sigmoid(other_output...)?
-                    other_output = outputs[1 if n == 0 else 0]
-
-                    # note that columns of output.calibrated_logits_bk are nonartifact, then outlier, then all the
-                    # different artifact clusters.
+                    # columns of output.calibrated_logits_bk are nonartifact, then outlier, then artifact clusters.
                     nonart_logits_bk = output.calibrated_logits_bk[:,0][:,None]
                     art_logits_bk = output.calibrated_logits_bk[:, 2:]
                     nonoutlier_logits_bk = torch.cat((nonart_logits_bk, art_logits_bk), dim=-1)
@@ -128,9 +117,8 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     unsupervised_losses_b = (1 - is_labeled_b) * outlier_losses_b
 
                     losses = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + output.source_weights * source_losses_b
-                    loss += torch.sum(losses)
+                    loss = torch.sum(losses)
 
-                    #if not loss.isnan().any().item():
                     loss_metrics.record(batch, supervised_losses_b, is_labeled_b * output.weights)
                     loss_metrics.record(batch, unsupervised_losses_b, output.weights)
                     source_prediction_loss_metrics.record(batch, source_losses_b, output.source_weights)
