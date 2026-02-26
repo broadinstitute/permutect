@@ -38,7 +38,8 @@ def main_without_parsing(args):
             ArtifactModel(params=params, num_read_features=train_dataset.num_read_features(), num_info_features=train_dataset.num_info_features(),
                           haplotypes_length=train_dataset.haplotypes_length(), device=gpu_if_available())
 
-    train_artifact_model(model, train_dataset, valid_dataset, training_params, summary_writer=summary_writer, epochs_per_evaluation=10)
+    train_artifact_model(model, train_dataset, valid_dataset, training_params, summary_writer=summary_writer,
+                         epochs_per_evaluation=10)
 
     summary_writer.close()
 
