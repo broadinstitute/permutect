@@ -10,7 +10,6 @@ HIDDEN_LAYERS_NAME = 'hidden_layers'
 
 SOURCES_NAME = 'sources'
 SOURCE_NAME = 'source'
-CALIBRATION_SOURCES_NAME = 'calibration_sources'
 
 INPUT_NAME = 'input'
 OUTPUT_NAME = 'output'

@@ -1,5 +1,4 @@
 import math
-import tempfile
 import time
 from collections import defaultdict
 from queue import PriorityQueue
@@ -10,7 +9,6 @@ from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange, tqdm
 
-from permutect import constants
 from permutect.architecture.feature_clustering import MAX_LOGIT, FeatureClustering
 from permutect.training.balancer import Balancer
 from permutect.training.checkpoint import Checkpoint
@@ -21,11 +19,10 @@ from permutect.data.reads_dataset import ReadsDataset
 from permutect.data.datum import Datum, Data
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.metrics.evaluation_metrics import EmbeddingMetrics, EvaluationMetrics
-from permutect.metrics.loss_metrics import LossMetrics
 from permutect.data.batch import BatchProperty, Batch
 from permutect.data.count_binning import alt_count_bin_index, round_alt_count_to_bin_center, alt_count_bin_name
 from permutect.parameters import TrainingParameters
-from permutect.misc_utils import report_memory_usage, backpropagate, freeze, unfreeze, Timer, check_for_nan
+from permutect.misc_utils import report_memory_usage, backpropagate, freeze, unfreeze, check_for_nan
 from permutect.training.training_losses import TrainingLosses
 from permutect.utils.enums import Variation, Epoch, Label
 
@@ -34,11 +31,9 @@ WORST_OFFENDERS_QUEUE_SIZE = 100
 
 def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, valid_dataset: ReadsDataset,
                          training_params: TrainingParameters, summary_writer: SummaryWriter,
-                         epochs_per_evaluation: int = None, calibration_sources: List[int] = None):
-    #torch.autograd.set_detect_anomaly(True)
+                         epochs_per_evaluation: int = None):
     device, dtype = model._device, model._dtype
     bce = nn.BCEWithLogitsLoss(reduction='none')  # no reduction because we may want to first multiply by weights for unbalanced data
-    ce = nn.CrossEntropyLoss(reduction='none')  # likewise
     balancer = Balancer(num_sources=train_dataset.num_sources(), device=device).to(device=device, dtype=dtype)
     downsampler: Downsampler = Downsampler(num_sources=train_dataset.num_sources()).to(device=device, dtype=dtype)
     downsampler.optimize_downsampling_balance(train_dataset.totals_slvra.to(device=device))
@@ -78,9 +73,6 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
             batch: Batch
             parent_batch: Batch
             for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
-                sources = parent_batch.get(Data.SOURCE)
-                source_mask_b = 1 if (calibration_sources is None or not is_calibration_epoch) else \
-                    torch.sum(torch.vstack([(sources == source).int() for source in calibration_sources]), dim=-1)
                 labels_b = parent_batch.get_training_labels()
                 is_labeled_b = parent_batch.get_is_labeled_mask()
 
@@ -88,16 +80,16 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
                     batch = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
                     output = model.compute_batch_output(batch, balancer)
-                    source_losses_b = source_mask_b * model.compute_source_prediction_losses(output.features_be, batch)
-                    alt_count_losses_b = source_mask_b * model.compute_alt_count_losses(output.features_be, batch)
-                    supervised_losses_b = source_mask_b * is_labeled_b * bce(output.calibrated_logits_b, labels_b)
+                    source_losses_b = model.compute_source_prediction_losses(output.features_be, batch)
+                    alt_count_losses_b = model.compute_alt_count_losses(output.features_be, batch)
+                    supervised_losses_b = is_labeled_b * bce(output.calibrated_logits_b, labels_b)
 
                     # to penalize outliers / encourage data in high prob density, unsupervised loss is binary cross entropy
                     # where targets are all "not-outlier" (i.e. 0).  Since some genuine outlier data does exist, such as
                     # rare or unmodeled artifacts, we clip the outlier logit to avert unduly strong influence.
                     outlier_binary_logits_b = FeatureClustering.outlier_binary_logits(output.calibrated_logits_bk)
                     outlier_losses_b = bce(torch.clip(outlier_binary_logits_b, max=MAX_LOGIT/2), torch.zeros_like(outlier_binary_logits_b))
-                    unsupervised_losses_b = (1 - is_labeled_b) * source_mask_b * outlier_losses_b
+                    unsupervised_losses_b = (1 - is_labeled_b) * outlier_losses_b
 
                     losses = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + output.source_weights * source_losses_b
                     loss = torch.sum(losses)
