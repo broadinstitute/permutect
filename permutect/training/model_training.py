@@ -2,7 +2,6 @@ import math
 import time
 from collections import defaultdict
 from queue import PriorityQueue
-from typing import List
 
 import torch
 from torch import nn
@@ -61,21 +60,16 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
         model.source_predictor.set_adversarial_strength((2 / (1 + math.exp(-0.1 * (epoch - 1)))) - 1)
 
         for epoch_type in [Epoch.TRAIN, Epoch.VALID]:
-            model.set_epoch_type(epoch_type)
-            # in calibration epoch, freeze the model except for calibration
-            if is_calibration_epoch and epoch_type == Epoch.TRAIN:
-                freeze(model.parameters())
-                unfreeze(model.calibration_parameters())
-
+            model.set_epoch_type(epoch_type, is_calibration_epoch=is_calibration_epoch)
             training_losses = TrainingLosses(num_sources=num_sources, device=device)
             loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
 
-            batch: Batch
             parent_batch: Batch
             for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
                 labels_b = parent_batch.get_training_labels()
                 is_labeled_b = parent_batch.get_is_labeled_mask()
 
+                batch: DownsampledBatch
                 for downsampling_iteration in range(2):
                     ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
                     batch = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)

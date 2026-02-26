@@ -114,10 +114,14 @@ class ArtifactModel(torch.nn.Module):
     def calibration_parameters(self):
         return [self.feature_clustering.alt_log_stdev_k, self.feature_clustering.ref_log_stdev_k]
 
-    def set_epoch_type(self, epoch_type: Epoch):
+    def set_epoch_type(self, epoch_type: Epoch, is_calibration_epoch: bool = False):
         if epoch_type == Epoch.TRAIN:
             self.train(True)
-            unfreeze(self.parameters())
+            if is_calibration_epoch:
+                freeze(self.parameters())
+                unfreeze(self.calibration_parameters())
+            else:
+                unfreeze(self.parameters())
         else:
             self.train(False)
             freeze(self.parameters())
