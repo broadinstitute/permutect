@@ -12,6 +12,7 @@ from permutect.data.batch import Batch, BatchProperty, BatchIndexedTensor
 from permutect.data.count_binning import NUM_LOGIT_BINS, top_of_logit_bin, logits_from_bin_indices, \
     ALT_COUNT_BIN_BOUNDS, REF_COUNT_BIN_BOUNDS, NUM_ALT_COUNT_BINS, alt_count_bin_name, NUM_REF_COUNT_BINS
 from permutect.metrics import plotting
+from permutect.metrics.plotting import legend_if_applicable
 from permutect.misc_utils import gpu_if_available
 from permutect.utils.array_utils import select_and_sum
 from permutect.utils.enums import Variation, Epoch, Label
@@ -288,7 +289,7 @@ class AccuracyMetrics(BatchIndexedTensor):
                             line_label = f"{label.name} ({source})" if multiple_sources else label.name
                             x_y_label_tuples.append((x_axis_logits.cpu().numpy(), normalized_totals_slg[source, label].cpu().numpy(), line_label))
                 plotting.simple_plot_on_axis(ax, x_y_label_tuples, None, None)
-                ax.legend()
+                legend_if_applicable(ax)
 
         column_names = [alt_count_bin_name(count_idx) for count_idx in range(NUM_ALT_COUNT_BINS)]
         row_names = [var_type.name for var_type in Variation]

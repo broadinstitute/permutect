@@ -1,3 +1,5 @@
+import warnings
+
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 import math
@@ -7,37 +9,38 @@ from typing import List
 # one or more simple plots of y data vs x data on shared axes
 from permutect.data.count_binning import LOGIT_BIN_SKIP
 
+# Filter the specific warning
+warnings.filterwarnings("ignore", message="No artists with labels found to put in legend.  Note that artists whose label start with an underscore are ignored when legend() is called with no argument.")
+
+def legend_if_applicable(ax):
+    _, labels = ax.get_legend_handles_labels()
+    if labels:
+        ax.legend()
 
 def simple_plot(x_y_lab_tuples, x_label, y_label, title):
     fig = plt.figure()
     curve = fig.gca()
-    labels_present = False
     for (x, y, lab) in x_y_lab_tuples:
         if lab is not None:
             curve.plot(x, y, label=lab)
-            labels_present = True
         else:
             curve.plot(x, y)
     curve.set_title(title)
     curve.set_xlabel(x_label)
     curve.set_ylabel(y_label)
-    if labels_present:
-        curve.legend()
+    legend_if_applicable(curve)
     return fig, curve
 
 
 def simple_plot_on_axis(ax, x_y_lab_tuples, x_label, y_label):
-    labels_present = False
     for (x, y, lab) in x_y_lab_tuples:
         if lab is not None:
             ax.plot(x, y, label=lab)
-            labels_present = True
         else:
             ax.plot(x, y)
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
-    if labels_present:
-        ax.legend()
+    legend_if_applicable(ax)
 
 
 # x bounds has length 1 greater than values's 0th dimension
@@ -71,7 +74,7 @@ def grouped_bar_plot_on_axis(ax, heights_by_category, x_labels, y_label):
     ax.set_xticks([ticks_offset + spacing*i for i in range(len(x_labels))], labels=x_labels)
     plt.setp(ax.get_xticklabels(), rotation=90)
     ax.set_ylabel(y_label)
-    ax.legend()
+    legend_if_applicable(ax)
 
 
 # heights by category is a dict of category to bar heights, where the nth bar height
@@ -193,7 +196,10 @@ def tidy_subplots(figure: Figure, axes, x_label: str = None, y_label: str = None
     for ax in figure.get_axes():
         if not keep_axes_tick_labels:
             ax.label_outer()  # y tick labels only shown in leftmost column, x tick labels only shown on bottom row
-        ax.legend().set_visible(False)  # hide the redundant identical subplot legends
+        _, labels = ax.get_legend_handles_labels()
+        if labels:
+            ax.legend().set_visible(False)  # hide the redundant identical subplot legends
+
 
         # remove the subplot labels and title -- these will be given manually to the whole figure and to the outer rows
         ax.set_xlabel(None)
