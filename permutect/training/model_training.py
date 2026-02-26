@@ -78,37 +78,21 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
             batch: Batch
             parent_batch: Batch
             for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
-                # TODO: really to get the assumed balance we should only train on downsampled batches.  But using one
-                # TODO: downsampled batch with the proper balance will still go a long way
-                ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
-                downsampled_batch1 = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
-                ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
-                downsampled_batch2 = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
-                batches = [downsampled_batch1, downsampled_batch2]
-                outputs = [model.compute_batch_output(batch, balancer) for batch in batches]
-                # parent_output = model.compute_batch_output(parent_batch, balancer)
-
                 sources = parent_batch.get(Data.SOURCE)
                 source_mask_b = 1 if (calibration_sources is None or not is_calibration_epoch) else \
                     torch.sum(torch.vstack([(sources == source).int() for source in calibration_sources]), dim=-1)
+                labels_b = parent_batch.get_training_labels()
+                is_labeled_b = parent_batch.get_is_labeled_mask()
 
-                # first handle the labeled loss and the adversarial tasks, which treat the parent and downsampled batches independently
-                loss = 0
-                for n, (batch, output) in enumerate(zip(batches, outputs)):
-                    labels_b = batch.get_training_labels()
-                    is_labeled_b = batch.get_is_labeled_mask()
-
+                for downsampling_iteration in range(2):
+                    ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
+                    batch = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
+                    output = model.compute_batch_output(batch, balancer)
                     source_losses_b = source_mask_b * model.compute_source_prediction_losses(output.features_be, batch)
                     alt_count_losses_b = source_mask_b * model.compute_alt_count_losses(output.features_be, batch)
                     supervised_losses_b = source_mask_b * is_labeled_b * bce(output.calibrated_logits_b, labels_b)
 
-                    # unsupervised loss is consistency not just between overall artifact / non-artifact predictions,
-                    # but between the particular cluster predictions.
-                    # TODO: should we detach() torch.sigmoid(other_output...)?
-                    other_output = outputs[1 if n == 0 else 0]
-
-                    # note that columns of output.calibrated_logits_bk are nonartifact, then outlier, then all the
-                    # different artifact clusters.
+                    # columns of output.calibrated_logits_bk are nonartifact, then outlier, then artifact clusters.
                     nonart_logits_bk = output.calibrated_logits_bk[:,0][:,None]
                     art_logits_bk = output.calibrated_logits_bk[:, 2:]
                     nonoutlier_logits_bk = torch.cat((nonart_logits_bk, art_logits_bk), dim=-1)
@@ -119,22 +103,20 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     # i.e. not in the nonartifact Gaussian nor the artifact distributions
                     outlier_binary_logits_b = outlier_logits_b - nonoutlier_logits_b
 
-                    # in our unsupervised loss, we want as little data as possible to be considered outlier, so the loss
-                    # is a binary cross entropy loss versus targets that are all "not-outlier" (i.e. 0).  However, since
-                    # some genuine outlier data does exist, such as rare or unmodeled artifacts, we clip the outlier
-                    # logit to avert unduly strong influence.
+                    # to penalize outliers / encourage data in high prob density, unsupervised loss is binary cross entropy
+                    # where targets are all "not-outlier" (i.e. 0).  Since some genuine outlier data does exist, such as
+                    # rare or unmodeled artifacts, we clip the outlier logit to avert unduly strong influence.
                     outlier_losses_b = bce(torch.clip(outlier_binary_logits_b, max=MAX_LOGIT/2), torch.zeros_like(outlier_binary_logits_b))
 
                     unsupervised_losses_b = (1 - is_labeled_b) * source_mask_b * outlier_losses_b
                     losses = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + output.source_weights * source_losses_b
-                    loss += torch.sum(losses)
+                    loss = torch.sum(losses)
 
-                    training_losses.record(batch, supervised_losses_b, unsupervised_losses_b, source_losses_b,
-                                           alt_count_losses_b, output)
+                    training_losses.record(batch, supervised_losses_b, unsupervised_losses_b, source_losses_b, alt_count_losses_b, output)
 
-                if epoch_type == Epoch.TRAIN:
-                    backpropagate(train_optimizer, loss, params_to_clip=model.parameters())
-                    
+                    if epoch_type == Epoch.TRAIN:
+                        backpropagate(train_optimizer, loss, params_to_clip=model.parameters())
+
                 # done with this batch
             check_for_nan(model)
             # done with one epoch type -- training or validation -- for this epoch
