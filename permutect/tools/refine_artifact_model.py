@@ -48,9 +48,6 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='train the Permutect artifact model')
 
     add_training_params_to_parser(parser)
-
-    parser.add_argument('--' + constants.CALIBRATION_SOURCES_NAME, nargs='+', default=None, type=int, required=False,
-                        help='which sources to use in calibration.  Default: use all sources.')
     parser.add_argument('--' + constants.LEARN_ARTIFACT_SPECTRA_NAME, action='store_true',
                         help='flag to include artifact priors and allele fraction spectra in saved output.  '
                              'This is worth doing if labeled training data is available but might work poorly '
@@ -74,7 +71,6 @@ def parse_arguments():
 def main_without_parsing(args):
     training_params = parse_training_params(args)
     learn_artifact_spectra = getattr(args, constants.LEARN_ARTIFACT_SPECTRA_NAME)
-    calibration_sources = getattr(args, constants.CALIBRATION_SOURCES_NAME)
     genomic_span = getattr(args, constants.GENOMIC_SPAN_NAME)
 
     tensorboard_dir = getattr(args, constants.TENSORBOARD_DIR_NAME)
@@ -91,8 +87,7 @@ def main_without_parsing(args):
     valid_dataset = ReadsDataset(memory_mapped_data=memory_mapped_data, num_folds=num_folds,
                                  folds_to_use=last_fold_only(num_folds))
 
-    train_artifact_model(model, train_dataset, valid_dataset, training_params, summary_writer, epochs_per_evaluation=10,
-                         calibration_sources=calibration_sources)
+    train_artifact_model(model, train_dataset, valid_dataset, training_params, summary_writer, epochs_per_evaluation=10)
 
     report_memory_usage("Finished training.")
 

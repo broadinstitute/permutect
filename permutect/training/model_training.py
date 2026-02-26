@@ -32,7 +32,7 @@ WORST_OFFENDERS_QUEUE_SIZE = 100
 
 def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, valid_dataset: ReadsDataset,
                          training_params: TrainingParameters, summary_writer: SummaryWriter,
-                         epochs_per_evaluation: int = None, calibration_sources: List[int] = None):
+                         epochs_per_evaluation: int = None):
     device, dtype = model._device, model._dtype
     bce = nn.BCEWithLogitsLoss(reduction='none')  # no reduction because we may want to first multiply by weights for unbalanced data
     balancer = Balancer(num_sources=train_dataset.num_sources(), device=device).to(device=device, dtype=dtype)
@@ -72,10 +72,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
             # in calibration epoch, freeze the model except for calibration
             if is_calibration_epoch and epoch_type == Epoch.TRAIN:
                 freeze(model.parameters())
-                #unfreeze(model.set_pooling.parameters())
-                #unfreeze(model.artifact_classifier.parameters())
                 unfreeze(model.calibration_parameters())  # unfreeze calibration but everything else stays frozen
-                # unfreeze(model.final_calibration_shift_parameters())  # unfreeze final calibration shift but everything else stays frozen
 
             loss_metrics = LossMetrics(num_sources=num_sources, device=device)   # based on calibrated logits
             alt_count_loss_metrics = LossMetrics(num_sources=num_sources, device=device)
@@ -94,11 +91,6 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                 downsampled_batch2 = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
                 batches = [downsampled_batch1, downsampled_batch2]
                 outputs = [model.compute_batch_output(batch, balancer) for batch in batches]
-                # parent_output = model.compute_batch_output(parent_batch, balancer)
-
-                sources = parent_batch.get(Data.SOURCE)
-                source_mask_b = 1 if (calibration_sources is None or not is_calibration_epoch) else \
-                    torch.sum(torch.vstack([(sources == source).int() for source in calibration_sources]), dim=-1)
 
                 # first handle the labeled loss and the adversarial tasks, which treat the parent and downsampled batches independently
                 loss = 0
@@ -106,9 +98,9 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     labels_b = batch.get_training_labels()
                     is_labeled_b = batch.get_is_labeled_mask()
 
-                    source_losses_b = source_mask_b * model.compute_source_prediction_losses(output.features_be, batch)
-                    alt_count_losses_b = source_mask_b * model.compute_alt_count_losses(output.features_be, batch)
-                    supervised_losses_b = source_mask_b * is_labeled_b * bce(output.calibrated_logits_b, labels_b)
+                    source_losses_b = model.compute_source_prediction_losses(output.features_be, batch)
+                    alt_count_losses_b = model.compute_alt_count_losses(output.features_be, batch)
+                    supervised_losses_b = is_labeled_b * bce(output.calibrated_logits_b, labels_b)
 
                     # unsupervised loss is consistency not just between overall artifact / non-artifact predictions,
                     # but between the particular cluster predictions.
@@ -133,7 +125,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     # logit to avert unduly strong influence.
                     outlier_losses_b = bce(torch.clip(outlier_binary_logits_b, max=MAX_LOGIT/2), torch.zeros_like(outlier_binary_logits_b))
 
-                    unsupervised_losses_b = (1 - is_labeled_b) * source_mask_b * outlier_losses_b
+                    unsupervised_losses_b = (1 - is_labeled_b) * outlier_losses_b
 
                     losses = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + output.source_weights * source_losses_b
                     loss += torch.sum(losses)
