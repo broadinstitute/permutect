@@ -130,9 +130,8 @@ class ArtifactModel(torch.nn.Module):
     def forward(self, batch: Batch):
         pass
 
-    # here 'b' is the batch index, 'r' is the flattened read index, and 'e' means an embedding dimension
-    # so, for example, "re" means a 2D tensor with all reads in the batch stacked and "bre" means a 3D tensor indexed
-    # first by variant within the batch, then the read within the variant
+    # Indices are batch 'b', read 'r', embedding feature 'e'.  For example, "re" means a 2D tensor with all reads in the
+    # batch stacked and "bre" means a 3D tensor indexed by variant within the batch, then the read within the variant.
     def calculate_features(self, batch: Batch, weight_range: float = 0) -> tuple[RaggedSets, RaggedSets, Tensor]:
         ref_counts_b, alt_counts_b = batch.get(Data.REF_COUNT), batch.get(Data.ALT_COUNT)
         total_ref, total_alt = torch.sum(ref_counts_b).item(), torch.sum(alt_counts_b).item()
@@ -152,19 +151,6 @@ class ArtifactModel(torch.nn.Module):
 
         reduced_ref_bre = transformed_ref_bre.apply_elementwise(self.reducer)
         reduced_alt_bre = transformed_alt_bre.apply_elementwise(self.reducer)
-
-        # TODO: this old code has the random weighting logic which might still be valuable
-        """
-        transformed_alt_re = transformed_alt_bre.flattened_tensor_nf
-
-        alt_weights_r = 1 + weight_range * (1 - 2 * torch.rand(total_alt, device=self._device, dtype=self._dtype))
-
-        # normalize so read weights within each variant sum to 1
-        alt_wt_sums_v = sums_over_rows(alt_weights_r, alt_counts)
-        normalized_alt_weights_r = alt_weights_r / torch.repeat_interleave(alt_wt_sums_v, repeats=alt_counts, dim=0)
-
-        alt_means_ve = sums_over_rows(transformed_alt_re * normalized_alt_weights_r[:,None], alt_counts)
-        """
 
         return reduced_ref_bre, reduced_alt_bre, ref_seq_embeddings_be # ref seq embeddings are useful later
 

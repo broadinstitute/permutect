@@ -21,7 +21,7 @@ from permutect.metrics.evaluation_metrics import EmbeddingMetrics, EvaluationMet
 from permutect.data.batch import BatchProperty, Batch
 from permutect.data.count_binning import alt_count_bin_index, round_alt_count_to_bin_center, alt_count_bin_name
 from permutect.parameters import TrainingParameters
-from permutect.misc_utils import report_memory_usage, backpropagate, freeze, unfreeze, check_for_nan
+from permutect.misc_utils import report_memory_usage, backpropagate, check_for_nan
 from permutect.training.training_losses import TrainingLosses
 from permutect.utils.enums import Variation, Epoch, Label
 
@@ -97,7 +97,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
             check_for_nan(model)
             # done with one epoch type -- training or validation -- for this epoch
             if epoch_type == Epoch.TRAIN:
-                # TODO: what is it's unsupefvised-only training?
+                # TODO: what if it's unsupervised-only training?
                 mean_over_labels = torch.mean(training_losses.supervised_loss_metrics.get_marginal(BatchProperty.LABEL)).item()
                 train_scheduler.step(mean_over_labels)
 
