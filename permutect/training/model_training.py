@@ -11,7 +11,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange, tqdm
 
 from permutect import constants
-from permutect.architecture.feature_clustering import MAX_LOGIT
+from permutect.architecture.feature_clustering import MAX_LOGIT, FeatureClustering
 from permutect.training.balancer import Balancer
 from permutect.training.checkpoint import Checkpoint
 from permutect.training.downsampler import Downsampler
@@ -92,23 +92,13 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     alt_count_losses_b = source_mask_b * model.compute_alt_count_losses(output.features_be, batch)
                     supervised_losses_b = source_mask_b * is_labeled_b * bce(output.calibrated_logits_b, labels_b)
 
-                    # columns of output.calibrated_logits_bk are nonartifact, then outlier, then artifact clusters.
-                    nonart_logits_bk = output.calibrated_logits_bk[:,0][:,None]
-                    art_logits_bk = output.calibrated_logits_bk[:, 2:]
-                    nonoutlier_logits_bk = torch.cat((nonart_logits_bk, art_logits_bk), dim=-1)
-                    nonoutlier_logits_b = torch.logsumexp(nonoutlier_logits_bk, dim=-1)
-                    outlier_logits_b = output.calibrated_logits_bk[:, 1]
-
-                    # this is a binary logit representing the probability that the datum was classified as an outlier
-                    # i.e. not in the nonartifact Gaussian nor the artifact distributions
-                    outlier_binary_logits_b = outlier_logits_b - nonoutlier_logits_b
-
                     # to penalize outliers / encourage data in high prob density, unsupervised loss is binary cross entropy
                     # where targets are all "not-outlier" (i.e. 0).  Since some genuine outlier data does exist, such as
                     # rare or unmodeled artifacts, we clip the outlier logit to avert unduly strong influence.
+                    outlier_binary_logits_b = FeatureClustering.outlier_binary_logits(output.calibrated_logits_bk)
                     outlier_losses_b = bce(torch.clip(outlier_binary_logits_b, max=MAX_LOGIT/2), torch.zeros_like(outlier_binary_logits_b))
-
                     unsupervised_losses_b = (1 - is_labeled_b) * source_mask_b * outlier_losses_b
+
                     losses = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + output.source_weights * source_losses_b
                     loss = torch.sum(losses)
 

@@ -174,7 +174,7 @@ class FeatureClustering(nn.Module):
         log_lks_bk = self.weighted_log_likelihoods_bk(ref_bre=ref_bre, alt_bre=alt_bre, ref_counts_b=ref_counts_b,
             alt_counts_b=alt_counts_b, var_types_b=var_types_b)
 
-        # outliers are simply ignored for classification.  They are onky used for the unsupervised loss.
+        # outliers are simply ignored for classification.  They are only used for the unsupervised loss.
         # TODO: perhaps outliers should count as artifacts?
         artifact_log_lk_b = torch.logsumexp(log_lks_bk[:, 2:], dim=-1)
         non_artifact_log_lk_b = log_lks_bk[:, 0]
@@ -185,6 +185,19 @@ class FeatureClustering(nn.Module):
         # here we cap the certainty of the output logits
         capped_logits_b = MAX_LOGIT * torch.tanh(logits_b / MAX_LOGIT)
         return capped_logits_b, log_lks_bk
+
+    @classmethod
+    def outlier_binary_logits(cls, logits_bk: Tensor) -> Tensor:
+        # binary logit representing the probability that the datum was classified as an outlier
+        # i.e. not in the nonartifact Gaussian nor the artifact distributions
+        # columns of logits_bk are nonartifact, then outlier, then artifact clusters.
+        nonart_logits_bk = logits_bk[:, 0][:, None]
+        art_logits_bk = logits_bk[:, 2:]
+        nonoutlier_logits_bk = torch.cat((nonart_logits_bk, art_logits_bk), dim=-1)
+        nonoutlier_logits_b = torch.logsumexp(nonoutlier_logits_bk, dim=-1)
+        outlier_logits_b = logits_bk[:, 1]
+        outlier_binary_logits_b = outlier_logits_b - nonoutlier_logits_b
+        return outlier_binary_logits_b
 
     # avoid implicit forward calls because PyCharm doesn't recognize them
     def forward(self, features: Tensor):
