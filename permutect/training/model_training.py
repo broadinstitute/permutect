@@ -91,27 +91,15 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     batch = DownsampledBatch(parent_batch, ref_fracs_b, alt_fracs_b)
                     output = model.compute_batch_output(batch, balancer)
 
-
                     source_losses_b = model.compute_source_prediction_losses(output.features_be, batch)
                     alt_count_losses_b = model.compute_alt_count_losses(output.features_be, batch)
                     supervised_losses_b = is_labeled_b * bce(output.calibrated_logits_b, labels_b)
 
-                    # columns of output.calibrated_logits_bk are nonartifact, then outlier, then artifact clusters.
-                    nonart_logits_bk = output.calibrated_logits_bk[:,0][:,None]
-                    art_logits_bk = output.calibrated_logits_bk[:, 2:]
-                    nonoutlier_logits_bk = torch.cat((nonart_logits_bk, art_logits_bk), dim=-1)
-                    nonoutlier_logits_b = torch.logsumexp(nonoutlier_logits_bk, dim=-1)
-                    outlier_logits_b = output.calibrated_logits_bk[:, 1]
-
-                    # this is a binary logit representing the probability that the datum was classified as an outlier
-                    # i.e. not in the nonartifact Gaussian nor the artifact distributions
-                    outlier_binary_logits_b = outlier_logits_b - nonoutlier_logits_b
-
-                    # in our unsupervised loss, we want as little data as possible to be considered outlier, so the loss
-                    # is a binary cross entropy loss versus targets that are all "not-outlier" (i.e. 0).  However, since
-                    # some genuione outlier data does exist, such as rare or unmodeled artifacts, we clip the outlier
+                    # Unsupervised loss encourages read embeddings to have high density in the feature clustering model.
+                    # We do this by penalizes the probability assigned to the outlier pseudo-cluster. Since
+                    # some genuine outlier data does exist, such as rare or unmodeled artifacts, we clip the outlier
                     # logit to avert unduly strong influence.
-                    outlier_losses_b = bce(torch.clip(outlier_binary_logits_b, max=MAX_LOGIT/2), torch.zeros_like(outlier_binary_logits_b))
+                    outlier_losses_b = bce(torch.clip(output.outlier_binary_logits, max=MAX_LOGIT/2), torch.zeros_like(output.outlier_binary_logits))
 
                     unsupervised_losses_b = (1 - is_labeled_b) * outlier_losses_b
 
@@ -124,11 +112,6 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     alt_count_loss_metrics.record(batch, alt_count_losses_b, output.weights)
 
                 if epoch_type == Epoch.TRAIN:
-                    #if loss.isnan().any().item():
-                    #    print("Loss is NaN.  Skipping backpropagation for this batch.")
-                    #    print(f"There are {torch.sum(losses.isnan()).item()} with NaN loss out of {batch.size()} data in the batch.")
-
-                    #else:
                     average_loss = loss.item() / batch.size()
                     if epoch > 1 and average_loss > 100.0:
                         print(f"Very large batch loss {average_loss:.2f}.")
@@ -192,7 +175,6 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
     embeddings_timer = Timer("Creating training and validation datasets")
     record_embeddings(model, train_loader, summary_writer)
     embeddings_timer.report("Time to record embeddings for tensorboard.")
-
 
 @torch.inference_mode()
 def collect_evaluation_data(model: ArtifactModel, num_sources: int, balancer: Balancer, downsampler: Downsampler,

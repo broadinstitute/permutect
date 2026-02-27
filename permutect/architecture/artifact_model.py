@@ -32,6 +32,20 @@ class BatchOutput:
         self.calibrated_logits_bk = calibrated_logits_bk
         self.weights = weights
         self.source_weights = source_weights
+        self.outlier_binary_logits = self._outlier_binary_logits()
+
+    def _outlier_binary_logits(self) -> Tensor:
+        # columns of output.calibrated_logits_bk are nonartifact, then outlier, then artifact clusters.
+        nonart_logits_bk = self.calibrated_logits_bk[:, 0][:, None]
+        art_logits_bk = self.calibrated_logits_bk[:, 2:]
+        nonoutlier_logits_bk = torch.cat((nonart_logits_bk, art_logits_bk), dim=-1)
+        nonoutlier_logits_b = torch.logsumexp(nonoutlier_logits_bk, dim=-1)
+        outlier_logits_b = self.calibrated_logits_bk[:, 1]
+
+        # this is a binary logit representing the probability that the datum was classified as an outlier
+        # i.e. not in the nonartifact Gaussian nor the artifact distributions
+        outlier_binary_logits_b = outlier_logits_b - nonoutlier_logits_b
+        return outlier_binary_logits_b
 
 
 def sums_over_chunks(tensor2d: Tensor, chunk_size: int):
