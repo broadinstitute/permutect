@@ -3,7 +3,6 @@ import tempfile
 import time
 from collections import defaultdict
 from queue import PriorityQueue
-from typing import List
 
 import torch
 from torch import nn
@@ -24,7 +23,7 @@ from permutect.metrics.loss_metrics import LossMetrics
 from permutect.data.batch import BatchProperty, Batch
 from permutect.data.count_binning import alt_count_bin_index, round_alt_count_to_bin_center, alt_count_bin_name
 from permutect.parameters import TrainingParameters
-from permutect.misc_utils import report_memory_usage, backpropagate, freeze, unfreeze, Timer
+from permutect.misc_utils import report_memory_usage, backpropagate, freeze, unfreeze, Timer, check_for_nan
 from permutect.utils.enums import Variation, Epoch, Label
 
 WORST_OFFENDERS_QUEUE_SIZE = 100
@@ -135,17 +134,9 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                         print(f"Very large batch loss {average_loss:.2f}.")
 
                     backpropagate(train_optimizer, loss, params_to_clip=model.parameters())
-
-                    nan_found = False
-                    for name, param in model.named_parameters():
-                        if param.grad is not None:
-                            if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                                print(f"Invalid gradient (NaN or Inf) found in parameter: {name}")
-                                nan_found = True
-                    assert not nan_found
-
                 # done with this batch
             # done with one epoch type -- training or validation -- for this epoch
+            check_for_nan(model)
             if epoch_type == Epoch.TRAIN:
                 mean_over_labels = torch.mean(loss_metrics.get_marginal(BatchProperty.LABEL)).item()
                 train_scheduler.step(mean_over_labels)
@@ -201,6 +192,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
     embeddings_timer = Timer("Creating training and validation datasets")
     record_embeddings(model, train_loader, summary_writer)
     embeddings_timer.report("Time to record embeddings for tensorboard.")
+
 
 @torch.inference_mode()
 def collect_evaluation_data(model: ArtifactModel, num_sources: int, balancer: Balancer, downsampler: Downsampler,

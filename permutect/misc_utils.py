@@ -3,8 +3,6 @@ from typing import Iterator, Set
 
 import cyvcf2
 import psutil
-import tarfile
-import os
 import torch
 from torch import Tensor, nn
 from torch.nn import Parameter
@@ -150,3 +148,13 @@ def encode_variant(v: cyvcf2.Variant, zero_based=False):
 
 def overlapping_filters(v: cyvcf2.Variant, filters_set: Set[str]) -> Set[str]:
     return set([]) if v.FILTER is None else set(v.FILTER.split(";")).intersection(filters_set)
+
+
+def check_for_nan(model: torch.nn.Module):
+    nan_found = False
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                print(f"Invalid gradient (NaN or Inf) found in parameter: {name}")
+                nan_found = True
+    assert not nan_found
