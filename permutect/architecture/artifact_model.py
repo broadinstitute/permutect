@@ -1,5 +1,5 @@
 import torch
-from torch import Tensor
+from torch import Tensor, nn
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.autonotebook import tqdm
 
@@ -19,6 +19,9 @@ from permutect.parameters import ModelParameters
 from permutect.sets.ragged_sets import RaggedSets
 from permutect.misc_utils import unfreeze, freeze, gpu_if_available
 from permutect.utils.enums import Variation, Epoch
+
+MAX_OUTLIER_LOGIT = 10
+BCE = nn.BCEWithLogitsLoss(reduction='none')  # no reduction because we may want to first multiply by weights for unbalanced data
 
 
 class BatchOutput:
@@ -49,6 +52,15 @@ class BatchOutput:
         outlier_binary_logits_b = outlier_logits_b - nonoutlier_logits_b
         return outlier_binary_logits_b
 
+class BatchLosses:
+    def __init__(self, supervised_losses_b: Tensor, unsupervised_losses_b: Tensor, alt_count_losses_b: Tensor,
+                 source_prediction_losses_b: Tensor, total_losses_b: Tensor):
+        self.supervised_losses_b = supervised_losses_b
+        self.unsupervised_losses_b = unsupervised_losses_b
+        self.alt_count_losses_b = alt_count_losses_b
+        self.source_prediction_losses_b = source_prediction_losses_b
+        self.total_losses_b = total_losses_b
+        self.total_loss = torch.sum(total_losses_b)
 
 def sums_over_chunks(tensor2d: Tensor, chunk_size: int):
     assert len(tensor2d) % chunk_size == 0
@@ -208,6 +220,31 @@ class ArtifactModel(torch.nn.Module):
             balancer is None else balancer.process_batch_and_compute_weights(batch)
         return BatchOutput(features_be=alt_means_be, ref_features_be=ref_means_be, logits_b=calibrated_logits_b,
                            logits_bk=calibrated_logits_bk, weights=weights_b, source_weights=weights_b * source_weights_b)
+
+    def compute_batch_losses(self, output: BatchOutput, batch: Batch):
+        labels_b = batch.get_training_labels()
+        is_labeled_b = batch.get_is_labeled_mask()
+        supervised_losses_b = is_labeled_b * BCE(output.logits_b, labels_b)
+
+        # Unsupervised loss encourages read embeddings to have high density in the feature clustering model.
+        # We do this by penalizes the probability assigned to the outlier pseudo-cluster. Since
+        # some genuine outlier data does exist, such as rare or unmodeled artifacts, we clip the outlier
+        # logit to avert unduly strong influence.
+        outlier_losses_b = BCE(torch.clip(output.outlier_binary_logits, max=MAX_OUTLIER_LOGIT),
+                               torch.zeros_like(output.outlier_binary_logits))
+
+        unsupervised_losses_b = (1 - is_labeled_b) * outlier_losses_b
+        alt_count_losses_b = self.compute_alt_count_losses(output.features_be, batch)
+        source_losses_b = self.compute_source_prediction_losses(output.features_be, batch)
+
+        total_losses_b = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + \
+                 output.source_weights * source_losses_b
+        return BatchLosses(supervised_losses_b=supervised_losses_b,
+                           unsupervised_losses_b=unsupervised_losses_b,
+                           alt_count_losses_b=alt_count_losses_b,
+                           source_prediction_losses_b=source_losses_b,
+                           total_losses_b=total_losses_b)
+
 
     def make_dict_for_saving(self, artifact_log_priors=None, artifact_spectra=None):
         return {constants.STATE_DICT_NAME: self.state_dict(),
