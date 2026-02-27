@@ -26,21 +26,23 @@ class BatchOutput:
     simple container class for the output of the model over a single batch
     :return:
     """
-    def __init__(self, features_be: Tensor, calibrated_logits_b: Tensor, calibrated_logits_bk: Tensor, weights: Tensor, source_weights: Tensor):
+    def __init__(self, features_be: Tensor, ref_features_be: Tensor, logits_b: Tensor, logits_bk: Tensor, weights: Tensor, source_weights: Tensor):
         self.features_be = features_be
-        self.calibrated_logits_b = calibrated_logits_b
-        self.calibrated_logits_bk = calibrated_logits_bk
+        self.ref_features_be = ref_features_be
+        self.logits_b = logits_b
+        self.artifact_probs_b = torch.sigmoid(logits_b)
+        self.logits_bk = logits_bk
         self.weights = weights
         self.source_weights = source_weights
         self.outlier_binary_logits = self._outlier_binary_logits()
 
     def _outlier_binary_logits(self) -> Tensor:
         # columns of output.calibrated_logits_bk are nonartifact, then outlier, then artifact clusters.
-        nonart_logits_bk = self.calibrated_logits_bk[:, 0][:, None]
-        art_logits_bk = self.calibrated_logits_bk[:, 2:]
+        nonart_logits_bk = self.logits_bk[:, 0][:, None]
+        art_logits_bk = self.logits_bk[:, 2:]
         nonoutlier_logits_bk = torch.cat((nonart_logits_bk, art_logits_bk), dim=-1)
         nonoutlier_logits_b = torch.logsumexp(nonoutlier_logits_bk, dim=-1)
-        outlier_logits_b = self.calibrated_logits_bk[:, 1]
+        outlier_logits_b = self.logits_bk[:, 1]
 
         # this is a binary logit representing the probability that the datum was classified as an outlier
         # i.e. not in the nonartifact Gaussian nor the artifact distributions
@@ -178,17 +180,6 @@ class ArtifactModel(torch.nn.Module):
 
         return reduced_ref_bre, reduced_alt_bre, ref_seq_embeddings_be # ref seq embeddings are useful later
 
-    def calculate_logits(self, batch: Batch):
-        ref_bre, alt_bre, _ = self.calculate_features(batch)    # ragged sets of reduced and transformed reads
-
-        logits_b, logits_bk = self.feature_clustering.calculate_logits(ref_bre, alt_bre, ref_counts_b=batch.get(Data.REF_COUNT),
-                                                                       alt_counts_b=batch.get(Data.ALT_COUNT), var_types_b=batch.get(Data.VARIANT_TYPE))
-
-        # feature clustering shifts reads to be centered around the origin
-        recentered_alt_bre = self.feature_clustering.transform_reads(alt_bre)
-        recentered_ref_bre = self.feature_clustering.transform_reads(ref_bre)
-        return logits_b, logits_bk, recentered_alt_bre.means_over_sets(), recentered_ref_bre.means_over_sets()
-
     def compute_source_prediction_losses(self, features_be: Tensor, batch: Batch) -> Tensor:
         if self.num_sources > 1:
             source_logits_bs = self.source_predictor.adversarial_forward(features_be)
@@ -203,12 +194,20 @@ class ArtifactModel(torch.nn.Module):
         alt_count_target_b = batch.get(Data.ALT_COUNT).to(dtype=alt_count_pred_b.dtype) / MAX_ALT_COUNT
         return self.alt_count_loss_func(alt_count_pred_b, alt_count_target_b)
 
-    def compute_batch_output(self, batch: Batch, balancer: Balancer):
-        weights_b, source_weights_b = balancer.process_batch_and_compute_weights(batch)
-        calibrated_logits_b, calibrated_logits_bk, alt_means_be, ref_means_be = self.calculate_logits(batch)
-        return BatchOutput(features_be=alt_means_be, calibrated_logits_b=calibrated_logits_b,
-                           calibrated_logits_bk=calibrated_logits_bk,
-                           weights=weights_b, source_weights=weights_b*source_weights_b)
+    def compute_batch_output(self, batch: Batch, balancer: Balancer = None):
+        ref_bre, alt_bre, _ = self.calculate_features(batch)  # ragged sets of reduced and transformed reads
+        logits_b, logits_bk = self.feature_clustering.calculate_logits(ref_bre, alt_bre, ref_counts_b=batch.get(Data.REF_COUNT),
+            alt_counts_b=batch.get(Data.ALT_COUNT), var_types_b=batch.get(Data.VARIANT_TYPE))
+
+        # feature clustering shifts reads to be centered around the origin
+        recentered_alt_bre = self.feature_clustering.transform_reads(alt_bre)
+        recentered_ref_bre = self.feature_clustering.transform_reads(ref_bre)
+        result = logits_b, logits_bk, recentered_alt_bre.means_over_sets(), recentered_ref_bre.means_over_sets()
+        calibrated_logits_b, calibrated_logits_bk, alt_means_be, ref_means_be = result
+        weights_b, source_weights_b = (torch.ones_like(calibrated_logits_b), torch.ones_like(calibrated_logits_b)) if \
+            balancer is None else balancer.process_batch_and_compute_weights(batch)
+        return BatchOutput(features_be=alt_means_be, ref_features_be=ref_means_be, logits_b=calibrated_logits_b,
+                           logits_bk=calibrated_logits_bk, weights=weights_b, source_weights=weights_b * source_weights_b)
 
     def make_dict_for_saving(self, artifact_log_priors=None, artifact_spectra=None):
         return {constants.STATE_DICT_NAME: self.state_dict(),

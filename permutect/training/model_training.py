@@ -93,7 +93,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
 
                     source_losses_b = model.compute_source_prediction_losses(output.features_be, batch)
                     alt_count_losses_b = model.compute_alt_count_losses(output.features_be, batch)
-                    supervised_losses_b = is_labeled_b * bce(output.calibrated_logits_b, labels_b)
+                    supervised_losses_b = is_labeled_b * bce(output.logits_b, labels_b)
 
                     # Unsupervised loss encourages read embeddings to have high density in the feature clustering model.
                     # We do this by penalizes the probability assigned to the outlier pseudo-cluster. Since
@@ -196,10 +196,10 @@ def collect_evaluation_data(model: ArtifactModel, num_sources: int, balancer: Ba
                 batch = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
                 output = model.compute_batch_output(batch, balancer)
 
-                evaluation_metrics.record_batch(epoch_type, batch, logits=output.calibrated_logits_b, weights=output.weights)
+                evaluation_metrics.record_batch(epoch_type, batch, logits=output.logits_b, weights=output.weights)
 
                 if report_worst:
-                    for int_array, float_array, predicted_logit in zip(batch.get_int_array_be(), batch.get_float_array_be(), output.calibrated_logits_b.detach().cpu().tolist()):
+                    for int_array, float_array, predicted_logit in zip(batch.get_int_array_be(), batch.get_float_array_be(), output.logits_b.detach().cpu().tolist()):
                         datum = Datum(int_array, float_array)
                         wrong_call = (datum.get(Data.LABEL) == Label.ARTIFACT and predicted_logit < 0) or \
                                      (datum.get(Data.LABEL) == Label.VARIANT and predicted_logit > 0)
@@ -249,8 +249,8 @@ def evaluate_model(model: ArtifactModel, epoch: int, num_sources: int, balancer:
         # now go over just the validation data and generate feature vectors / metadata for tensorboard projectors
         batch: Batch
         for batch in tqdm(prefetch_generator(valid_loader), mininterval=60, total=len(valid_loader)):
-            logits_b, _, alt_means_be, ref_means_be = model.calculate_logits(batch)
-            pred_b = logits_b.detach().cpu()
+            output = model.compute_batch_output(batch)
+            pred_b = output.logits_b.detach().cpu()
             labels_b = batch.get_training_labels().cpu()
             correct_b = ((pred_b > 0) == (labels_b > 0.5)).tolist()
             is_labeled_list = batch.get_is_labeled_mask().cpu().tolist()
@@ -265,7 +265,7 @@ def evaluate_model(model: ArtifactModel, epoch: int, num_sources: int, balancer:
             embedding_metrics.correct_metadata.extend(correct_strings)
             embedding_metrics.type_metadata.extend([Variation(idx).name for idx in batch.get(Data.VARIANT_TYPE).cpu().tolist()])
             embedding_metrics.truncated_count_metadata.extend([alt_count_bin_name(alt_count_bin_index(alt_count)) for alt_count in batch.get(Data.ALT_COUNT).cpu().tolist()])
-            embedding_metrics.features.append(alt_means_be.detach().cpu())
-            embedding_metrics.ref_features.append(ref_means_be.detach().cpu())
+            embedding_metrics.features.append(output.features_be.detach().cpu())
+            embedding_metrics.ref_features.append(output.ref_features_be.detach().cpu())
         embedding_metrics.output_to_summary_writer(summary_writer, epoch=epoch)
     # done collecting data
