@@ -33,7 +33,6 @@ GTCCTGGACACGCTGTTGGCC
 from __future__ import annotations
 
 import math
-from queue import PriorityQueue
 from typing import List, Generator
 
 import numpy as np
@@ -52,8 +51,6 @@ EPSILON = 0.00001
 QUANTILE_DATA_COUNT = 10000
 LOG10_TO_LN = 2.30258509299
 
-MIN_NUM_DATA_FOR_NORMALIZATION = 1000
-MAX_NUM_DATA_FOR_NORMALIZATION = 100000
 NUM_RAW_DATA_TO_NORMALIZE_AT_ONCE = 10000
 
 DISTANCE_FROM_END_SATURATION = 20
@@ -205,8 +202,6 @@ def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Datu
             yield datum
 
 def make_read_quantile_transform(read_end_indices, int_array_ve, float_array_ve, reads_re):
-    read_end_indices = read_end_indices
-
     # indices_for_normalization = get_normalization_set(data_ve)
     # revert to old behavior: use all ref data for normalization
     indices_for_normalization = list(range(len(int_array_ve)))
@@ -239,45 +234,6 @@ def make_normalized_mmap_data(dataset_files, sources: List[int]=None) -> MemoryM
     normalized_generator = normalized_data_generator(raw_memory_mapped_data)
     return MemoryMappedData.from_generator(reads_datum_source=normalized_generator,
         estimated_num_data=raw_memory_mapped_data.num_data, estimated_num_reads=raw_memory_mapped_data.num_reads)
-
-
-def get_normalization_set(raw_int_array_ve, raw_float_array_ve) -> List[int]:
-    """
-    # we need a set of data that are pretty reliably not artifacts for the quantile normalization.  If we don't do this
-    # and naively use the quantiles from the data as a whole we create a nasty domain shift where the artifact/non-artifact
-    # balance of test data differs fromm that of the training data and thus the normalization is different, leading to a skew
-    # of the input tensors *even* if the data re derived from the same sample prep and sequencing technology!
-
-    # It is a good idea to inject a few tens of thousands of germline variants into test data to be able to make this normalization
-    # set, but the following scheme has a back-up plan in case we don't have that (or if there's no information on
-    # germline allele frequencies).
-    """
-
-    indices_for_normalization_queue = PriorityQueue(maxsize=MAX_NUM_DATA_FOR_NORMALIZATION)
-    for n in range(len(raw_int_array_ve)):
-        raw_datum = Datum(int_array=raw_int_array_ve[n], float_array=raw_float_array_ve[n])
-
-        if indices_for_normalization_queue.full():
-            indices_for_normalization_queue.get()  # pop the lowest-priority element i.e. the worst-suited for normalization
-
-        # priority is negative squared difference between original allele fraction and 1/2
-        # thus most germline het-like data have highest priority
-        priority = -((raw_datum.get(Data.ORIGINAL_ALT_COUNT) / raw_datum.get(Data.ORIGINAL_DEPTH)) - 0.5) ** 2
-
-        indices_for_normalization_queue.put((priority, n))
-    all_indices_for_normalization = []
-    good_indices_for_normalization = []
-    while not indices_for_normalization_queue.empty():
-        priority, idx = indices_for_normalization_queue.get()
-
-        all_indices_for_normalization.append(idx)
-        if priority > - 0.2**2:    # AF between 0.3 and 0.7
-            good_indices_for_normalization.append(idx)
-
-    indices_for_normalization = good_indices_for_normalization if len(good_indices_for_normalization) > MIN_NUM_DATA_FOR_NORMALIZATION else all_indices_for_normalization
-
-    indices_for_normalization.sort()  # sorting indices makes traversing memory maps faster
-    return indices_for_normalization
 
 
 # this normalizes the buffer and also prepends new features to the info tensor
