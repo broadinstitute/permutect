@@ -203,7 +203,7 @@ class MemoryMappedData:
         assert len(int_array_files) == 1
         assert len(float_data_files) == 1
 
-        loaded_metadata = torch.load(metadata_files[0])
+        loaded_metadata = torch.load(metadata_files[0], weights_only=False)
         num_data, int_array_dim, float_array_dim, num_reads, reads_dim = loaded_metadata[0], loaded_metadata[1], loaded_metadata[2], loaded_metadata[3], loaded_metadata[4]
 
         assert len(reads_files) == (0 if num_reads == 0 else 1)
@@ -214,7 +214,9 @@ class MemoryMappedData:
         reads_mmap = None if num_reads == 0 else np.lib.format.open_memmap(reads_files[0], mode='r', shape=(num_reads, reads_dim))
         loading_timer.report("Time to load data from tarfile")
 
-        return cls(int_mmap=int_mmap, float_mmap=float_mmap, num_data=num_data, reads_mmap=reads_mmap, num_reads=num_reads)
+        result = cls(int_mmap=int_mmap, float_mmap=float_mmap, num_data=num_data, reads_mmap=reads_mmap, num_reads=num_reads)
+        result._temp_dir = temp_dir  # prevent GC of temp dir while mmaps are in use
+        return result
 
     @classmethod
     def from_generator(cls, reads_datum_source, estimated_num_data, estimated_num_reads) -> MemoryMappedData:

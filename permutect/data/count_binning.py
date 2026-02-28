@@ -44,7 +44,7 @@ def logits_from_bin_indices(logit_bin_indices: IntTensor) -> Tensor:
 
 
 def logit_bin_name(logit_bin_idx: int) -> str:
-    return f"{MIN_LOGIT + (logit_bin_idx + 0.5) * LOGIT_BIN_SKIP}:.1f"
+    return f"{MIN_LOGIT + (logit_bin_idx + 0.5) * LOGIT_BIN_SKIP:.1f}"
 
 
 def ref_count_bin_indices(count_tensor: IntTensor) -> IntTensor:
