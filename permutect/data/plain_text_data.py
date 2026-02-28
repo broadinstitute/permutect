@@ -144,9 +144,9 @@ def read_raw_unnormalized_data(
                 read_2d_array(file, alt_tensor_size)[:, 1:] if alt_tensor_size > 0 else None
             )
 
-            # normal_ref_tensor = read_2d_tensor(file, normal_ref_tensor_size)  # not currently used
-            # normal_alt_tensor = read_2d_tensor(file, normal_alt_tensor_size)  # not currently used
-            # round down normal tensors as well
+            # consume normal reads from the file even though we don't use them
+            for _ in range(normal_ref_tensor_size + normal_alt_tensor_size):
+                next(file)
 
             original_depth, original_alt_count, original_normal_depth, original_normal_alt_count = (
                 read_integers(file.readline())
@@ -206,8 +206,8 @@ def write_raw_unnormalized_data_to_memory_maps(dataset_files, sources: List[int]
 
     memory_mapped_data = MemoryMappedData.from_generator(
         reads_datum_source=generate_raw_data_from_text_files(dataset_files, sources),
-        estimated_num_data=num_data,
-        estimated_num_reads=num_reads,
+        estimated_num_data=total_num_data,
+        estimated_num_reads=total_num_reads,
     )
     return memory_mapped_data
 
@@ -260,7 +260,7 @@ def make_read_quantile_transform(read_end_indices, int_array_ve, float_array_ve,
 
     # define ref read ranges for each datum in the normalization set
     normalization_read_start_indices = [
-        read_end_indices[max(idx - 1, 0)] for idx in indices_for_normalization
+        0 if idx == 0 else read_end_indices[idx - 1] for idx in indices_for_normalization
     ]
     normalization_ref_counts = [
         Datum(int_array=int_array_ve[idx], float_array=float_array_ve[idx]).get(Data.REF_COUNT)
