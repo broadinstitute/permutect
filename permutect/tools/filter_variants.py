@@ -18,6 +18,7 @@ from permutect.data.count_binning import MAX_ALT_COUNT
 from permutect.data.count_binning import alt_count_bin_index
 from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
+from permutect.data.datum import INTEGER_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.data.memory_mapped_data import MemoryMappedData
@@ -223,9 +224,13 @@ def make_filtered_vcf(
     germline_mode: bool = False,
     no_germline_mode: bool = False,
     het_beta: float = None,
-    segmentation=defaultdict(IntervalTree),
-    normal_segmentation=defaultdict(IntervalTree),
+    segmentation=None,
+    normal_segmentation=None,
 ):
+    if segmentation is None:
+        segmentation = defaultdict(IntervalTree)
+    if normal_segmentation is None:
+        normal_segmentation = defaultdict(IntervalTree)
     print("Loading artifact model and test dataset")
     contig_index_to_name_map = {}
     with open(contigs_table) as file:
@@ -287,9 +292,7 @@ def make_filtered_vcf(
 
 
 @torch.inference_mode()
-def generate_posterior_data(
-    dataset, model: ArtifactModel, batch_size: int, num_workers: int, INT_DTYPE=None
-):
+def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_workers: int):
     # pass through the dataset, running the artifact model
     # to get artifact logits, which we record in a dict keyed by variant strings.  These will later be added to PosteriorDatum objects.
     loader = dataset.make_data_loader(
@@ -308,7 +311,7 @@ def generate_posterior_data(
         ):
             # make a Datum with no reads or haplotypes whose 1D info array is the embedding
             empty_reads = np.zeros((0, 0), dtype=COMPRESSED_READS_ARRAY_DTYPE)
-            empty_haplotypes = np.zeros((0,), dtype=INT_DTYPE)
+            empty_haplotypes = np.zeros((0,), dtype=INTEGER_DTYPE)
             output_datum = Datum(
                 int_array=int_array,
                 float_array=float_array,
@@ -331,9 +334,13 @@ def make_posterior_data_loader(
     model: ArtifactModel,
     batch_size: int,
     num_workers: int,
-    segmentation=defaultdict(IntervalTree),
-    normal_segmentation=defaultdict(IntervalTree),
+    segmentation=None,
+    normal_segmentation=None,
 ):
+    if segmentation is None:
+        segmentation = defaultdict(IntervalTree)
+    if normal_segmentation is None:
+        normal_segmentation = defaultdict(IntervalTree)
     normalizing_timer = Timer("Normalizing data. . .")
     normalized_mmap_data = plain_text_data.make_normalized_mmap_data(dataset_files=[dataset_file])
     normalizing_timer.report("Time to normalize test data:")
@@ -455,11 +462,11 @@ def apply_filtering_to_vcf(
     all_samples = []
     for header_line in unfiltered_vcf.raw_header.split("\n"):
         if header_line.startswith("##tumor_sample"):
-            tumor_sample_name = print(header_line.split("=")[-1])
+            tumor_sample_name = header_line.split("=")[-1]
+            print(tumor_sample_name)
         elif header_line.startswith("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t"):
-            all_samples = header_line.lstrip(
-                "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t"
-            ).split()
+            prefix = "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t"
+            all_samples = header_line[len(prefix) :].split()
     tumor_sample_index = 0
     for n, sample in enumerate(all_samples):
         if sample == tumor_sample_name:
@@ -575,8 +582,7 @@ def apply_filtering_to_vcf(
             correctness_label = "unknown"
             if label != Label.UNLABELED:
                 labeled_truth = True
-                clipped_error_prob = 0.5 + 0.9999999 * (error_prob - 0.5)
-                error_logit = prob_to_logit(clipped_error_prob)
+                clipped_error_prob = 0.5 + 0.9999999 * (error_prob - 0.5)  # noqa: F841
 
                 # TODO: this is sloppy -- it only works because when we label the posterior dataset (if truth is available)
                 # TODO: we stretch the definitions so that "Label.ARTIFACT" simply means "something we shouldn't call", including
@@ -609,7 +615,8 @@ def apply_filtering_to_vcf(
             # that a site with zero alt depth can end up in the output VCF.  However, Permutect exludes such sites from
             # the test dataset.  Therefore, we manually check for such sites and make sure they get filtered!
             total_alt_depth = np.sum(v.format("AD")[tumor_sample_index][1:])
-            filters.add(FILTER_NAMES[Call.SEQ_ERROR])
+            if total_alt_depth == 0:
+                filters.add(FILTER_NAMES[Call.SEQ_ERROR])
             missing_encodings.append(encoding)
         v.FILTER = ";".join(filters) if filters else "PASS"
         writer.write_record(v)
