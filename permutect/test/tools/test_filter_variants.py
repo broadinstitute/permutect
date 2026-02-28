@@ -2,8 +2,8 @@ import tempfile
 from argparse import Namespace
 
 from permutect import constants
-from permutect.tools import filter_variants
 from permutect.test.test_file_names import *
+from permutect.tools import filter_variants
 
 
 def test_filtering_on_dream1_chr20():
@@ -40,5 +40,6 @@ def test_filtering_on_dream1_chr20():
 
     filter_variants.main_without_parsing(filtering_args)
     h = 9
+
 
 test_filtering_on_dream1_chr20()

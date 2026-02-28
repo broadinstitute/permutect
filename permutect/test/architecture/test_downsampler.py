@@ -2,8 +2,10 @@ from random import random
 
 from permutect.architecture.downsampler import Downsampler
 from permutect.data.batch import BatchIndexedTensor
-from permutect.data.count_binning import NUM_REF_COUNT_BINS, NUM_ALT_COUNT_BINS
-from permutect.utils.enums import Label, Variation
+from permutect.data.count_binning import NUM_ALT_COUNT_BINS
+from permutect.data.count_binning import NUM_REF_COUNT_BINS
+from permutect.utils.enums import Label
+from permutect.utils.enums import Variation
 
 
 def test_learning():
