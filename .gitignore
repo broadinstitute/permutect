@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# pixi
+.pixi/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Environments
+.env
+.venv/
+
+# Testing
+.pytest_cache/
+
+# Tensorboard
+runs/
