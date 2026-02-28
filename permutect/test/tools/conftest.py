@@ -1,15 +1,22 @@
 import tempfile
 from argparse import Namespace
 
+import pytest
+
 from permutect import constants
 from permutect.test.test_file_names import *
-from permutect.tools import filter_variants
 from permutect.tools import preprocess_dataset
 from permutect.tools import train_artifact_model
 
 
-def test_pipeline():
-    # STEP 1: preprocess the plain text training dataset
+@pytest.fixture(scope="session")
+def trained_artifact_model():
+    """Train a small artifact model from scratch for use in integration tests.
+
+    The pre-shipped artifact-model-v0.4.0.pt is incompatible with the current
+    architecture, so we train a fresh (tiny) model once per test session.
+    """
+    # Step 1: preprocess
     training_data_tarfile = tempfile.NamedTemporaryFile()
 
     preprocess_args = Namespace()
@@ -18,7 +25,7 @@ def test_pipeline():
     setattr(preprocess_args, constants.SOURCES_NAME, [0])
     preprocess_dataset.main_without_parsing(preprocess_args)
 
-    # STEP 2: train a model
+    # Step 2: train
     saved_artifact_model = tempfile.NamedTemporaryFile()
     training_tensorboard_dir = tempfile.TemporaryDirectory()
 
@@ -58,28 +65,6 @@ def test_pipeline():
 
     train_artifact_model.main_without_parsing(train_model_args)
 
-    # STEP 3: filter variants
-    filtered_vcf = tempfile.NamedTemporaryFile()
-    filtering_tensorboard_dir = tempfile.TemporaryDirectory()
+    yield saved_artifact_model.name
 
-    filtering_args = Namespace()
-    setattr(filtering_args, constants.INPUT_NAME, MUTECT2_CHR20_FILTERED_VCF)
-    setattr(filtering_args, constants.TEST_DATASET_NAME, DREAM_1_CHR20_PLAIN_TEXT_DATA)
-    setattr(filtering_args, constants.ARTIFACT_MODEL_NAME, saved_artifact_model.name)
-    setattr(filtering_args, constants.OUTPUT_NAME, filtered_vcf.name)
-    setattr(filtering_args, constants.TENSORBOARD_DIR_NAME, filtering_tensorboard_dir.name)
-    setattr(filtering_args, constants.BATCH_SIZE_NAME, 64)
-    setattr(filtering_args, constants.NUM_WORKERS_NAME, 0)
-    setattr(filtering_args, constants.NUM_SPECTRUM_ITERATIONS_NAME, 2)
-    setattr(filtering_args, constants.SPECTRUM_LEARNING_RATE_NAME, 0.001)
-    setattr(filtering_args, constants.INITIAL_LOG_VARIANT_PRIOR_NAME, -10.0)
-    setattr(filtering_args, constants.INITIAL_LOG_ARTIFACT_PRIOR_NAME, -10.0)
-    setattr(filtering_args, constants.GENOMIC_SPAN_NAME, 100000)
-    setattr(filtering_args, constants.MAF_SEGMENTS_NAME, None)
-    setattr(filtering_args, constants.CONTIGS_TABLE_NAME, CONTIGS_TABLE)
-    setattr(filtering_args, constants.NORMAL_MAF_SEGMENTS_NAME, None)
-    setattr(filtering_args, constants.GERMLINE_MODE_NAME, False)
-    setattr(filtering_args, constants.NO_GERMLINE_MODE_NAME, False)
-    setattr(filtering_args, constants.HET_BETA_NAME, 10)
-
-    filter_variants.main_without_parsing(filtering_args)
+    # cleanup happens automatically via NamedTemporaryFile
