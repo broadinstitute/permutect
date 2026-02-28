@@ -1,12 +1,12 @@
-import torch
 from typing import List
 
+import torch
 from torch import Tensor
 
 from permutect.architecture.mlp import MLP
 from permutect.sets.ragged_sets import RaggedSets
 
-'''
+"""
 Pytorch module that takes in 2D set tensor X of shape (N, F) and 1D counts tensor Counts, where N is the total *flattened*
 number of elements in a batch, summed over all sets.
 
@@ -38,17 +38,26 @@ is multiplication by a large constant such that the softmax essentially picks ou
 compute the featurewise variance by calculating second moments in g_1 and averaging.
 
 Given the raggedness of X_bsf the implementation is non-trivial. Fortunately, I wrote a RaggedSets class to handle all this!
-'''
+"""
 
 
 class SetPooling(torch.nn.Module):
-    def __init__(self, input_dim: int, mlp_layers: List[int], final_mlp_layers: List[int], batch_normalize: bool = False, dropout_p: float = 0):
+    def __init__(
+        self,
+        input_dim: int,
+        mlp_layers: List[int],
+        final_mlp_layers: List[int],
+        batch_normalize: bool = False,
+        dropout_p: float = 0,
+    ):
         super(SetPooling, self).__init__()
         # TODO: layer norm??
         self.mlp1 = MLP([input_dim] + mlp_layers, batch_normalize, dropout_p)
         self.mlp2 = MLP([input_dim] + mlp_layers, batch_normalize, dropout_p)
 
-        self.mlp3 = MLP([self.mlp1.output_dimension()] + final_mlp_layers, batch_normalize, dropout_p)
+        self.mlp3 = MLP(
+            [self.mlp1.output_dimension()] + final_mlp_layers, batch_normalize, dropout_p
+        )
 
     def forward(self, x_bsf: RaggedSets) -> Tensor:
         values_bsd = x_bsf.apply_elementwise(self.mlp1)
@@ -59,4 +68,3 @@ class SetPooling(torch.nn.Module):
 
     def output_dimension(self) -> int:
         return self.mlp3.output_dimension()
-

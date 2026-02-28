@@ -1,7 +1,8 @@
 import tempfile
-import permutect.data.reads_dataset as ds
+
 import torch
 
+import permutect.data.reads_dataset as ds
 from permutect.data.datum import Data
 from permutect.utils.enums import Label
 
@@ -25,14 +26,14 @@ def test_read_integers():
 def test_read_2d_tensor():
     tmp = tempfile.NamedTemporaryFile()
 
-    with open(tmp.name, 'w') as f:
+    with open(tmp.name, "w") as f:
         lines = [
             "1 2 3 4 5\n",
             "6 7 8 9 10\n",
             "11 12 13 14 15\n",
             "NOTHING\n",
             "10 20 30\n",
-            "40 50 60\n"
+            "40 50 60\n",
         ]
 
         f.writelines(lines)
@@ -51,7 +52,7 @@ def test_read_2d_tensor():
 def test_read_data():
     tmp = tempfile.NamedTemporaryFile()
 
-    with open(tmp.name, 'w') as f:
+    with open(tmp.name, "w") as f:
         lines = [
             "UNLABELED\n",
             "1:12807, C->T\n",
@@ -81,7 +82,7 @@ def test_read_data():
             "23 31 1 1 4 21 346 341 5 0 0\n",
             "78 4 75 2\n",
             "12.5\n",
-            "-73.3\n"
+            "-73.3\n",
         ]
 
         f.writelines(lines)
@@ -89,6 +90,14 @@ def test_read_data():
     data = list(ds.read_data(tmp.name))
     assert len(data) == 2
     assert data[0].get(Data.LABEL) == Label.UNLABELED
-    assert torch.max(data[0].get_info_1d() - torch.tensor([0.192, 0.000, 0.000, 1.000, 1.000, 1.000, 1.000, 1.000, 1.000] + [1, 0, 0])).item() < 0.001
+    assert (
+        torch.max(
+            data[0].get_info_1d()
+            - torch.tensor(
+                [0.192, 0.000, 0.000, 1.000, 1.000, 1.000, 1.000, 1.000, 1.000] + [1, 0, 0]
+            )
+        ).item()
+        < 0.001
+    )
 
     assert data[1].reads_re.size()[0] == 6
