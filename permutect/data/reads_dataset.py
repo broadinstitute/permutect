@@ -1,18 +1,24 @@
 import gc
+import random
+from typing import List
 
 import numpy as np
 import psutil
-import random
-from typing import  List
-
 import torch
-from torch.utils.data import DataLoader, IterableDataset
+from torch.utils.data import DataLoader
+from torch.utils.data import IterableDataset
 
-from permutect.data.datum import Datum, COMPRESSED_READS_ARRAY_DTYPE
+from permutect.data.batch import Batch
+from permutect.data.batch import BatchIndexedTensor
+from permutect.data.batch import BatchProperty
+from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
+from permutect.data.datum import Datum
 from permutect.data.memory_mapped_data import MemoryMappedData
-from permutect.data.batch import BatchProperty, BatchIndexedTensor, Batch
-from permutect.misc_utils import ConsistentValue, Timer, report_memory_usage
-from permutect.utils.enums import Variation, Label
+from permutect.misc_utils import ConsistentValue
+from permutect.misc_utils import Timer
+from permutect.misc_utils import report_memory_usage
+from permutect.utils.enums import Label
+from permutect.utils.enums import Variation
 
 WEIGHT_PSEUDOCOUNT = 10
 
@@ -21,39 +27,63 @@ WEIGHT_PSEUDOCOUNT = 10
 def last_fold_only(num_folds: int):
     return [num_folds - 1]  # use the last fold for validation
 
+
 def all_but_the_last_fold(num_folds: int):
     return list(range(num_folds - 1))
+
 
 def all_but_one_fold(num_folds: int, fold_to_exclude: int):
     return list(range(fold_to_exclude)) + list(range(fold_to_exclude + 1, num_folds))
 
+
 def all_folds(num_folds: int):
     return list(range(num_folds))
+
 
 def ratio_with_pseudocount(a, b):
     return (a + WEIGHT_PSEUDOCOUNT) / (b + WEIGHT_PSEUDOCOUNT)
 
 
 class ReadsDataset(IterableDataset):
-    def __init__(self, memory_mapped_data: MemoryMappedData, num_folds: int = None, folds_to_use: List[int] = None, keep_probs_by_label_l = None):
+    def __init__(
+        self,
+        memory_mapped_data: MemoryMappedData,
+        num_folds: int = None,
+        folds_to_use: List[int] = None,
+        keep_probs_by_label_l=None,
+    ):
         """
         :param num_folds:
         """
         super(ReadsDataset, self).__init__()
-        self.totals_slvra = BatchIndexedTensor.make_zeros(num_sources=1, include_logits=False, device=torch.device('cpu'))
+        self.totals_slvra = BatchIndexedTensor.make_zeros(
+            num_sources=1, include_logits=False, device=torch.device("cpu")
+        )
         # if no folds, no copying is done; otherwise this creates a new file on disk
-        self.memory_mapped_data = memory_mapped_data.restrict_to_folds(num_folds, folds_to_use, keep_probs_by_label_l)
+        self.memory_mapped_data = memory_mapped_data.restrict_to_folds(
+            num_folds, folds_to_use, keep_probs_by_label_l
+        )
         self._size = self.memory_mapped_data.num_data
         self._read_end_indices = self.memory_mapped_data.read_end_indices
 
         available_memory = psutil.virtual_memory().available
-        print(f"Data occupy {memory_mapped_data.size_in_bytes() // 1000000} Mb and the system has {available_memory // 1000000} Mb of RAM available.")
+        print(
+            f"Data occupy {memory_mapped_data.size_in_bytes() // 1000000} Mb and the system has {available_memory // 1000000} Mb of RAM available."
+        )
 
-        self._stacked_reads_re = np.zeros((0,0), dtype=COMPRESSED_READS_ARRAY_DTYPE) if self.memory_mapped_data.reads_mmap is None else self.memory_mapped_data.reads_mmap
+        self._stacked_reads_re = (
+            np.zeros((0, 0), dtype=COMPRESSED_READS_ARRAY_DTYPE)
+            if self.memory_mapped_data.reads_mmap is None
+            else self.memory_mapped_data.reads_mmap
+        )
         self._int_array_ve = self.memory_mapped_data.int_mmap
         self._float_array_ve = self.memory_mapped_data.float_mmap
 
-        self._num_read_features, self._num_info_features, self._haplotypes_length = ConsistentValue(), ConsistentValue(), ConsistentValue()
+        self._num_read_features, self._num_info_features, self._haplotypes_length = (
+            ConsistentValue(),
+            ConsistentValue(),
+            ConsistentValue(),
+        )
         data_recording_timer = Timer("Recording data counts. . .")
         for datum in self.memory_mapped_data.generate_data():
             self.totals_slvra.record_datum(datum)
@@ -62,7 +92,9 @@ class ReadsDataset(IterableDataset):
             self._haplotypes_length.check(datum.get_haplotypes_array_size())
         data_recording_timer.report("Time to record data counts")
 
-        self.totals_by_label_l = self.totals_slvra.get_marginal((BatchProperty.LABEL,)) # totals by label
+        self.totals_by_label_l = self.totals_slvra.get_marginal(
+            (BatchProperty.LABEL,)
+        )  # totals by label
 
     def totals_by_label(self):
         return self.totals_by_label_l
@@ -97,8 +129,12 @@ class ReadsDataset(IterableDataset):
         # thus we multiply by a cautious fudge factor that accounts for: 1) maybe space in RAM is less efficient than space in disk,
         # 2) one chunk might still be in memory, not yet garbage-collected, when the next is loaded
         fudge_factor = 8
-        chunks_per_worker = 1 + ((fudge_factor * num_bytes_per_worker) // available_memory_per_worker)
-        print(f"Worker {worker_id} will divide its portion of the data into {chunks_per_worker} chunks.")
+        chunks_per_worker = 1 + (
+            (fudge_factor * num_bytes_per_worker) // available_memory_per_worker
+        )
+        print(
+            f"Worker {worker_id} will divide its portion of the data into {chunks_per_worker} chunks."
+        )
 
         # The way multiple DataLoader workers work in PyTorch is not so obvious.
         # 1) There is an original Dataset
@@ -113,7 +149,9 @@ class ReadsDataset(IterableDataset):
         # example of specific number: num_data = 21, num_workers = 4, then data_per_worker is 5 and the index ranges
         # are [0,5), [5,10), [10,15), [15,21)
         worker_start_idx = worker_id * num_data_per_worker
-        worker_end_idx = (worker_id + 1) * num_data_per_worker if worker_id < num_workers - 1 else self._size
+        worker_end_idx = (
+            (worker_id + 1) * num_data_per_worker if worker_id < num_workers - 1 else self._size
+        )
 
         num_data_for_this_worker = worker_end_idx - worker_start_idx
         data_per_chunk = num_data_for_this_worker // chunks_per_worker
@@ -124,22 +162,34 @@ class ReadsDataset(IterableDataset):
             print("Iterating over the whole dataset in a single process.")
         else:
             print(f"Iterating with worker {worker_id} out of {num_workers}.")
-            print(f"This worker is responsible for data range [{worker_start_idx}, {worker_end_idx}).")
+            print(
+                f"This worker is responsible for data range [{worker_start_idx}, {worker_end_idx})."
+            )
 
         for chunk in chunks:
             chunk_start_idx = worker_start_idx + chunk * data_per_chunk
-            chunk_end_idx = (worker_start_idx + (chunk + 1) * data_per_chunk) if (chunk < chunks_per_worker - 1) else worker_end_idx
+            chunk_end_idx = (
+                (worker_start_idx + (chunk + 1) * data_per_chunk)
+                if (chunk < chunks_per_worker - 1)
+                else worker_end_idx
+            )
 
-            chunk_read_start_idx = 0 if chunk_start_idx == 0 else self._read_end_indices[chunk_start_idx - 1]
+            chunk_read_start_idx = (
+                0 if chunk_start_idx == 0 else self._read_end_indices[chunk_start_idx - 1]
+            )
             chunk_read_end_idx = self._read_end_indices[chunk_end_idx - 1]
 
-            ram_timer = Timer(f"Worker {worker_id} loading chunk [{chunk_start_idx}, {chunk_end_idx}) into RAM.")
+            ram_timer = Timer(
+                f"Worker {worker_id} loading chunk [{chunk_start_idx}, {chunk_end_idx}) into RAM."
+            )
             # TODO: I think the .copy() is necessary to copy the slice of the memory-map from disk into RAM
             # these operations should be really fast because it's all sequential access
             chunk_int_data_ve = self._int_array_ve[chunk_start_idx:chunk_end_idx].copy()
             chunk_float_data_ve = self._float_array_ve[chunk_start_idx:chunk_end_idx].copy()
             chunk_reads_re = self._stacked_reads_re[chunk_read_start_idx:chunk_read_end_idx].copy()
-            chunk_read_end_indices = self._read_end_indices[chunk_start_idx:chunk_end_idx] - chunk_read_start_idx
+            chunk_read_end_indices = (
+                self._read_end_indices[chunk_start_idx:chunk_end_idx] - chunk_read_start_idx
+            )
             ram_timer.report("Time to load chunk data into RAM")
             report_memory_usage("Chunk data loaded into RAM.")
 
@@ -150,10 +200,13 @@ class ReadsDataset(IterableDataset):
             for idx in indices:
                 read_start_idx = 0 if idx == 0 else chunk_read_end_indices[idx - 1]
                 read_end_idx = chunk_read_end_indices[idx]
-                datum = Datum(int_array=chunk_int_data_ve[idx], float_array=chunk_float_data_ve[idx],
-                              reads_re=chunk_reads_re[read_start_idx:read_end_idx],
-                              compressed_reads=True)
-                #assert datum.get_ref_count() + datum.get_alt_count() == len(datum.get_reads_array_re())
+                datum = Datum(
+                    int_array=chunk_int_data_ve[idx],
+                    float_array=chunk_float_data_ve[idx],
+                    reads_re=chunk_reads_re[read_start_idx:read_end_idx],
+                    compressed_reads=True,
+                )
+                # assert datum.get_ref_count() + datum.get_alt_count() == len(datum.get_reads_array_re())
                 yield datum
 
             # we have finished yielding all the data in this chunk.  Because this is such a large amount of data,
@@ -168,14 +221,15 @@ class ReadsDataset(IterableDataset):
         return self.totals_slvra.num_sources()
 
     def report_totals(self):
-        totals_slv = self.totals_slvra.get_marginal((BatchProperty.SOURCE, BatchProperty.LABEL, BatchProperty.VARIANT_TYPE))
+        totals_slv = self.totals_slvra.get_marginal(
+            (BatchProperty.SOURCE, BatchProperty.LABEL, BatchProperty.VARIANT_TYPE)
+        )
         for source in range(len(totals_slv)):
             print(f"Data counts for source {source}:")
             for var_type in Variation:
                 print(f"Data counts for variant type {var_type.name}:")
                 for label in Label:
                     print(f"{label.name}: {int(totals_slv[source, label, var_type].item())}")
-
 
     def validate_sources(self) -> int:
         num_sources = self.num_sources()
@@ -185,15 +239,23 @@ class ReadsDataset(IterableDataset):
         else:
             for source in range(self.num_sources()):
                 assert totals_by_source_s[source].item() >= 1, f"No data for source {source}."
-            print(f"Data come from multiple sources, with counts {totals_by_source_s.cpu().tolist()}.")
+            print(
+                f"Data come from multiple sources, with counts {totals_by_source_s.cpu().tolist()}."
+            )
         return num_sources
 
     def make_data_loader(self, batch_size: int, pin_memory=False, num_workers: int = 0):
-        return DataLoader(dataset=self, batch_size=batch_size, collate_fn=Batch, pin_memory=pin_memory,
-                          num_workers=num_workers, prefetch_factor=2 if num_workers > 0 else None, persistent_workers=num_workers > 0)
+        return DataLoader(
+            dataset=self,
+            batch_size=batch_size,
+            collate_fn=Batch,
+            pin_memory=pin_memory,
+            num_workers=num_workers,
+            prefetch_factor=2 if num_workers > 0 else None,
+            persistent_workers=num_workers > 0,
+        )
+
 
 # ex: chunk([a,b,c,d,e], 3) = [[a,b,c], [d,e]]
 def chunk(lis, chunk_size):
-    return [lis[i:i + chunk_size] for i in range(0, len(lis), chunk_size)]
-
-
+    return [lis[i : i + chunk_size] for i in range(0, len(lis), chunk_size)]

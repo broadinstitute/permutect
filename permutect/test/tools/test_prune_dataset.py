@@ -2,6 +2,7 @@ import tempfile
 from argparse import Namespace
 
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
 from permutect import constants
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.reads_dataset import ReadsDataset
@@ -10,8 +11,10 @@ from permutect.tools import prune_dataset
 
 def test_prune_dataset():
     # Inputs
-    training_data_tarfile = '/Users/davidben/mutect3/permutect/integration-tests/singular-10-Mb/preprocessed-dataset.tar'
-    artifact_model = '/Users/davidben/mutect3/permutect/integration-tests/singular-10-Mb/base-model.pt'
+    training_data_tarfile = "/Users/davidben/mutect3/permutect/integration-tests/singular-10-Mb/preprocessed-dataset.tar"
+    artifact_model = (
+        "/Users/davidben/mutect3/permutect/integration-tests/singular-10-Mb/base-model.pt"
+    )
 
     # Outputs
     pruned_dataset = tempfile.NamedTemporaryFile()
@@ -20,7 +23,7 @@ def test_prune_dataset():
     # STEP 2: train a model
     prune_dataset_args = Namespace()
     setattr(prune_dataset_args, constants.AGGREGATION_LAYERS_NAME, [20, 20, 20])
-    setattr(prune_dataset_args, constants.CALIBRATION_LAYERS_NAME, [6,6])
+    setattr(prune_dataset_args, constants.CALIBRATION_LAYERS_NAME, [6, 6])
     setattr(prune_dataset_args, constants.DROPOUT_P_NAME, 0.0)
     setattr(prune_dataset_args, constants.BATCH_NORMALIZE_NAME, False)
     setattr(prune_dataset_args, constants.LEARN_ARTIFACT_SPECTRA_NAME, True)  # could go either way
@@ -49,5 +52,3 @@ def test_prune_dataset():
 
     memory_mapped_data = MemoryMappedData.load_from_tarfile(pruned_dataset.name)
     pruned_dataset = ReadsDataset(memory_mapped_data=memory_mapped_data, num_folds=10)
-
-

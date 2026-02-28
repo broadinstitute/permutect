@@ -2,7 +2,8 @@ from typing import Tuple
 
 import numpy as np
 import torch
-from torch import Tensor, IntTensor
+from torch import IntTensor
+from torch import Tensor
 
 
 def flattened_indices(shape: Tuple[int], idx: Tuple[IntTensor]):
@@ -13,9 +14,14 @@ def flattened_indices(shape: Tuple[int], idx: Tuple[IntTensor]):
         elif dim == 3:
             return idx[2] + shape[2] * (idx[1] + shape[1] * idx[0])
     elif dim == 5:
-        return idx[4] + shape[4] * (idx[3] + shape[3] * (idx[2] + shape[2] * (idx[1] + shape[1] * idx[0])))
+        return idx[4] + shape[4] * (
+            idx[3] + shape[3] * (idx[2] + shape[2] * (idx[1] + shape[1] * idx[0]))
+        )
     elif dim == 6:
-        return idx[5] + shape[5] * (idx[4] + shape[4] * (idx[3] + shape[3] * (idx[2] + shape[2] * (idx[1] + shape[1] * idx[0]))))
+        return idx[5] + shape[5] * (
+            idx[4]
+            + shape[4] * (idx[3] + shape[3] * (idx[2] + shape[2] * (idx[1] + shape[1] * idx[0])))
+        )
     elif dim == 4:
         return idx[3] + shape[3] * (idx[2] + shape[2] * (idx[1] + shape[1] * idx[0]))
     else:
@@ -39,7 +45,7 @@ def downsample_tensor(tensor2d: np.ndarray, new_length: int):
     return tensor2d[perm[:new_length]]
 
 
-def select_and_sum(x: Tensor, select: dict[int, int]={}, sum: Tuple[int]=()):
+def select_and_sum(x: Tensor, select: dict[int, int] = {}, sum: Tuple[int] = ()):
     """
     select specific indices over certain dimensions and sum over others.  For example suppose
     x = [ [[1,2], [3,4]],
@@ -59,10 +65,12 @@ def select_and_sum(x: Tensor, select: dict[int, int]={}, sum: Tuple[int]=()):
     # initialize indexing to be complete slices i.e. select everything, then use the given select_indices
     indices = [slice(dim_size) for dim_size in x.shape]
     for select_dim, select_index in select.items():
-        indices[select_dim] = slice(select_index, select_index + 1)     # one-element slice
+        indices[select_dim] = slice(select_index, select_index + 1)  # one-element slice
 
-    selected = x[tuple(indices)]    # retains original dimensions; selected dimensions have length 1
-    summed = selected if len(sum) == 0 else torch.sum(selected, dim=sum, keepdim=True)  # still retain original dimension
+    selected = x[tuple(indices)]  # retains original dimensions; selected dimensions have length 1
+    summed = (
+        selected if len(sum) == 0 else torch.sum(selected, dim=sum, keepdim=True)
+    )  # still retain original dimension
 
     # Finally, select element 0 from the selected and summed axes to contract the dimensions
     for sum_dim in sum:
