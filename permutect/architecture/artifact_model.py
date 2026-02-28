@@ -34,11 +34,6 @@ class BatchOutput:
         self.source_weights = source_weights
 
 
-def sums_over_chunks(tensor2d: Tensor, chunk_size: int):
-    assert len(tensor2d) % chunk_size == 0
-    return torch.sum(tensor2d.reshape([len(tensor2d) // chunk_size, chunk_size, -1]), dim=1)
-
-
 def make_gated_ref_alt_mlp_encoder(input_dimension: int, params: ModelParameters) -> GatedRefAltMLP:
     return GatedRefAltMLP(d_model=input_dimension, d_ffn=params.self_attention_hidden_dimension, num_blocks=params.num_self_attention_layers)
 
@@ -131,7 +126,7 @@ class ArtifactModel(torch.nn.Module):
     # first by variant within the batch, then the read within the variant
     def calculate_features(self, batch: Batch, weight_range: float = 0) -> tuple[RaggedSets, RaggedSets, Tensor]:
         ref_counts_b, alt_counts_b = batch.get(Data.REF_COUNT), batch.get(Data.ALT_COUNT)
-        total_ref, total_alt = torch.sum(ref_counts_b).item(), torch.sum(alt_counts_b).item()
+        total_ref = torch.sum(ref_counts_b).item()
 
         read_embeddings_re = self.read_embedding.forward(batch.get_reads_re().to(dtype=self._dtype))
         info_embeddings_be = self.info_embedding.forward(batch.get_info_be().to(dtype=self._dtype))
@@ -148,19 +143,6 @@ class ArtifactModel(torch.nn.Module):
 
         reduced_ref_bre = transformed_ref_bre.apply_elementwise(self.reducer)
         reduced_alt_bre = transformed_alt_bre.apply_elementwise(self.reducer)
-
-        # TODO: this old code has the random weighting logic which might still be valuable
-        """
-        transformed_alt_re = transformed_alt_bre.flattened_tensor_nf
-
-        alt_weights_r = 1 + weight_range * (1 - 2 * torch.rand(total_alt, device=self._device, dtype=self._dtype))
-
-        # normalize so read weights within each variant sum to 1
-        alt_wt_sums_v = sums_over_rows(alt_weights_r, alt_counts)
-        normalized_alt_weights_r = alt_weights_r / torch.repeat_interleave(alt_wt_sums_v, repeats=alt_counts, dim=0)
-
-        alt_means_ve = sums_over_rows(transformed_alt_re * normalized_alt_weights_r[:,None], alt_counts)
-        """
 
         return reduced_ref_bre, reduced_alt_bre, ref_seq_embeddings_be # ref seq embeddings are useful later
 
@@ -229,18 +211,6 @@ def load_model(path, device: torch.device = gpu_if_available()):
     artifact_spectra_state_dict = saved[constants.ARTIFACT_SPECTRA_STATE_DICT_NAME]  # possibly None
 
     return model, artifact_log_priors, artifact_spectra_state_dict
-
-
-def permute_columns_independently(mat: Tensor):
-    assert mat.dim() == 2
-    num_rows, num_cols = mat.size()
-    weights = torch.ones(num_rows)
-
-    result = torch.clone(mat)
-    for col in range(num_cols):
-        idx = torch.multinomial(weights, num_rows, replacement=True)
-        result[:, col] = result[:, col][idx]
-    return result
 
 
 # after training for visualizing clustering etc of base model embeddings
