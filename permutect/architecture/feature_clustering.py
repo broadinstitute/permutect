@@ -178,10 +178,7 @@ class FeatureClustering(nn.Module):
         var_types_b: IntTensor,
     ):
         # recenter reads so that Gaussian's centroid is the origin
-        shifted_alt_bre, shifted_ref_bre = (
-            self.transform_reads(alt_bre),
-            self.transform_reads(ref_bre),
-        )
+        shifted_alt_bre = self.transform_reads(alt_bre)
         alt_re = shifted_alt_bre.flattened_tensor_nf
 
         # nonartifact Gaussian in F dimensions
@@ -233,8 +230,8 @@ class FeatureClustering(nn.Module):
         log_artifact_cluster_weights_k = torch.log_softmax(
             self.cluster_weights_pre_softmax_k, dim=-1
         )
-        log_artifact_cluster_weights_bk = log_artifact_cluster_weights_k[None:,]
-        artifact_log_lks_bk = artifact_log_lks_bk + log_artifact_cluster_weights_bk
+        log_artifact_cluster_weights_bk = log_artifact_cluster_weights_k[None, :]
+        artifact_log_lks_bk += log_artifact_cluster_weights_bk
 
         # the first column is nonartifact; next is outlier; other columns are different artifact clusters
         return torch.cat((nonartifact_log_lks_bk, outlier_log_lks_bk, artifact_log_lks_bk), dim=-1)
