@@ -132,8 +132,8 @@ class MemoryMappedData:
 
         labeled_proportion = labeled_count / total
         fudge_factor = 1.1
-        estimated_num_reads = self.num_reads * labeled_proportion * fudge_factor
-        estimated_num_data = self.num_data * labeled_proportion * fudge_factor
+        estimated_num_reads = int(self.num_reads * labeled_proportion * fudge_factor)
+        estimated_num_data = int(self.num_data * labeled_proportion * fudge_factor)
 
         reads_datum_source = (datum for datum in self.generate_data() if datum.is_labeled())
         return MemoryMappedData.from_generator(

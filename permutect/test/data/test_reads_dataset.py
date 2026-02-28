@@ -1,6 +1,9 @@
 import tempfile
 
+import pytest
 import torch
+
+pytest.importorskip("torch_scatter")
 
 import permutect.data.reads_dataset as ds
 from permutect.data.datum import Data

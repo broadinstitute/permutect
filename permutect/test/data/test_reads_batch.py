@@ -1,4 +1,7 @@
+import pytest
 import torch
+
+pytest.importorskip("torch_scatter")
 
 from permutect.data.batch import Batch
 from permutect.data.datum import Datum

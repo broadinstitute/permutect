@@ -42,6 +42,7 @@ def test_linearly_separable_data():
 
 # test with annular data where y = 1 when  1/3 < norm(x) < 2/3
 def test_annular_data():
+    torch.manual_seed(42)
     input_dim = 3
     num_samples = 1000
     x = torch.randn(num_samples, input_dim) / torch.sqrt(torch.tensor([input_dim]))

@@ -1,5 +1,6 @@
 import torch
 
+from permutect.architecture.dna_sequence_convolution import INITIAL_NUM_CHANNELS
 from permutect.architecture.dna_sequence_convolution import DNASequenceConvolution
 
 
@@ -16,5 +17,5 @@ def test_constructor():
     ]
     model = DNASequenceConvolution(layer_strings, input_length)
 
-    data = torch.randn(8, 4, input_length)
+    data = torch.randn(8, INITIAL_NUM_CHANNELS, input_length)
     model(data)

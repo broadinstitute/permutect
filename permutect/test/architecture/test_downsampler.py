@@ -1,9 +1,13 @@
 from random import random
 
-from permutect.architecture.downsampler import Downsampler
+import pytest
+
+pytest.importorskip("torch_scatter")
+
 from permutect.data.batch import BatchIndexedTensor
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import NUM_REF_COUNT_BINS
+from permutect.training.downsampler import Downsampler
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
 

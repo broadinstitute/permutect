@@ -11,6 +11,7 @@ from permutect.architecture.artifact_model import ArtifactModel
 from permutect.architecture.artifact_model import load_model
 from permutect.data.batch import Batch
 from permutect.data.batch import BatchProperty
+from permutect.data.datum import RAW_READS_ARRAY_DTYPE
 from permutect.data.datum import Datum
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.prefetch_generator import prefetch_generator
@@ -162,7 +163,12 @@ def generated_pruned_data_for_fold(
             batch.get_list_of_reads_re(),
             is_labeled_mask.tolist(),
         ):
-            datum = Datum(int_array, float_array, reads_re, compressed_reads=True)
+            datum = Datum(
+                int_array,
+                float_array,
+                reads_re.astype(RAW_READS_ARRAY_DTYPE),
+                compressed_reads=False,
+            )
             if not is_labeled:
                 yield datum
             elif (labeled_as_art and art_prob < art_threshold) or (
@@ -185,7 +191,7 @@ def generate_pruned_data_for_all_folds(
 
     for pruning_fold, fold_dataset in enumerate(fold_datasets):
         # validate against the cyclically next dataset
-        valid_dataset = fold_datasets[pruning_fold + 1 % len(fold_datasets)]
+        valid_dataset = fold_datasets[(pruning_fold + 1) % len(fold_datasets)]
 
         summary_writer = SummaryWriter(tensorboard_dir + "/fold_" + str(pruning_fold))
         report_memory_usage(f"Pruning data from fold {pruning_fold} of {NUM_FOLDS}.")

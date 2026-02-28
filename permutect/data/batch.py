@@ -155,7 +155,10 @@ class Batch:
             self.get_reads_re()[:total_ref],
             self.get_reads_re()[total_ref:],
         )
-        ref_splits, alt_splits = torch.cumsum(ref_counts)[:-1], torch.cumsum(alt_counts)[:-1]
+        ref_splits, alt_splits = (
+            torch.cumsum(ref_counts, dim=0)[:-1],
+            torch.cumsum(alt_counts, dim=0)[:-1],
+        )
         ref_list, alt_list = (
             torch.tensor_split(ref_reads_re, ref_splits),
             torch.tensor_split(alt_reads_re, alt_splits),
