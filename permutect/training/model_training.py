@@ -106,7 +106,9 @@ def train_artifact_model(
             loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
 
             parent_batch: Batch
-            for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
+            for batch_count, parent_batch in enumerate(
+                tqdm(prefetch_generator(loader), mininterval=60, total=len(loader))
+            ):
                 batch: DownsampledBatch
                 for downsampling_iteration in range(2):
                     ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(
@@ -127,7 +129,8 @@ def train_artifact_model(
                         )
                 # done with this downsampled batch
             # done with this parent batch
-            check_for_nan(model)
+            if batch_count % 100 == 0:
+                check_for_nan(model)
             if epoch_type == Epoch.TRAIN:
                 mean_loss = torch.mean(
                     loss_recorder.semisupervised_loss_metrics.get_marginal(BatchProperty.LABEL)
