@@ -1,0 +1,29 @@
+[workspace]
+channels = ["https://prefix.dev/conda-forge", "https://prefix.dev/bioconda"]
+name = "permutect"
+platforms = ["osx-arm64", "linux-64"]
+
+[dependencies]
+python = ">=3.10,<3.12"
+htslib = ">=1.19"
+libdeflate = ">=1.19"
+
+[feature.cpu.pypi-dependencies]
+permutect = { path = ".", editable = true, extras = ["dev"] }
+torch = { version = ">=2.1.0,<2.4", index = "https://download.pytorch.org/whl/cpu" }
+
+[feature.gpu]
+platforms = ["linux-64"]
+system-requirements = { cuda = "12.0" }
+
+[feature.gpu.pypi-dependencies]
+permutect = { path = ".", editable = true, extras = ["dev"] }
+torch = { version = ">=2.1.0,<2.4", index = "https://download.pytorch.org/whl/cu121" }
+
+[environments]
+default = { features = ["cpu"] }
+gpu = { features = ["gpu"], solve-group = "gpu" }
+
+[tasks]
+test = "pytest permutect/test -x -v"
+test-unit = "pytest permutect/test/utils permutect/test/architecture permutect/test/data -x -v"
