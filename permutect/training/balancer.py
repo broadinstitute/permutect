@@ -69,7 +69,7 @@ class Balancer(Module):
             new_weights_slvra[:, Label.VARIANT] = torch.clip((1 + art_to_nonart_ratios_svra) / 2, min=0.01, max=100)
 
             counts_slv = torch.sum(self.counts_slvra, dim=(-2,-1))
-            unlabeled_weight_sv = torch.clip((counts_slv[:, Label.ARTIFACT] + counts_slv[:, Label.ARTIFACT])/counts_slv[:, Label.UNLABELED], 0, 1)
+            unlabeled_weight_sv = torch.clip((counts_slv[:, Label.ARTIFACT] + counts_slv[:, Label.VARIANT])/counts_slv[:, Label.UNLABELED], 0, 1)
             new_weights_slvra[:, Label.UNLABELED] = unlabeled_weight_sv.view(self.num_sources, len(Variation), 1, 1)
 
             attenuation = math.pow(Balancer.ATTENUATION_PER_DATUM, self.count_since_last_recomputation)
@@ -121,7 +121,7 @@ class Balancer(Module):
                     elif type_of_plot == "counts":
                         common_colormesh = self.plot_counts(label, var_type, axes[label, var_type], source)
                     else:
-                        raise Exception("BAD")
+                        raise ValueError(f"Unknown type_of_plot: {type_of_plot}. Expected 'weights' or 'counts'.")
             fig.colorbar(common_colormesh)
             plotting.tidy_subplots(fig, axes, x_label="alt count", y_label="ref count", row_labels=row_names, column_labels=variation_types)
             source_suffix = "" if self.num_sources == 1 else (", all sources" if source is None else f", source {source}")

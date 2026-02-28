@@ -89,7 +89,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
 
             batch: Batch
             parent_batch: Batch
-            for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
+            for batch_count, parent_batch in enumerate(tqdm(prefetch_generator(loader), mininterval=60, total=len(loader))):
                 # TODO: really to get the assumed balance we should only train on downsampled batches.  But using one
                 # TODO: downsampled batch with the proper balance will still go a long way
                 ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
@@ -154,19 +154,21 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
                     #    print(f"There are {torch.sum(losses.isnan()).item()} with NaN loss out of {batch.size()} data in the batch.")
 
                     #else:
-                    average_loss = loss.item() / batch.size()
+                    total_batch_size = sum(b.size() for b in batches)
+                    average_loss = loss.item() / total_batch_size
                     if epoch > 1 and average_loss > 100.0:
                         print(f"Very large batch loss {average_loss:.2f}.")
 
                     backpropagate(train_optimizer, loss, params_to_clip=model.parameters())
 
-                    nan_found = False
-                    for name, param in model.named_parameters():
-                        if param.grad is not None:
-                            if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                                print(f"Invalid gradient (NaN or Inf) found in parameter: {name}")
-                                nan_found = True
-                    assert not nan_found
+                    if batch_count % 100 == 0:
+                        nan_found = False
+                        for name, param in model.named_parameters():
+                            if param.grad is not None:
+                                if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                                    print(f"Invalid gradient (NaN or Inf) found in parameter: {name}")
+                                    nan_found = True
+                        assert not nan_found
 
                 # done with this batch
             # done with one epoch type -- training or validation -- for this epoch
