@@ -39,7 +39,7 @@ class GatedMLPBlock(nn.Module):
     \\end{align}
 
     where $V$ and $U$ are learnable projection weights.
-    $s(\\cdot)$ is the Spacial Gating Unit defined below.
+    $s(\\cdot)$ is the Spatial Gating Unit defined below.
     Output dimensionality of $s(\\cdot)$ will be half of $Z$.
     $\\sigma$ is an activation function such as
     [GeLU](https://pytorch.org/docs/stable/generated/torch.nn.GELU.html).
@@ -57,8 +57,8 @@ class GatedMLPBlock(nn.Module):
         self.activation = nn.SELU()
         # Projection layer for $Z = \sigma(XU)$
         self.proj1 = nn.Linear(d_model, d_ffn)
-        # Spacial Gating Unit $s(\cdot)$
-        self.sgu = SpacialGatingUnit(d_ffn)
+        # Spatial Gating Unit $s(\cdot)$
+        self.sgu = SpatialGatingUnit(d_ffn)
         # Projection layer for $Y = \tilde{Z}V$
         self.proj2 = nn.Linear(d_ffn // 2, d_model)
         # Embedding size (required by [Encoder](../models.html#Encoder).
@@ -79,7 +79,7 @@ class GatedMLPBlock(nn.Module):
             .apply_elementwise(self.proj1)
             .apply_elementwise(self.activation)
         )
-        # Spacial Gating Unit $\tilde{Z} = s(Z)$
+        # Spatial Gating Unit $\tilde{Z} = s(Z)$
         gated_brd = self.sgu.forward(z_brd)
         # Final projection $Y = \tilde{Z}V$ back to embedding dimension
         gated_bre = gated_brd.apply_elementwise(self.proj2)
@@ -88,7 +88,7 @@ class GatedMLPBlock(nn.Module):
         return x_bre.add_elementwise(gated_bre)
 
 
-class SpacialGatingUnit(nn.Module):
+class SpatialGatingUnit(nn.Module):
     r"""
     ## Spatial Gating Unit
     ORIGINAL:
@@ -109,7 +109,7 @@ class SpacialGatingUnit(nn.Module):
         * `d_z` is the dimensionality of $Z$, which is d_ffn of the SGU block
         * `seq_len` is the sequence length
         """
-        super(SpacialGatingUnit, self).__init__()
+        super(SpatialGatingUnit, self).__init__()
         # Normalization layer before applying $f_{W,b}(\cdot)$
         self.norm = nn.LayerNorm([d_z // 2])
         # Weight $W$ in $f_{W,b}(\cdot)$.
@@ -166,8 +166,8 @@ class GatedRefAltMLPBlock(nn.Module):
         # Projection layer for $Z = \sigma(XU)$
         self.proj1_ref = nn.Linear(d_model, d_ffn)
         self.proj1_alt = nn.Linear(d_model, d_ffn)
-        # Spacial Gating Unit $s(\cdot)$
-        self.sgu = SpacialGatingUnitRefAlt(d_ffn)
+        # Spatial Gating Unit $s(\cdot)$
+        self.sgu = SpatialGatingUnitRefAlt(d_ffn)
         # Projection layer for $Y = \tilde{Z}V$
         self.proj2_ref = nn.Linear(d_ffn // 2, d_model)
         self.proj2_alt = nn.Linear(d_ffn // 2, d_model)
@@ -195,7 +195,7 @@ class GatedRefAltMLPBlock(nn.Module):
             .apply_elementwise(self.activation)
         )
 
-        # Spacial Gating Unit $\tilde{Z} = s(Z)$
+        # Spatial Gating Unit $\tilde{Z} = s(Z)$
         gated_ref_brd, gated_alt_brd = self.sgu.forward(zref_brd, zalt_brd)
 
         # Final projection $Y = \tilde{Z}V$ back to embedding dimension
@@ -206,7 +206,7 @@ class GatedRefAltMLPBlock(nn.Module):
         return ref_brf.add_elementwise(gated_ref_bre), alt_brf.add_elementwise(gated_alt_bre)
 
 
-class SpacialGatingUnitRefAlt(nn.Module):
+class SpatialGatingUnitRefAlt(nn.Module):
     """ """
 
     def __init__(self, d_z: int):
@@ -214,7 +214,7 @@ class SpacialGatingUnitRefAlt(nn.Module):
         * `d_z` is the dimensionality of $Z$, which is d_ffn of the SGU block
         * `seq_len` is the sequence length
         """
-        super(SpacialGatingUnitRefAlt, self).__init__()
+        super(SpatialGatingUnitRefAlt, self).__init__()
         # Normalization layer before applying $f_{W,b}(\cdot)$
         self.norm = nn.LayerNorm([d_z // 2])
         # Weight $W$ in $f_{W,b}(\cdot)$.
