@@ -1,4 +1,5 @@
 import torch.nn
+
 from permutect.architecture.gradient_reversal.module import GradientReversal
 
 
@@ -10,6 +11,7 @@ class Adversarial(torch.nn.Module):
     That is, the wrapped module tries to succeed and the network as a whole tries to feed it features that make the task
     more difficult.
     """
+
     def __init__(self, wrapped_module: torch.nn.Module, adversarial_strength: float = 1.0):
         super(Adversarial, self).__init__()
         self.wrapped_module = wrapped_module

@@ -1,15 +1,24 @@
 import torch
-from torch import IntTensor, Tensor, LongTensor
+from torch import IntTensor
+from torch import LongTensor
+from torch import Tensor
 
-from permutect.utils.array_utils import cumsum_starting_from_zero, select_and_sum, add_at_index
+from permutect.utils.array_utils import add_at_index
+from permutect.utils.array_utils import cumsum_starting_from_zero
+from permutect.utils.array_utils import select_and_sum
 
 
 def test_cumsum_starting_from_zero():
-    assert torch.sum(cumsum_starting_from_zero(IntTensor([1, 3, 2, 0, 3])) - IntTensor([0, 1, 4, 6, 6])).item() == 0
+    assert (
+        torch.sum(
+            cumsum_starting_from_zero(IntTensor([1, 3, 2, 0, 3])) - IntTensor([0, 1, 4, 6, 6])
+        ).item()
+        == 0
+    )
 
 
 def test_add_to_array():
-    x = torch.zeros(4,5).int()
+    x = torch.zeros(4, 5).int()
     add_at_index(x, (LongTensor([0, 2]), LongTensor([1, 3])), IntTensor([7, 8]))
     assert x[0, 1] == 7
     assert x[2, 3] == 8
@@ -18,6 +27,6 @@ def test_add_to_array():
 
 def test_select_and_sum():
     x = Tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])
-    assert torch.equal(select_and_sum(x, select={0: 0}, sum=(2, )), Tensor([3, 7]))
+    assert torch.equal(select_and_sum(x, select={0: 0}, sum=(2,)), Tensor([3, 7]))
     assert torch.equal(select_and_sum(x, select={0: 1, 1: 0}), Tensor([5, 6]))
     assert torch.equal(select_and_sum(x, sum=(1, 2)), Tensor([10, 26]))
