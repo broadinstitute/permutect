@@ -4,7 +4,6 @@ import copy
 from enum import IntEnum
 from random import randint
 from typing import List
-from typing import Tuple
 
 import numpy as np
 import torch
@@ -66,9 +65,9 @@ class Batch:
 
         # assert that the decompression got the expected tensor shape
         assert self.reads_re.shape[1] == data[0].num_read_features()
-        self._finish_initializiation_from_arrays()
+        self._finish_initialization_from_arrays()
 
-    def _finish_initializiation_from_arrays(self):
+    def _finish_initialization_from_arrays(self):
         self._size = len(self.int_tensor)
         self.lazy_batch_indices = None
 
@@ -174,6 +173,7 @@ class Batch:
     def copy_to(self, device, dtype):
         is_cuda = device.type == "cuda"
         new_batch = copy.copy(self)
+        new_batch.lazy_batch_indices = None
         new_batch.reads_re = self.reads_re.to(device=device, dtype=dtype, non_blocking=is_cuda)
         new_batch.int_tensor = self.int_tensor.to(
             device, non_blocking=is_cuda
@@ -388,12 +388,12 @@ class BatchIndexedTensor(Tensor):
             self, values=values, logits=logits
         )
 
-    def get_marginal(self, *properties: Tuple[BatchProperty, ...]) -> Tensor:
+    def get_marginal(self, *properties: BatchProperty) -> Tensor:
         """
         sum over all but one or more batch properties.
         For example self.get_marginal(BatchProperty.SOURCE, BatchProperty.LABEL) yields a (num sources x len(Label)) output
         """
-        property_set = set(*properties)
+        property_set = set(properties)
         num_dims = len(BatchProperty) - (0 if self.has_logits() else 1)
         other_dims = tuple(n for n in range(num_dims) if n not in property_set)
         return torch.sum(self, dim=other_dims)
@@ -413,7 +413,7 @@ class DownsampledBatch(Batch):
         self.float_tensor = original_batch.float_tensor  # note: no copy -- we never modify it!!!
         self.device = self.int_tensor.device
         self.reads_re = original_batch.reads_re
-        self._finish_initializiation_from_arrays()
+        self._finish_initialization_from_arrays()
         # at this point all member variables needed by the parent class are available
 
         old_ref_counts, old_alt_counts = (
