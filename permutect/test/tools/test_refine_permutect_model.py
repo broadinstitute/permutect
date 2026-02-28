@@ -2,6 +2,7 @@ import tempfile
 from argparse import Namespace
 
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+
 from permutect import constants
 from permutect.architecture.artifact_model import load_model
 from permutect.tools import refine_artifact_model
@@ -9,9 +10,9 @@ from permutect.tools import refine_artifact_model
 
 def test_refine_artifact_model():
     # Inputs
-    training_data_tarfile = '/Users/davidben/mutect3/permutect/integration-tests/singular-10-Mb/preprocessed-dataset.tar'
+    training_data_tarfile = "/Users/davidben/mutect3/permutect/integration-tests/singular-10-Mb/preprocessed-dataset.tar"
     # pretrained_model = '/Users/davidben/mutect3/permutect/integration-tests/singular-10-Mb/permutect-model.pt'
-    pretrained_model = '/Users/davidben/mutect3/permutect/integration-tests/dream1-chr20/model.pt'
+    pretrained_model = "/Users/davidben/mutect3/permutect/integration-tests/dream1-chr20/model.pt"
 
     # Outputs
     saved_model = tempfile.NamedTemporaryFile()
@@ -52,4 +53,3 @@ def test_refine_artifact_model():
 
     print(artifact_log_priors)
     h = 99
-

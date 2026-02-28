@@ -33,7 +33,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.14",
+]
 
 [project.scripts]
 refine_artifact_model = "permutect.tools.refine_artifact_model:main"
@@ -48,3 +51,36 @@ include = ["permutect*"]
 
 [tool.pytest.ini_options]
 testpaths = ["permutect/test"]
+minversion = "7.4"
+addopts    = ["--color=yes", "--import-mode=importlib"]
+
+[tool.ruff]
+line-length    = 100
+target-version = "py310"
+output-format  = "full"
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "I",      # isort
+    "W",      # pycodestyle warnings
+]
+ignore = [
+    "E203",
+    "E501",   # line-too-long — enforced by formatter
+    "E701",
+    "E731",   # lambda assignments — common in ML code
+]
+unfixable = ["B"]
+
+[tool.ruff.lint.isort]
+force-single-line = true
+
+[tool.ruff.lint.per-file-ignores]
+"permutect/test/**.py" = ["F403", "F405"]
+# Files below are being rewritten — suppress until then
+"permutect/test/tools/test_filter_variants.py" = ["F841"]
+"permutect/test/tools/test_pipeline.py" = ["F821", "F841"]
+"permutect/test/tools/test_preprocess_dataset.py" = ["F841"]
+"permutect/test/tools/test_refine_permutect_model.py" = ["F841"]

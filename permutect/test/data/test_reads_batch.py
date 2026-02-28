@@ -2,10 +2,10 @@ import torch
 
 from permutect.data.batch import Batch
 from permutect.data.datum import Datum
-
+from permutect.utils.enums import Label
 
 # make a three-datum batch
-from permutect.utils.enums import Variation, Label
+from permutect.utils.enums import Variation
 
 
 def test_reads_batch():
@@ -25,19 +25,33 @@ def test_reads_batch():
 
     gatk_info_tensors = [torch.rand(num_gatk_info_features) for _ in range(size)]
     labels = [Label.ARTIFACT, Label.VARIANT, Label.ARTIFACT]
-    sources = [0,0,0]
+    sources = [0, 0, 0]
 
-    data = [Datum.from_gatk(ref_sequence_strings[n], variant_types[n], ref_tensors[n], alt_tensors[n], gatk_info_tensors[n], labels[n], sources[n]) for n in range(size)]
+    data = [
+        Datum.from_gatk(
+            ref_sequence_strings[n],
+            variant_types[n],
+            ref_tensors[n],
+            alt_tensors[n],
+            gatk_info_tensors[n],
+            labels[n],
+            sources[n],
+        )
+        for n in range(size)
+    ]
 
     batch = Batch(data)
 
-    assert torch.equal(batch.get_one_hot_haplotypes_bcs(),
-                       torch.tensor([
-                           [[1,0,0],[0,1,1],[0,0,0],[0,0,0]],
-                           [[0,0,0],[0,0,0],[1,0,1],[0,1,0]],
-                           [[0,1,1],[0,0,0],[0,0,0],[1,0,0]]
-                           ])
-                       )
+    assert torch.equal(
+        batch.get_one_hot_haplotypes_bcs(),
+        torch.tensor(
+            [
+                [[1, 0, 0], [0, 1, 1], [0, 0, 0], [0, 0, 0]],
+                [[0, 0, 0], [0, 0, 0], [1, 0, 1], [0, 1, 0]],
+                [[0, 1, 1], [0, 0, 0], [0, 0, 0], [1, 0, 0]],
+            ]
+        ),
+    )
     assert batch.size() == 3
 
     assert batch.get_reads_re().shape[0] == sum(ref_counts) + sum(alt_counts)
@@ -46,4 +60,3 @@ def test_reads_batch():
     assert batch.get_info_be().shape[0] == 3
 
     assert batch.labels.tolist() == [1.0, 0.0, 1.0]
-
