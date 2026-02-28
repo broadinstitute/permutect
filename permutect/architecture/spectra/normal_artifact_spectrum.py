@@ -44,7 +44,7 @@ class NormalArtifactSpectrum(nn.Module):
 
         # mean = alpha / (alpha + beta)
         alpha_b = 0.001 + tumor_mean_b * concentration_b
-        beta_b = concentration_b - alpha_b
+        beta_b = torch.clamp(concentration_b - alpha_b, min=0.001)
         tumor_log_lks_b = beta_binomial_log_lk(n=tumor_depths_b, k=tumor_alt_counts_b, alpha=alpha_b, beta=beta_b)
 
         return tumor_log_lks_b, normal_log_lks_b

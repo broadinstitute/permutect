@@ -29,7 +29,7 @@ class PosteriorModel(torch.nn.Module):
         self.no_germline_mode = no_germline_mode
         self.het_beta = het_beta
 
-        self.spectra = PosteriorModelSpectra()
+        self.spectra = PosteriorModelSpectra(het_beta=het_beta)
         self.priors = PosteriorModelPriors(variant_log_prior, artifact_log_prior, no_germline_mode, device)
 
         self.to(device=self._device, dtype=self._dtype)
