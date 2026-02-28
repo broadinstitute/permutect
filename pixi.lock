@@ -1427,7 +1427,7 @@ packages:
 - pypi: ./
   name: permutect
   version: 0.1.0
-  sha256: 14834bfecf5a9fbacb2e95b842f578ff5e400074e5283423c2f283606c32cbaf
+  sha256: 57c55a4571012fbea657e7f4f57385a14c0840a63bf34bd073e93375032c2f23
   requires_dist:
   - torch>=2.10.0,<2.11
   - tensorboard>=2.8.0

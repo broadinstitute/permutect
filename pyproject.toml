@@ -72,11 +72,6 @@ force-single-line = true
 
 [tool.ruff.lint.per-file-ignores]
 "permutect/test/**.py" = ["F403", "F405"]
-# Files below are being rewritten — suppress until then
-"permutect/test/tools/test_filter_variants.py" = ["F841"]
-"permutect/test/tools/test_pipeline.py" = ["F821", "F841"]
-"permutect/test/tools/test_preprocess_dataset.py" = ["F841"]
-"permutect/test/tools/test_refine_permutect_model.py" = ["F841"]
 # Unused variables introduced by upstream changes — fixed by later PRs
 "permutect/architecture/artifact_model.py" = ["F841"]
 "permutect/architecture/feature_clustering.py" = ["F841"]
