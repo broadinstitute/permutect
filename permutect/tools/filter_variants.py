@@ -13,7 +13,7 @@ from permutect.architecture.posterior_model import PosteriorModel
 from permutect.architecture.artifact_model import ArtifactModel, load_model
 from permutect.data import plain_text_data
 from permutect.data.batch import Batch
-from permutect.data.datum import Datum, Data, COMPRESSED_READS_ARRAY_DTYPE
+from permutect.data.datum import Datum, Data, COMPRESSED_READS_ARRAY_DTYPE, INTEGER_DTYPE
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.data.reads_dataset import ReadsDataset
@@ -124,7 +124,11 @@ def main_without_parsing(args):
 def make_filtered_vcf(artifact_model_path, initial_log_variant_prior: float, initial_log_artifact_prior: float,
                       test_dataset_file, contigs_table, input_vcf, output_vcf, batch_size: int, num_workers: int, num_spectrum_iterations: int,
                       spectrum_learning_rate: float, tensorboard_dir, genomic_span: int, germline_mode: bool = False, no_germline_mode: bool = False, het_beta: float = None,
-                      segmentation=defaultdict(IntervalTree), normal_segmentation=defaultdict(IntervalTree)):
+                      segmentation=None, normal_segmentation=None):
+    if segmentation is None:
+        segmentation = defaultdict(IntervalTree)
+    if normal_segmentation is None:
+        normal_segmentation = defaultdict(IntervalTree)
     print("Loading artifact model and test dataset")
     contig_index_to_name_map = {}
     with open(contigs_table) as file:
@@ -156,7 +160,7 @@ def make_filtered_vcf(artifact_model_path, initial_log_variant_prior: float, ini
 
 
 @torch.inference_mode()
-def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_workers: int, INT_DTYPE=None):
+def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_workers: int):
 
     # pass through the dataset, running the artifact model
     # to get artifact logits, which we record in a dict keyed by variant strings.  These will later be added to PosteriorDatum objects.
@@ -170,7 +174,7 @@ def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_
                                                                 artifact_logits_b.detach().tolist(), alt_means_be.cpu()):
             # make a Datum with no reads or haplotypes whose 1D info array is the embedding
             empty_reads = np.zeros((0,0), dtype=COMPRESSED_READS_ARRAY_DTYPE)
-            empty_haplotypes = np.zeros((0,), dtype=INT_DTYPE)
+            empty_haplotypes = np.zeros((0,), dtype=INTEGER_DTYPE)
             output_datum = Datum(int_array=int_array, float_array=float_array, reads_re=empty_reads, compressed_reads=True)
             output_datum.set(Data.REF_COUNT, 0)
             output_datum.set(Data.ALT_COUNT, 0)
@@ -181,7 +185,11 @@ def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_
 
 @torch.inference_mode()
 def make_posterior_data_loader(dataset_file, input_vcf, contig_index_to_name_map, model: ArtifactModel,
-                               batch_size: int, num_workers: int, segmentation=defaultdict(IntervalTree), normal_segmentation=defaultdict(IntervalTree)):
+                               batch_size: int, num_workers: int, segmentation=None, normal_segmentation=None):
+    if segmentation is None:
+        segmentation = defaultdict(IntervalTree)
+    if normal_segmentation is None:
+        normal_segmentation = defaultdict(IntervalTree)
     normalizing_timer = Timer("Normalizing data. . .")
     normalized_mmap_data = plain_text_data.make_normalized_mmap_data(dataset_files=[dataset_file])
     normalizing_timer.report("Time to normalize test data:")
@@ -255,9 +263,11 @@ def apply_filtering_to_vcf(input_vcf, output_vcf, contig_index_to_name_map, erro
     all_samples = []
     for header_line in unfiltered_vcf.raw_header.split('\n'):
         if header_line.startswith('##tumor_sample'):
-            tumor_sample_name = print(header_line.split('=')[-1])
+            tumor_sample_name = header_line.split('=')[-1]
+            print(tumor_sample_name)
         elif header_line.startswith('#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t'):
-            all_samples = header_line.lstrip('#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t').split()
+            prefix = '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t'
+            all_samples = header_line[len(prefix):].split()
     tumor_sample_index = 0
     for n, sample in enumerate(all_samples):
         if sample == tumor_sample_name:
@@ -357,7 +367,8 @@ def apply_filtering_to_vcf(input_vcf, output_vcf, contig_index_to_name_map, erro
             # that a site with zero alt depth can end up in the output VCF.  However, Permutect exludes such sites from
             # the test dataset.  Therefore, we manually check for such sites and make sure they get filtered!
             total_alt_depth = np.sum(v.format('AD')[tumor_sample_index][1:])
-            filters.add(FILTER_NAMES[Call.SEQ_ERROR])
+            if total_alt_depth == 0:
+                filters.add(FILTER_NAMES[Call.SEQ_ERROR])
             missing_encodings.append(encoding)
         v.FILTER = ';'.join(filters) if filters else 'PASS'
         writer.write_record(v)
