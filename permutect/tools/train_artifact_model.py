@@ -1,6 +1,5 @@
 import argparse
 
-import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from permutect import constants
@@ -18,8 +17,6 @@ from permutect.parameters import add_training_params_to_parser
 from permutect.parameters import parse_model_params
 from permutect.parameters import parse_training_params
 from permutect.training.model_training import train_artifact_model
-
-MAX_EMBEDDINGS_TO_RECORD_PER_LABEL = 10000
 
 
 def main_without_parsing(args):
@@ -48,15 +45,6 @@ def main_without_parsing(args):
         memory_mapped_data=memory_mapped_data,
         num_folds=num_folds,
         folds_to_use=last_fold_only(num_folds),
-    )
-    keep_probs_by_label_l = torch.clamp(
-        MAX_EMBEDDINGS_TO_RECORD_PER_LABEL / (train_dataset.totals_by_label() + 1), min=0, max=1
-    )
-    embeddings_dataset = ReadsDataset(
-        memory_mapped_data=memory_mapped_data,
-        num_folds=num_folds,
-        folds_to_use=all_but_the_last_fold(num_folds),
-        keep_probs_by_label_l=keep_probs_by_label_l,
     )
     subset_timer.report("Time to create training and validation datasets")
 
