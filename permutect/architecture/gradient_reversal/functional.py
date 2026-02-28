@@ -18,7 +18,7 @@ class GradientReversal(Function):
     def backward(ctx, grad_output):
         grad_input = None
         if ctx.needs_input_grad[0]:
-            grad_input = - ctx.alpha * grad_output
+            grad_input = -ctx.alpha * grad_output
         return grad_input, None
 
 

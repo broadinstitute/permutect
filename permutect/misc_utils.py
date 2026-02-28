@@ -1,26 +1,30 @@
 import time
-from typing import Iterator, Set
+from typing import Iterator
+from typing import Set
 
 import cyvcf2
 import psutil
-import tarfile
-import os
 import torch
-from torch import Tensor, nn
+from torch import Tensor
+from torch import nn
 from torch.nn import Parameter
 
-from permutect.data.datum import Datum, Data
-from permutect.utils.allele_utils import trim_alleles_on_right, truncate_bases_if_necessary
+from permutect.data.datum import Data
+from permutect.data.datum import Datum
+from permutect.utils.allele_utils import trim_alleles_on_right
+from permutect.utils.allele_utils import truncate_bases_if_necessary
 
 
 def report_memory_usage(message: str = ""):
     print(f"{message}  Memory usage: {psutil.virtual_memory().percent:.1f}%")
+
 
 class ConsistentValue:
     """
     Tracks a value that once initialized, is consistent among eg all members of a dataset.  For example, all tensors
     must have the same number of columns.
     """
+
     def __init__(self, value=None):
         self.value = value
 
@@ -32,7 +36,7 @@ class ConsistentValue:
 
 
 class MutableInt:
-    def __init__(self, value:int = 0):
+    def __init__(self, value: int = 0):
         self.value = value
 
     def __str__(self):
@@ -57,11 +61,11 @@ class MutableInt:
 
 def gpu_if_available(exploit_mps=False) -> torch.device:
     if torch.cuda.is_available():
-        d = 'cuda'
+        d = "cuda"
     elif exploit_mps and torch.mps.is_available():
-        d = 'mps'
+        d = "mps"
     else:
-        d = 'cpu'
+        d = "cpu"
     return torch.device(d)
 
 
@@ -72,7 +76,9 @@ def freeze(parameters):
 
 def unfreeze(parameters):
     for parameter in parameters:
-        if parameter.dtype.is_floating_point:   # an integer parameter isn't trainable by gradient descent
+        if (
+            parameter.dtype.is_floating_point
+        ):  # an integer parameter isn't trainable by gradient descent
             parameter.requires_grad = True
 
 
@@ -87,7 +93,7 @@ class StreamingAverage:
     def get(self) -> float:
         return self._sum / (self._count + 0.0001)
 
-    def record(self, value: float, weight: float=1):
+    def record(self, value: float, weight: float = 1):
         self._count += weight
         self._sum += value * weight
 
@@ -98,7 +104,7 @@ class StreamingAverage:
     # record only values masked as true
     def record_with_mask(self, values: Tensor, mask: Tensor):
         self._count += torch.sum(mask).item()
-        self._sum += torch.sum(values*mask).item()
+        self._sum += torch.sum(values * mask).item()
 
     # record values with different weights
     # values and mask should live on same device as self._sum
@@ -118,7 +124,9 @@ class Timer:
         print(f"{message}: {elapsed_time:0.4f} seconds")
 
 
-def backpropagate(optimizer: torch.optim.Optimizer, loss: Tensor, params_to_clip: Iterator[Parameter] = []):
+def backpropagate(
+    optimizer: torch.optim.Optimizer, loss: Tensor, params_to_clip: Iterator[Parameter] = []
+):
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     nn.utils.clip_grad_norm_(params_to_clip, max_norm=1.0)
@@ -133,12 +141,14 @@ def get_first_numeric_element(variant, key):
 def encode(contig: str, position: int, ref: str, alt: str):
     # TODO: contigs stored as integer index must be converted back to string to compare VCF variants with dataset variants!!!
     trimmed_ref, trimmed_alt = trim_alleles_on_right(ref, alt)
-    return contig + ':' + str(position) + ':' + truncate_bases_if_necessary(trimmed_alt)
+    return contig + ":" + str(position) + ":" + truncate_bases_if_necessary(trimmed_alt)
 
 
 def encode_datum(datum: Datum, contig_index_to_name_map):
     contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
-    return encode(contig_name, datum.get(Data.POSITION), datum.get_ref_allele(), datum.get_alt_allele())
+    return encode(
+        contig_name, datum.get(Data.POSITION), datum.get_ref_allele(), datum.get_alt_allele()
+    )
 
 
 def encode_variant(v: cyvcf2.Variant, zero_based=False):

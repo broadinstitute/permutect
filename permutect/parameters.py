@@ -12,10 +12,21 @@ class ModelParameters:
         of the read_embedding_dimension
     num_transformer_layers: number of layers of read transformer
     """
-    def __init__(self, read_layers: List[int], self_attention_hidden_dimension: int, num_self_attention_layers: int,
-                 info_layers: List[int], aggregation_layers: List[int], num_artifact_clusters: int, calibration_layers: List[int],
-                 ref_seq_layers_strings: List[str], dropout_p: float, reweighting_range: float, batch_normalize: bool = False):
 
+    def __init__(
+        self,
+        read_layers: List[int],
+        self_attention_hidden_dimension: int,
+        num_self_attention_layers: int,
+        info_layers: List[int],
+        aggregation_layers: List[int],
+        num_artifact_clusters: int,
+        calibration_layers: List[int],
+        ref_seq_layers_strings: List[str],
+        dropout_p: float,
+        reweighting_range: float,
+        batch_normalize: bool = False,
+    ):
         self.read_layers = read_layers
         self.info_layers = info_layers
         self.ref_seq_layer_strings = ref_seq_layers_strings
@@ -41,49 +52,122 @@ def parse_model_params(args) -> ModelParameters:
     dropout_p = getattr(args, constants.DROPOUT_P_NAME)
     reweighting_range = getattr(args, constants.REWEIGHTING_RANGE_NAME)
     batch_normalize = getattr(args, constants.BATCH_NORMALIZE_NAME)
-    return ModelParameters(read_layers, self_attention_hidden_dimension, num_self_attention_layers, info_layers,
-                           aggregation_layers, num_artifact_clusters, calibration_layers, ref_seq_layer_strings, dropout_p,
-                           reweighting_range, batch_normalize)
+    return ModelParameters(
+        read_layers,
+        self_attention_hidden_dimension,
+        num_self_attention_layers,
+        info_layers,
+        aggregation_layers,
+        num_artifact_clusters,
+        calibration_layers,
+        ref_seq_layer_strings,
+        dropout_p,
+        reweighting_range,
+        batch_normalize,
+    )
 
 
 def add_model_params_to_parser(parser):
-    parser.add_argument('--' + constants.PRETRAINED_ARTIFACT_MODEL_NAME, required=False, type=str, help='optional pretrained model to initialize training')
-    parser.add_argument('--' + constants.READ_LAYERS_NAME, nargs='+', type=int, required=True,
-                        help='dimensions of hidden layers in the read embedding subnetwork, including the dimension of the embedding itself.  '
-                             'Negative values indicate residual skip connections')
-    parser.add_argument('--' + constants.SELF_ATTENTION_HIDDEN_DIMENSION_NAME, type=int, required=True,
-                        help='hidden dimension of transformer keys and values')
-    parser.add_argument('--' + constants.NUM_SELF_ATTENTION_LAYERS_NAME, type=int, required=True,
-                        help='number of symmetric gated MLP self-attention layers')
-    parser.add_argument('--' + constants.INFO_LAYERS_NAME, nargs='+', type=int, required=True,
-                        help='dimensions of hidden layers in the info embedding subnetwork, including the dimension of the embedding itself.  '
-                             'Negative values indicate residual skip connections')
-    parser.add_argument('--' + constants.AGGREGATION_LAYERS_NAME, nargs='+', type=int, required=True,
-                        help='dimensions of hidden layers in the aggregation subnetwork, excluding the dimension of input from lower subnetworks '
-                             'and the dimension (1) of the output logit.  Negative values indicate residual skip connections')
-    parser.add_argument('--' + constants.NUM_ARTIFACT_CLUSTERS_NAME, type=int, default=4, required=False,
-                        help='number of clusters for representing different types of artifact')
-    parser.add_argument('--' + constants.CALIBRATION_LAYERS_NAME, nargs='+', type=int, required=True,
-                        help='dimensions of hidden layers in the calibration subnetwork, excluding the dimension (1) of input logit and) '
-                             'and the dimension (also 1) of the output logit.')
-    parser.add_argument('--' + constants.REF_SEQ_LAYER_STRINGS_NAME, nargs='+', type=str, required=True,
-                        help='list of strings specifying convolution layers of the reference sequence embedding.  For example '
-                             'convolution/kernel_size=3/out_channels=64 pool/kernel_size=2 leaky_relu '
-                             'convolution/kernel_size=3/dilation=2/out_channels=5 leaky_relu flatten linear/out_features=10')
-    parser.add_argument('--' + constants.DROPOUT_P_NAME, type=float, default=0.0, required=False,
-                        help='dropout probability')
-    parser.add_argument('--' + constants.REWEIGHTING_RANGE_NAME, type=float, default=0.3, required=False,
-                        help='magnitude of data augmentation by randomly weighted average of read embeddings.  '
-                             'a value of x yields random weights between 1 - x and 1 + x')
-    parser.add_argument('--' + constants.BATCH_NORMALIZE_NAME, action='store_true',
-                        help='flag to turn on batch normalization')
+    parser.add_argument(
+        "--" + constants.PRETRAINED_ARTIFACT_MODEL_NAME,
+        required=False,
+        type=str,
+        help="optional pretrained model to initialize training",
+    )
+    parser.add_argument(
+        "--" + constants.READ_LAYERS_NAME,
+        nargs="+",
+        type=int,
+        required=True,
+        help="dimensions of hidden layers in the read embedding subnetwork, including the dimension of the embedding itself.  "
+        "Negative values indicate residual skip connections",
+    )
+    parser.add_argument(
+        "--" + constants.SELF_ATTENTION_HIDDEN_DIMENSION_NAME,
+        type=int,
+        required=True,
+        help="hidden dimension of transformer keys and values",
+    )
+    parser.add_argument(
+        "--" + constants.NUM_SELF_ATTENTION_LAYERS_NAME,
+        type=int,
+        required=True,
+        help="number of symmetric gated MLP self-attention layers",
+    )
+    parser.add_argument(
+        "--" + constants.INFO_LAYERS_NAME,
+        nargs="+",
+        type=int,
+        required=True,
+        help="dimensions of hidden layers in the info embedding subnetwork, including the dimension of the embedding itself.  "
+        "Negative values indicate residual skip connections",
+    )
+    parser.add_argument(
+        "--" + constants.AGGREGATION_LAYERS_NAME,
+        nargs="+",
+        type=int,
+        required=True,
+        help="dimensions of hidden layers in the aggregation subnetwork, excluding the dimension of input from lower subnetworks "
+        "and the dimension (1) of the output logit.  Negative values indicate residual skip connections",
+    )
+    parser.add_argument(
+        "--" + constants.NUM_ARTIFACT_CLUSTERS_NAME,
+        type=int,
+        default=4,
+        required=False,
+        help="number of clusters for representing different types of artifact",
+    )
+    parser.add_argument(
+        "--" + constants.CALIBRATION_LAYERS_NAME,
+        nargs="+",
+        type=int,
+        required=True,
+        help="dimensions of hidden layers in the calibration subnetwork, excluding the dimension (1) of input logit and) "
+        "and the dimension (also 1) of the output logit.",
+    )
+    parser.add_argument(
+        "--" + constants.REF_SEQ_LAYER_STRINGS_NAME,
+        nargs="+",
+        type=str,
+        required=True,
+        help="list of strings specifying convolution layers of the reference sequence embedding.  For example "
+        "convolution/kernel_size=3/out_channels=64 pool/kernel_size=2 leaky_relu "
+        "convolution/kernel_size=3/dilation=2/out_channels=5 leaky_relu flatten linear/out_features=10",
+    )
+    parser.add_argument(
+        "--" + constants.DROPOUT_P_NAME,
+        type=float,
+        default=0.0,
+        required=False,
+        help="dropout probability",
+    )
+    parser.add_argument(
+        "--" + constants.REWEIGHTING_RANGE_NAME,
+        type=float,
+        default=0.3,
+        required=False,
+        help="magnitude of data augmentation by randomly weighted average of read embeddings.  "
+        "a value of x yields random weights between 1 - x and 1 + x",
+    )
+    parser.add_argument(
+        "--" + constants.BATCH_NORMALIZE_NAME,
+        action="store_true",
+        help="flag to turn on batch normalization",
+    )
 
 
 # common parameters for training models
 class TrainingParameters:
-    def __init__(self, batch_size: int, num_epochs: int, learning_rate: float = 0.001,
-                 weight_decay: float = 0.01, num_workers: int = 0, num_calibration_epochs: int = 0,
-                 inference_batch_size: int = 8192):
+    def __init__(
+        self,
+        batch_size: int,
+        num_epochs: int,
+        learning_rate: float = 0.001,
+        weight_decay: float = 0.01,
+        num_workers: int = 0,
+        num_calibration_epochs: int = 0,
+        inference_batch_size: int = 8192,
+    ):
         self.batch_size = batch_size
         self.num_epochs = num_epochs
         self.learning_rate = learning_rate
@@ -101,22 +185,60 @@ def parse_training_params(args) -> TrainingParameters:
     num_calibration_epochs = getattr(args, constants.NUM_CALIBRATION_EPOCHS_NAME)
     num_workers = getattr(args, constants.NUM_WORKERS_NAME)
     inference_batch_size = getattr(args, constants.INFERENCE_BATCH_SIZE_NAME)
-    return TrainingParameters(batch_size, num_epochs, learning_rate, weight_decay, num_workers, num_calibration_epochs, inference_batch_size)
+    return TrainingParameters(
+        batch_size,
+        num_epochs,
+        learning_rate,
+        weight_decay,
+        num_workers,
+        num_calibration_epochs,
+        inference_batch_size,
+    )
 
 
 def add_training_params_to_parser(parser):
-    parser.add_argument('--' + constants.LEARNING_RATE_NAME, type=float, default=0.001, required=False,
-                        help='learning rate')
-    parser.add_argument('--' + constants.WEIGHT_DECAY_NAME, type=float, default=0.0, required=False,
-                        help='learning rate')
-    parser.add_argument('--' + constants.BATCH_SIZE_NAME, type=int, default=64, required=False,
-                        help='batch size')
-    parser.add_argument('--' + constants.NUM_WORKERS_NAME, type=int, default=0, required=False,
-                        help='number of subprocesses devoted to data loading, which includes reading from memory map, '
-                             'collating batches, and transferring to GPU.')
-    parser.add_argument('--' + constants.NUM_EPOCHS_NAME, type=int, required=True,
-                        help='number of epochs for primary training loop')
-    parser.add_argument('--' + constants.NUM_CALIBRATION_EPOCHS_NAME, type=int, default=0, required=False,
-                        help='number of calibration-only epochs')
-    parser.add_argument('--' + constants.INFERENCE_BATCH_SIZE_NAME, type=int, default=8192, required=False,
-                        help='batch size when performing model inference (not training)')
+    parser.add_argument(
+        "--" + constants.LEARNING_RATE_NAME,
+        type=float,
+        default=0.001,
+        required=False,
+        help="learning rate",
+    )
+    parser.add_argument(
+        "--" + constants.WEIGHT_DECAY_NAME,
+        type=float,
+        default=0.0,
+        required=False,
+        help="learning rate",
+    )
+    parser.add_argument(
+        "--" + constants.BATCH_SIZE_NAME, type=int, default=64, required=False, help="batch size"
+    )
+    parser.add_argument(
+        "--" + constants.NUM_WORKERS_NAME,
+        type=int,
+        default=0,
+        required=False,
+        help="number of subprocesses devoted to data loading, which includes reading from memory map, "
+        "collating batches, and transferring to GPU.",
+    )
+    parser.add_argument(
+        "--" + constants.NUM_EPOCHS_NAME,
+        type=int,
+        required=True,
+        help="number of epochs for primary training loop",
+    )
+    parser.add_argument(
+        "--" + constants.NUM_CALIBRATION_EPOCHS_NAME,
+        type=int,
+        default=0,
+        required=False,
+        help="number of calibration-only epochs",
+    )
+    parser.add_argument(
+        "--" + constants.INFERENCE_BATCH_SIZE_NAME,
+        type=int,
+        default=8192,
+        required=False,
+        help="batch size when performing model inference (not training)",
+    )

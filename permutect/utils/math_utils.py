@@ -46,7 +46,7 @@ def add_in_log_space(x: Tensor, y: Tensor):
     :return:
     """
     m = torch.maximum(x, y)
-    return m + torch.log(torch.exp(x-m) + torch.exp(y-m))
+    return m + torch.log(torch.exp(x - m) + torch.exp(y - m))
 
 
 def subtract_in_log_space(x: Tensor, y: Tensor):
@@ -58,4 +58,4 @@ def subtract_in_log_space(x: Tensor, y: Tensor):
     :return:
     """
     m = torch.maximum(x, y)
-    return m + torch.log(torch.exp(x-m) - torch.exp(y-m))
+    return m + torch.log(torch.exp(x - m) - torch.exp(y - m))

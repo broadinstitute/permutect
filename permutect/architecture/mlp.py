@@ -1,6 +1,8 @@
-import torch
-from torch import nn, Tensor
 from typing import List
+
+import torch
+from torch import Tensor
+from torch import nn
 
 
 class DenseSkipBlock(nn.Module):
@@ -8,9 +10,14 @@ class DenseSkipBlock(nn.Module):
     computes x + f(x) where f(x) has some given number of linear layers, each with input and output dimension equal
     to that of the input x.  As suggested in arxiv:1603.05027, Identity Maps in Deep Residual Networks, nonlinearities come before each linear transformation
     """
-    def __init__(self, input_size: int, num_layers: int, batch_normalize: bool = False, dropout_p: float = 0):
+
+    def __init__(
+        self, input_size: int, num_layers: int, batch_normalize: bool = False, dropout_p: float = 0
+    ):
         super(DenseSkipBlock, self).__init__()
-        self.mlp = MLP((num_layers + 1) * [input_size], batch_normalize, dropout_p, prepend_activation=True)
+        self.mlp = MLP(
+            (num_layers + 1) * [input_size], batch_normalize, dropout_p, prepend_activation=True
+        )
 
         # scale the MLP and initially set it to a small amount so that the block is close to an identity map early in learning
         self.alpha = nn.Parameter(torch.tensor(0.1))
@@ -27,7 +34,13 @@ class MLP(nn.Module):
     is applied after the last linear transformation.
     """
 
-    def __init__(self, layer_sizes: List[int], batch_normalize: bool = False, dropout_p: float = 0, prepend_activation: bool = False):
+    def __init__(
+        self,
+        layer_sizes: List[int],
+        batch_normalize: bool = False,
+        dropout_p: float = 0,
+        prepend_activation: bool = False,
+    ):
         super(MLP, self).__init__()
 
         layers = [nn.SELU()] if prepend_activation else []

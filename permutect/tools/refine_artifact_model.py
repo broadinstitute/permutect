@@ -4,15 +4,20 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from permutect import constants
-from permutect.architecture.spectra.artifact_spectra import ArtifactSpectra
-from permutect.data.datum import Data, Datum
-from permutect.data.memory_mapped_data import MemoryMappedData
-from permutect.training.model_training import train_artifact_model
 from permutect.architecture.artifact_model import load_model
-from permutect.data.reads_dataset import ReadsDataset, all_but_the_last_fold, last_fold_only
-from permutect.parameters import add_training_params_to_parser, parse_training_params
+from permutect.architecture.spectra.artifact_spectra import ArtifactSpectra
+from permutect.data.datum import Data
+from permutect.data.datum import Datum
+from permutect.data.memory_mapped_data import MemoryMappedData
+from permutect.data.reads_dataset import ReadsDataset
+from permutect.data.reads_dataset import all_but_the_last_fold
+from permutect.data.reads_dataset import last_fold_only
 from permutect.misc_utils import report_memory_usage
-from permutect.utils.enums import Variation, Label
+from permutect.parameters import add_training_params_to_parser
+from permutect.parameters import parse_training_params
+from permutect.training.model_training import train_artifact_model
+from permutect.utils.enums import Label
+from permutect.utils.enums import Variation
 
 
 def learn_artifact_priors_and_spectra(dataset: ReadsDataset, genomic_span_of_data: int):
@@ -38,35 +43,71 @@ def learn_artifact_priors_and_spectra(dataset: ReadsDataset, genomic_span_of_dat
     artifact_spectra = ArtifactSpectra()
 
     # TODO: hard-coded num epochs!!!
-    artifact_spectra.fit(num_epochs=10, types_b=types_tensor, depths_b=depths_tensor,
-                         alt_counts_b=alt_counts_tensor, batch_size=64)
+    artifact_spectra.fit(
+        num_epochs=10,
+        types_b=types_tensor,
+        depths_b=depths_tensor,
+        alt_counts_b=alt_counts_tensor,
+        batch_size=64,
+    )
 
     return log_artifact_priors, artifact_spectra
 
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description='train the Permutect artifact model')
+    parser = argparse.ArgumentParser(description="train the Permutect artifact model")
 
     add_training_params_to_parser(parser)
 
-    parser.add_argument('--' + constants.CALIBRATION_SOURCES_NAME, nargs='+', default=None, type=int, required=False,
-                        help='which sources to use in calibration.  Default: use all sources.')
-    parser.add_argument('--' + constants.LEARN_ARTIFACT_SPECTRA_NAME, action='store_true',
-                        help='flag to include artifact priors and allele fraction spectra in saved output.  '
-                             'This is worth doing if labeled training data is available but might work poorly '
-                             'when Mutect3 generates weak labels based on allele fractions.')
-    parser.add_argument('--' + constants.GENOMIC_SPAN_NAME, type=float, required=False,
-                        help='Total number of sites considered by Mutect2 in all training data, including those lacking variation or artifacts, hence absent from input datasets.  '
-                             'Necessary for learning priors since otherwise rates of artifacts and variants would be overinflated. '
-                             'Only required if learning artifact log priors')
+    parser.add_argument(
+        "--" + constants.CALIBRATION_SOURCES_NAME,
+        nargs="+",
+        default=None,
+        type=int,
+        required=False,
+        help="which sources to use in calibration.  Default: use all sources.",
+    )
+    parser.add_argument(
+        "--" + constants.LEARN_ARTIFACT_SPECTRA_NAME,
+        action="store_true",
+        help="flag to include artifact priors and allele fraction spectra in saved output.  "
+        "This is worth doing if labeled training data is available but might work poorly "
+        "when Mutect3 generates weak labels based on allele fractions.",
+    )
+    parser.add_argument(
+        "--" + constants.GENOMIC_SPAN_NAME,
+        type=float,
+        required=False,
+        help="Total number of sites considered by Mutect2 in all training data, including those lacking variation or artifacts, hence absent from input datasets.  "
+        "Necessary for learning priors since otherwise rates of artifacts and variants would be overinflated. "
+        "Only required if learning artifact log priors",
+    )
 
     # inputs and outputs
-    parser.add_argument('--' + constants.TRAIN_TAR_NAME, type=str, required=True,
-                        help='tarfile of training/validation datasets produced by preprocess_dataset.py')
-    parser.add_argument('--' + constants.PRETRAINED_ARTIFACT_MODEL_NAME, type=str, help='Pretrained Permutect artifact model from train_artifact_model.py')
-    parser.add_argument('--' + constants.OUTPUT_NAME, type=str, required=True, help='path to output saved model file')
-    parser.add_argument('--' + constants.TENSORBOARD_DIR_NAME, type=str, default='tensorboard', required=False,
-                        help='path to output tensorboard directory')
+    parser.add_argument(
+        "--" + constants.TRAIN_TAR_NAME,
+        type=str,
+        required=True,
+        help="tarfile of training/validation datasets produced by preprocess_dataset.py",
+    )
+    parser.add_argument(
+        "--" + constants.PRETRAINED_ARTIFACT_MODEL_NAME,
+        type=str,
+        help="Pretrained Permutect artifact model from train_artifact_model.py",
+    )
+    parser.add_argument(
+        "--" + constants.OUTPUT_NAME,
+        type=str,
+        required=True,
+        help="path to output saved model file",
+    )
+    parser.add_argument(
+        "--" + constants.TENSORBOARD_DIR_NAME,
+        type=str,
+        default="tensorboard",
+        required=False,
+        help="path to output tensorboard directory",
+    )
 
     return parser.parse_args()
 
@@ -86,16 +127,34 @@ def main_without_parsing(args):
     memory_mapped_data = MemoryMappedData.load_from_tarfile(getattr(args, constants.TRAIN_TAR_NAME))
 
     num_folds = 10
-    train_dataset = ReadsDataset(memory_mapped_data=memory_mapped_data, num_folds=num_folds,
-                                 folds_to_use=all_but_the_last_fold(num_folds))
-    valid_dataset = ReadsDataset(memory_mapped_data=memory_mapped_data, num_folds=num_folds,
-                                 folds_to_use=last_fold_only(num_folds))
+    train_dataset = ReadsDataset(
+        memory_mapped_data=memory_mapped_data,
+        num_folds=num_folds,
+        folds_to_use=all_but_the_last_fold(num_folds),
+    )
+    valid_dataset = ReadsDataset(
+        memory_mapped_data=memory_mapped_data,
+        num_folds=num_folds,
+        folds_to_use=last_fold_only(num_folds),
+    )
 
-    train_artifact_model(model, train_dataset, valid_dataset, training_params, summary_writer, epochs_per_evaluation=10, calibration_sources=calibration_sources)
+    train_artifact_model(
+        model,
+        train_dataset,
+        valid_dataset,
+        training_params,
+        summary_writer,
+        epochs_per_evaluation=10,
+        calibration_sources=calibration_sources,
+    )
 
     report_memory_usage("Finished training.")
 
-    artifact_log_priors, artifact_spectra = learn_artifact_priors_and_spectra(train_dataset, genomic_span) if learn_artifact_spectra else (None, None)
+    artifact_log_priors, artifact_spectra = (
+        learn_artifact_priors_and_spectra(train_dataset, genomic_span)
+        if learn_artifact_spectra
+        else (None, None)
+    )
     if artifact_spectra is not None:
         art_spectra_fig, art_spectra_axs = artifact_spectra.plot_artifact_spectra(depth=50)
         summary_writer.add_figure("Artifact AF Spectra", art_spectra_fig)
@@ -103,7 +162,11 @@ def main_without_parsing(args):
     summary_writer.close()
 
     # TODO: this will only be correct once we use the full base model, not the separate artifact model
-    model.save_model(path=getattr(args, constants.OUTPUT_NAME), artifact_log_priors=artifact_log_priors, artifact_spectra=artifact_spectra)
+    model.save_model(
+        path=getattr(args, constants.OUTPUT_NAME),
+        artifact_log_priors=artifact_log_priors,
+        artifact_spectra=artifact_spectra,
+    )
 
 
 def main():
@@ -111,5 +174,5 @@ def main():
     main_without_parsing(args)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

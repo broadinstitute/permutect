@@ -1,14 +1,17 @@
 import math
 
 import torch
-from torch import nn, log, logsumexp
+from torch import log
+from torch import logsumexp
+from torch import nn
 from torch.nn import Parameter
 from torch.nn.functional import log_softmax
 
 from permutect.metrics.plotting import simple_plot
 from permutect.misc_utils import backpropagate
 from permutect.utils.math_utils import add_in_log_space
-from permutect.utils.stats_utils import beta_binomial_log_lk, uniform_binomial_log_lk
+from permutect.utils.stats_utils import beta_binomial_log_lk
+from permutect.utils.stats_utils import uniform_binomial_log_lk
 
 # exclude obvious germline, artifact, sequencing error etc from M step for speed
 MIN_POSTERIOR_FOR_M_STEP = 0.2
@@ -42,7 +45,9 @@ class SomaticSpectrum(nn.Module):
         self.K = num_components
 
         # initialize evenly spaced cell fractions pre-sigmoid from -3 to 3
-        self.cf_pre_sigmoid_k = Parameter((6 * ((torch.arange(num_components) / num_components) - 0.5)))
+        self.cf_pre_sigmoid_k = Parameter(
+            (6 * ((torch.arange(num_components) / num_components) - 0.5))
+        )
 
         # rough idea for initializing weights: the bigger the cell fraction 1) the more cells there are for mutations to arise
         # and 2) the longer the cluster has probably been around for mutations to arise
@@ -53,15 +58,20 @@ class SomaticSpectrum(nn.Module):
 
         # TODO: this is an arbitrary guess
         background_weight = 0.0001
-        self.log_background_weight = Parameter(log(torch.tensor(background_weight)), requires_grad=False)
-        self.log_non_background_weight = Parameter(log(torch.tensor(1 - background_weight)), requires_grad=False)
+        self.log_background_weight = Parameter(
+            log(torch.tensor(background_weight)), requires_grad=False
+        )
+        self.log_non_background_weight = Parameter(
+            log(torch.tensor(1 - background_weight)), requires_grad=False
+        )
 
         self.background_alpha = Parameter(torch.tensor([1]), requires_grad=False)
         self.background_beta = Parameter(torch.tensor([1]), requires_grad=False)
 
-    '''
+    """
     here alt counts, depths, and minor allele fractions are 1D (batch size, ) tensors
-    '''
+    """
+
     def forward(self, depths_b, alt_counts_b, mafs_b):
         # give batch tensors dummy length-1 k index for broadcasting
         alt_counts_bk = alt_counts_b.view(-1, 1)
@@ -71,25 +81,30 @@ class SomaticSpectrum(nn.Module):
 
         # lower and upper uniform distribution bounds
         cf_k = torch.sigmoid(self.cf_pre_sigmoid_k)
-        cf_bk = cf_k.view(1, -1)         # dummy length-1 b index for broadcasting
+        cf_bk = cf_k.view(1, -1)  # dummy length-1 b index for broadcasting
 
-        x1_bk, x2_bk = mafs_bk * cf_bk, (1-mafs_bk)*cf_bk
-        uniform_binomial_log_lks_bk = uniform_binomial_log_lk(n=depths_bk, k=alt_counts_bk, x1=x1_bk, x2=x2_bk)
+        x1_bk, x2_bk = mafs_bk * cf_bk, (1 - mafs_bk) * cf_bk
+        uniform_binomial_log_lks_bk = uniform_binomial_log_lk(
+            n=depths_bk, k=alt_counts_bk, x1=x1_bk, x2=x2_bk
+        )
 
         log_weights_k = log_softmax(self.weights_pre_softmax_k, dim=-1)
         log_weights_bk = log_weights_k.view(1, -1)
 
         non_background_log_lks_b = logsumexp(log_weights_bk + uniform_binomial_log_lks_bk, dim=-1)
-        background_log_lks_b = beta_binomial_log_lk(n=depths_b, k=alt_counts_b, alpha=self.background_alpha, beta=self.background_beta)
+        background_log_lks_b = beta_binomial_log_lk(
+            n=depths_b, k=alt_counts_b, alpha=self.background_alpha, beta=self.background_beta
+        )
 
-        result_b = add_in_log_space(self.log_non_background_weight + non_background_log_lks_b,
-                                    self.log_background_weight + background_log_lks_b)
+        result_b = add_in_log_space(
+            self.log_non_background_weight + non_background_log_lks_b,
+            self.log_background_weight + background_log_lks_b,
+        )
         return result_b
 
-
-    '''
+    """
     here alt counts and depths are 1D (batch size, ) tensors
-    '''
+    """
     """
     def weighted_likelihoods_by_cluster(self, depths_b, alt_counts_b):
         batch_size = len(alt_counts_b)
@@ -151,12 +166,17 @@ class SomaticSpectrum(nn.Module):
                 batch_start = batch * batch_size
                 batch_end = min(batch_start + batch_size, len(alt_counts_b))
                 batch_slice = slice(batch_start, batch_end)
-                loss = -torch.mean(self.forward(depths_b[batch_slice], alt_counts_b[batch_slice], mafs_b[batch_slice]))
+                loss = -torch.mean(
+                    self.forward(
+                        depths_b[batch_slice], alt_counts_b[batch_slice], mafs_b[batch_slice]
+                    )
+                )
                 backpropagate(optimizer, loss)
 
-    '''
+    """
     get raw data for a spectrum plot of probability density vs allele fraction
-    '''
+    """
+
     def spectrum_density_vs_fraction(self):
         fractions_f = torch.arange(0.01, 0.99, 0.001)  # 1D tensor
 
@@ -166,7 +186,9 @@ class SomaticSpectrum(nn.Module):
         gauss_k = torch.distributions.normal.Normal(cf_k, 0.01 * torch.ones_like(cf_k))
         log_densities_fk = gauss_k.log_prob(fractions_f.unsqueeze(dim=1))
 
-        log_weights_k = log_softmax(self.weights_pre_softmax_k, dim=-1).cpu()  # these weights are normalized
+        log_weights_k = log_softmax(
+            self.weights_pre_softmax_k, dim=-1
+        ).cpu()  # these weights are normalized
         log_weights_fk = log_weights_k.view(1, -1)
 
         log_weighted_densities_fk = log_weights_fk + log_densities_fk
