@@ -95,7 +95,7 @@ class Balancer(Module):
 
             counts_slv = torch.sum(self.counts_slvra, dim=(-2, -1))
             unlabeled_weight_sv = torch.clip(
-                (counts_slv[:, Label.ARTIFACT] + counts_slv[:, Label.ARTIFACT])
+                (counts_slv[:, Label.ARTIFACT] + counts_slv[:, Label.VARIANT])
                 / counts_slv[:, Label.UNLABELED],
                 0,
                 1,
@@ -193,7 +193,9 @@ class Balancer(Module):
                             label, var_type, axes[label, var_type], source
                         )
                     else:
-                        raise Exception("BAD")
+                        raise ValueError(
+                            f"Unknown type_of_plot: {type_of_plot}. Expected 'weights' or 'counts'."
+                        )
             fig.colorbar(common_colormesh)
             plotting.tidy_subplots(
                 fig,
