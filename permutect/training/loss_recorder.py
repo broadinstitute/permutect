@@ -13,7 +13,7 @@ class LossRecorder:
     def record(self, output: BatchOutput, losses: BatchLosses, batch: Batch):
         is_labeled_b = batch.get_is_labeled_mask()
         self.semisupervised_loss_metrics.record(batch, losses.supervised_losses_b, is_labeled_b * output.weights)
-        self.semisupervised_loss_metrics.record(batch, losses.unsupervised_losses_b, output.weights)
+        self.semisupervised_loss_metrics.record(batch, losses.unsupervised_losses_b, (1 - is_labeled_b) * output.weights)
         self.source_prediction_loss_metrics.record(batch, losses.source_prediction_losses_b, output.source_weights)
         self.alt_count_loss_metrics.record(batch, losses.alt_count_losses_b, output.weights)
 
