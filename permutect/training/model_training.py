@@ -45,7 +45,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
 
     train_optimizer = torch.optim.AdamW(model.parameters(), lr=training_params.learning_rate, weight_decay=training_params.weight_decay)
     train_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(train_optimizer, factor=0.2, patience=5,
-        threshold=0.001, min_lr=(training_params.learning_rate / 100), verbose=True)
+        threshold=0.001, min_lr=(training_params.learning_rate / 100))
 
     checkpoint = Checkpoint(device, model, train_optimizer)
 

@@ -156,15 +156,15 @@ class FeatureClustering(nn.Module):
         outlier_log_lks_rk = outlier_log_lks_r[:, None]
         artifact_log_lks_rk = orthogonal_log_lks_rk + parallel_log_lks_rk
 
-        nonartifact_log_lks_bk = RaggedSets.from_flattened_tensor_and_sizes(nonartifact_log_lks_rk, alt_counts_b).sums_over_sets()
-        outlier_log_lks_bk = RaggedSets.from_flattened_tensor_and_sizes(outlier_log_lks_rk, alt_counts_b).sums_over_sets()
-        artifact_log_lks_bk = RaggedSets.from_flattened_tensor_and_sizes(artifact_log_lks_rk, alt_counts_b).sums_over_sets()
+        nonartifact_log_lks_bk = RaggedSets(flattened_tensor_nf=nonartifact_log_lks_rk, lengths_b=alt_counts_b).sums_over_sets()
+        outlier_log_lks_bk = RaggedSets(flattened_tensor_nf=outlier_log_lks_rk, lengths_b=alt_counts_b).sums_over_sets()
+        artifact_log_lks_bk = RaggedSets(flattened_tensor_nf=artifact_log_lks_rk, lengths_b=alt_counts_b).sums_over_sets()
 
 
         # these are the log of weights that sum to 1
         log_artifact_cluster_weights_k = torch.log_softmax(self.cluster_weights_pre_softmax_k, dim=-1)
         log_artifact_cluster_weights_bk = log_artifact_cluster_weights_k[None:, ]
-        artifact_log_lks_bk += log_artifact_cluster_weights_bk
+        artifact_log_lks_bk = artifact_log_lks_bk + log_artifact_cluster_weights_bk
 
         # the first column is nonartifact; next is outlier; other columns are different artifact clusters
         return torch.cat((nonartifact_log_lks_bk, outlier_log_lks_bk, artifact_log_lks_bk), dim=-1)

@@ -7,7 +7,6 @@ from typing import List, Tuple
 
 import torch
 from torch import IntTensor, FloatTensor, Tensor
-from torch_scatter import segment_csr
 import numpy as np
 
 from permutect.data.count_binning import ref_count_bin_name, NUM_REF_COUNT_BINS, alt_count_bin_name, NUM_ALT_COUNT_BINS, \
@@ -329,24 +328,18 @@ class DownsampledBatch(Batch):
         keep_alt_mask.bernoulli_(p=alt_probs_r)    # fills in-place with Bernoulli samples
 
         # unlike ref, we need to ensure at least one alt read.  One way to do that is to set one random element from each range of alts
-        # to be masked to keep.  If e.g. we have alt counts of 3, 4, 7, 2 in the batch, the cumsums starting from zero are
-        # 0, 3, 7, 14.  If we simply set indices 0, 3, 7, 14 of the mask to 1, we non-randomly guarantee that at least one alt read
-        # (the first) is kept.  If we do torch.remainder(torch.tensor([random integer]), alt counts) we get offsets within each group of
-        # alts.  For example if the random integer is 11 the offsets are [2,3,4,1].  Adding these offsets to the zero-based cumsums
-        # gives mask indices 2, 6, 11, 15 to set to 1
+        # to be masked to keep.  If e.g. we have alt counts of 3, 4, 7, 2 in the batch, the cumsums are
+        # 3, 7, 14, 16.   If we do torch.remainder(torch.tensor([random integer]), alt counts) we get offsets within each group of
+        # alts.  For example if the random integer is 11 the offsets are [2,3,4,1].  Subtracting these offsets from the cumsums
+        # gives mask indices 1, 4, 10, 15 to set to 1
         random_int = randint(0, 100)
-
-        prepend_zero = torch.tensor([0], device=self.device, dtype=torch.int64)
-        ref_bounds = torch.cumsum(torch.hstack((prepend_zero, old_ref_counts)), dim=0)
-        alt_bounds = torch.cumsum(torch.hstack((prepend_zero, old_alt_counts)), dim=0)
-        alt_cumsums = alt_bounds[:-1]
-
-        alt_override_idx = alt_cumsums + torch.remainder(torch.tensor([random_int], device=self.device, dtype=torch.int64), old_alt_counts)
+        alt_ends = torch.cumsum(old_alt_counts, dim=0)
+        alt_override_idx = alt_ends - torch.remainder(torch.tensor([random_int], device=self.device, dtype=torch.int64), old_alt_counts) - 1
         keep_alt_mask[alt_override_idx] = 1
 
         # the alt counts are the sums of the mask within the ranges of each datum
-        self.ref_counts = segment_csr(keep_ref_mask, ref_bounds, reduce="sum")
-        self.alt_counts = segment_csr(keep_alt_mask, alt_bounds, reduce="sum")
+        self.ref_counts = torch.segment_reduce(keep_ref_mask.float(), reduce='sum', lengths=old_ref_counts).round().int()
+        self.alt_counts = torch.segment_reduce(keep_alt_mask.float(), reduce='sum', lengths=old_alt_counts).round().int()
         # randomly assign ref reads to keep
 
         kept_ref_indices = torch.nonzero(keep_ref_mask).view(-1)

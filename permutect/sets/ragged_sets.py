@@ -1,6 +1,5 @@
 import torch
 from torch import Tensor, LongTensor, IntTensor
-from torch_scatter import segment_csr
 
 # in Python 3.11 this would be from typing import Self
 from typing import TypeVar, Iterable
@@ -25,28 +24,14 @@ class RaggedSets:
     Example: sets of sizes 1,3,2; bounds = [0, 1, 4, 6]
     """
 
-    def __init__(self, flattened_tensor_nf: Tensor, bounds_b: LongTensor):
+    def __init__(self, flattened_tensor_nf: Tensor, lengths_b: LongTensor):
         self.flattened_tensor_nf = flattened_tensor_nf
-
-        assert bounds_b[0] == 0
-        assert bounds_b[-1] == len(flattened_tensor_nf)
-        self.bounds_b = bounds_b
-
-    @classmethod
-    def from_flattened_tensor_and_sizes(cls, flattened_tensor_nf: Tensor, sizes_b: IntTensor):
-        """
-        construct, converting from sizes to bounds
-        """
-        zero_prepend = torch.zeros(1, device=sizes_b.device, dtype=torch.long)
-        with_zero = torch.cat((zero_prepend, sizes_b.to(dtype=torch.long)))
-        bounds_b = torch.cumsum(with_zero, dim=0)
-        return cls(flattened_tensor_nf, bounds_b)
-
-    def get_sizes(self) -> LongTensor:
-        return torch.diff(self.bounds_b)
+        assert lengths_b.dim() == 1
+        assert torch.sum(lengths_b) == len(flattened_tensor_nf)
+        self.lengths_b = lengths_b
 
     def batch_size(self) -> int:
-        return len(self.bounds_b) - 1
+        return len(self.lengths_b)
 
     def expand_from_b_to_n(self, tensor_bf: Tensor) -> Tensor:
         """
@@ -55,7 +40,7 @@ class RaggedSets:
         :param tensor_bf:
         :return:
         """
-        return torch.repeat_interleave(tensor_bf, dim=0, repeats=self.get_sizes())
+        return torch.repeat_interleave(tensor_bf, dim=0, repeats=self.lengths_b)
 
     def apply_elementwise(self, func) -> ThisClass:
         """
@@ -66,12 +51,12 @@ class RaggedSets:
         For example, a Pytorch linear layer or my MLP class work in this way.
         :return: the elementwise-transformed RaggedSets
         """
-        return RaggedSets(func(self.flattened_tensor_nf), self.bounds_b)
+        return RaggedSets(func(self.flattened_tensor_nf), self.lengths_b)
 
     # override the * operator for elementwise multiplication
     # works for numeric scalars and torch Tensors of compatible shape
     def __mul__(self, other) -> ThisClass:
-        return RaggedSets(self.flattened_tensor_nf * other, self.bounds_b)
+        return RaggedSets(self.flattened_tensor_nf * other, self.lengths_b)
 
     def __rmul__(self, other) -> ThisClass:
         return self.__mul__(other)
@@ -79,12 +64,12 @@ class RaggedSets:
     # override the + operator for elementwise addition
     # works for numeric scalars and torch Tensors of compatible shape
     def __add__(self, other) -> ThisClass:
-        return RaggedSets(self.flattened_tensor_nf + other, self.bounds_b)
+        return RaggedSets(self.flattened_tensor_nf + other, self.lengths_b)
 
     # override the - operator for elementwise addition
     # works for numeric scalars and torch Tensors of compatible shape
     def __sub__(self, other) -> ThisClass:
-            return RaggedSets(self.flattened_tensor_nf - other, self.bounds_b)
+            return RaggedSets(self.flattened_tensor_nf - other, self.lengths_b)
 
     def __radd__(self, other) -> ThisClass:
         return self.__add__(other)
@@ -95,7 +80,7 @@ class RaggedSets:
 
         Implementation is trivial since X_bsf * Y_bsf is equivalent to X_nf * Y_nf
         """
-        return RaggedSets(self.flattened_tensor_nf * other.flattened_tensor_nf, self.bounds_b)
+        return RaggedSets(self.flattened_tensor_nf * other.flattened_tensor_nf, self.lengths_b)
 
     def add_elementwise(self, other: ThisClass) -> ThisClass:
         """
@@ -103,7 +88,7 @@ class RaggedSets:
 
         Implementation is trivial since X_bsf * Y_bsf is equivalent to X_nf * Y_nf
         """
-        return RaggedSets(self.flattened_tensor_nf + other.flattened_tensor_nf, self.bounds_b)
+        return RaggedSets(self.flattened_tensor_nf + other.flattened_tensor_nf, self.lengths_b)
 
     def broadcast_add(self, other_bf: Tensor) -> ThisClass:
         """
@@ -119,7 +104,7 @@ class RaggedSets:
 
     def chunk_over_features(self, num_chunks) -> Iterable[ThisClass]:
         chunks = torch.chunk(self.flattened_tensor_nf, chunks=num_chunks, dim=-1)
-        return (RaggedSets(chunk, self.bounds_b) for chunk in chunks)
+        return (RaggedSets(chunk, self.lengths_b) for chunk in chunks)
 
     def split_in_two_by_features(self) -> tuple[ThisClass, ThisClass]:
         return self.chunk_over_features(num_chunks=2)
@@ -139,15 +124,15 @@ class RaggedSets:
         vii) divide iv) by vi)
         :return: a RaggedSets object with the same shape, but with softmax "normalization" applied
         """
-        maxes_bf = segment_csr(self.flattened_tensor_nf, self.bounds_b, reduce="max")
+        maxes_bf = torch.segment_reduce(self.flattened_tensor_nf, reduce='max', axis=0, lengths=self.lengths_b)
         maxes_nf = self.expand_from_b_to_n(maxes_bf)
 
         stable_nf = self.flattened_tensor_nf - maxes_nf
         exp_nf = torch.exp(stable_nf)
-        denom_bf = segment_csr(exp_nf, self.bounds_b, reduce="sum")
+        denom_bf = torch.segment_reduce(exp_nf, reduce="sum", lengths=self.lengths_b, axis=0)
         denom_nf = self.expand_from_b_to_n(denom_bf)
         result_nf = exp_nf / denom_nf
-        return RaggedSets(result_nf, self.bounds_b)
+        return RaggedSets(result_nf, self.lengths_b)
 
     def means_over_sets(self, regularizer_f: Tensor = None, regularizer_weight: float = 0.0001) -> Tensor:
         """
@@ -155,16 +140,12 @@ class RaggedSets:
         regularizer weight means that the regularizer acts as an imputed value for empty sets and has basically no
         effect otherwise.
         """
-        sums_bf = segment_csr(self.flattened_tensor_nf, self.bounds_b, reduce="sum")
+        sums_bf = self.sums_over_sets()
         reg_bf = 0 if regularizer_f is None else (regularizer_weight * regularizer_f).view(1, -1)
         regularized_sums_bf = sums_bf + reg_bf
-        regularized_sizes_b = self.get_sizes() + regularizer_weight
+        regularized_sizes_b = self.lengths_b + regularizer_weight
         means_bf = regularized_sums_bf / regularized_sizes_b.view(-1, 1)
         return means_bf
 
     def sums_over_sets(self) -> Tensor:
-        """
-        sum of elements of each set. Returns a 2D tensor of shape Batch size x Feature size
-        """
-        sums_bf = segment_csr(self.flattened_tensor_nf, self.bounds_b, reduce="sum")
-        return sums_bf
+        return torch.segment_reduce(self.flattened_tensor_nf, lengths=self.lengths_b, reduce="sum", axis=0)

@@ -170,8 +170,8 @@ class ArtifactModel(torch.nn.Module):
         reads_info_seq_re = torch.hstack((read_embeddings_re, info_and_seq_re))
 
         # TODO: might be a bug if every datum in batch has zero ref reads?
-        ref_bre = RaggedSets.from_flattened_tensor_and_sizes(reads_info_seq_re[:total_ref], ref_counts_b)
-        alt_bre = RaggedSets.from_flattened_tensor_and_sizes(reads_info_seq_re[total_ref:], alt_counts_b)
+        ref_bre = RaggedSets(flattened_tensor_nf=reads_info_seq_re[:total_ref], lengths_b=ref_counts_b)
+        alt_bre = RaggedSets(flattened_tensor_nf=reads_info_seq_re[total_ref:], lengths_b=alt_counts_b)
         transformed_ref_bre, transformed_alt_bre = self.ref_alt_reads_encoder.forward(ref_bre, alt_bre)
 
         reduced_ref_bre = transformed_ref_bre.apply_elementwise(self.reducer)
@@ -262,7 +262,7 @@ class ArtifactModel(torch.nn.Module):
 
 
 def load_model(path, device: torch.device = gpu_if_available()):
-    saved = torch.load(path, map_location=device)
+    saved = torch.load(path, map_location=device, weights_only=False)
     hyperparams = saved[constants.HYPERPARAMS_NAME]
     num_read_features = saved[constants.NUM_READ_FEATURES_NAME]
     num_info_features = saved[constants.NUM_INFO_FEATURES_NAME]
