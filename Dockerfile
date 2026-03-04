@@ -3,7 +3,7 @@
 # https://docs.nvidia.com/cuda/archive/12.1.0/cuda-toolkit-release-notes/
 # Google cloud makes driver version recommendations for GCE VMs here:
 # https://cloud.google.com/compute/docs/gpus/install-drivers-gpu
-FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
+FROM pytorch/pytorch:2.10.0-cuda13.0-cudnn9-runtime
 
 # Overrides the default pytorch image workdir
 WORKDIR /
