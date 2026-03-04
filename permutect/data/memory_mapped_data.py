@@ -45,7 +45,7 @@ class MemoryMappedData:
         self.read_end_indices = np.zeros(shape=(num_data,), dtype=np.uint32)
         idx = 0
         for n in range(num_data):
-            idx += Datum(self.int_mmap[n], self.float_mmap[n]).get_read_count()
+            idx += int(Datum(self.int_mmap[n], self.float_mmap[n]).get_read_count())
             self.read_end_indices[n] = idx
 
     def __len__(self):
