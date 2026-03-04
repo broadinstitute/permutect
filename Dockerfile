@@ -58,8 +58,8 @@ RUN pip install --break-system-packages --no-cache-dir -r /requirements.txt
 
 ADD permutect/ /permutect
 
-RUN pip install build
+RUN pip --break-system-packages install build
 RUN python3 -m build --sdist
-RUN pip install dist/*.tar.gz
+RUN pip --break-system-packages install dist/*.tar.gz
 
 CMD ["/bin/sh"]
