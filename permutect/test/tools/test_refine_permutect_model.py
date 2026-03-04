@@ -19,7 +19,6 @@ def test_refine_artifact_model():
 
     # STEP 2: train a model
     train_model_args = Namespace()
-    setattr(train_model_args, constants.CALIBRATION_SOURCES_NAME, None)
     setattr(train_model_args, constants.LEARN_ARTIFACT_SPECTRA_NAME, True)  # could go either way
     setattr(train_model_args, constants.GENOMIC_SPAN_NAME, 100000)
 

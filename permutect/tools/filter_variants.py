@@ -165,9 +165,9 @@ def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_
     print("creating posterior data...")
     batch: Batch
     for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
-        artifact_logits_b, _, alt_means_be, _ = model.calculate_logits(batch)
+        output = model.compute_batch_output(batch)
         for int_array, float_array, logit, embedding in zip(batch.get_int_array_be(), batch.get_float_array_be(),
-                                                                artifact_logits_b.detach().tolist(), alt_means_be.cpu()):
+                                                            output.logits_b.detach().tolist(), output.features_be.cpu()):
             # make a Datum with no reads or haplotypes whose 1D info array is the embedding
             empty_reads = np.zeros((0,0), dtype=COMPRESSED_READS_ARRAY_DTYPE)
             empty_haplotypes = np.zeros((0,), dtype=INT_DTYPE)

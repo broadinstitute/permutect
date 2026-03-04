@@ -3,16 +3,14 @@ import tempfile
 import time
 from collections import defaultdict
 from queue import PriorityQueue
-from typing import List
 
 import torch
 from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange, tqdm
 
-from permutect import constants
-from permutect.architecture.feature_clustering import MAX_LOGIT
 from permutect.training.balancer import Balancer
+from permutect.training.checkpoint import Checkpoint
 from permutect.training.downsampler import Downsampler
 from permutect.architecture.artifact_model import ArtifactModel, record_embeddings
 from permutect.data.batch import DownsampledBatch
@@ -24,26 +22,19 @@ from permutect.metrics.loss_metrics import LossMetrics
 from permutect.data.batch import BatchProperty, Batch
 from permutect.data.count_binning import alt_count_bin_index, round_alt_count_to_bin_center, alt_count_bin_name
 from permutect.parameters import TrainingParameters
-from permutect.misc_utils import report_memory_usage, backpropagate, freeze, unfreeze, Timer
+from permutect.misc_utils import report_memory_usage, backpropagate, freeze, unfreeze, Timer, check_for_nan
+from permutect.training.loss_recorder import LossRecorder
 from permutect.utils.enums import Variation, Epoch, Label
 
 WORST_OFFENDERS_QUEUE_SIZE = 100
 
 
-def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, valid_dataset: ReadsDataset, training_params: TrainingParameters, summary_writer: SummaryWriter,
-                         epochs_per_evaluation: int = None, calibration_sources: List[int] = None, embedding_dataset: ReadsDataset = None):
-    #torch.autograd.set_detect_anomaly(True)
+def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, valid_dataset: ReadsDataset,
+                         training_params: TrainingParameters, summary_writer: SummaryWriter,
+                         epochs_per_evaluation: int = None):
     device, dtype = model._device, model._dtype
-    bce = nn.BCEWithLogitsLoss(reduction='none')  # no reduction because we may want to first multiply by weights for unbalanced data
-    ce = nn.CrossEntropyLoss(reduction='none')  # likewise
     balancer = Balancer(num_sources=train_dataset.num_sources(), device=device).to(device=device, dtype=dtype)
     downsampler: Downsampler = Downsampler(num_sources=train_dataset.num_sources()).to(device=device, dtype=dtype)
-
-    # save the model after every epoch in order to restore it if training goes off the rails
-    checkpoint_file = tempfile.NamedTemporaryFile(suffix=".pt")
-    best_checkpoint = None
-
-    print("fitting downsampler parameters to the dataset")
     downsampler.optimize_downsampling_balance(train_dataset.totals_slvra.to(device=device))
 
     num_sources = train_dataset.validate_sources()
@@ -56,166 +47,67 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
     train_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(train_optimizer, factor=0.2, patience=5,
         threshold=0.001, min_lr=(training_params.learning_rate / 100), verbose=True)
 
+    checkpoint = Checkpoint(device, model, train_optimizer)
+
     train_loader = train_dataset.make_data_loader(training_params.batch_size, is_cuda, training_params.num_workers)
-    embeddings_loader = train_loader if embedding_dataset is None else \
-        embedding_dataset.make_data_loader(training_params.batch_size, is_cuda, training_params.num_workers)
-    report_memory_usage(f"Train loader created.")
     valid_loader = valid_dataset.make_data_loader(training_params.inference_batch_size, is_cuda, training_params.num_workers)
-    report_memory_usage(f"Validation loader created.")
+    report_memory_usage(f"Loaders created, about to train.")
 
     first_epoch, last_epoch = 1, training_params.num_epochs + training_params.num_calibration_epochs
     for epoch in trange(1, last_epoch + 1, desc="Epoch"):
         start_of_epoch = time.time()
         report_memory_usage(f"Epoch {epoch}.")
         is_calibration_epoch = epoch > training_params.num_epochs
-
         model.source_predictor.set_adversarial_strength((2 / (1 + math.exp(-0.1 * (epoch - 1)))) - 1)
 
         for epoch_type in [Epoch.TRAIN, Epoch.VALID]:
+            loss_recorder = LossRecorder(device, num_sources)
             model.set_epoch_type(epoch_type)
-            # in calibration epoch, freeze the model except for calibration
             if is_calibration_epoch and epoch_type == Epoch.TRAIN:
                 freeze(model.parameters())
-                #unfreeze(model.set_pooling.parameters())
-                #unfreeze(model.artifact_classifier.parameters())
                 unfreeze(model.calibration_parameters())  # unfreeze calibration but everything else stays frozen
-                # unfreeze(model.final_calibration_shift_parameters())  # unfreeze final calibration shift but everything else stays frozen
-
-            loss_metrics = LossMetrics(num_sources=num_sources, device=device)   # based on calibrated logits
-            alt_count_loss_metrics = LossMetrics(num_sources=num_sources, device=device)
-            source_prediction_loss_metrics = LossMetrics(num_sources=num_sources, device=device)  # based on calibrated logits
-
             loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
 
-            batch: Batch
             parent_batch: Batch
             for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
-                # TODO: really to get the assumed balance we should only train on downsampled batches.  But using one
-                # TODO: downsampled batch with the proper balance will still go a long way
-                ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
-                downsampled_batch1 = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
-                ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
-                downsampled_batch2 = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
-                batches = [downsampled_batch1, downsampled_batch2]
-                outputs = [model.compute_batch_output(batch, balancer) for batch in batches]
-                # parent_output = model.compute_batch_output(parent_batch, balancer)
+                batch: DownsampledBatch
+                for downsampling_iteration in range(2):
+                    ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
+                    batch = DownsampledBatch(parent_batch, ref_fracs_b, alt_fracs_b)
+                    output = model.compute_batch_output(batch, balancer)
+                    losses = model.compute_batch_losses(output, batch)
+                    loss_recorder.record(output, losses, batch)
 
-                sources = parent_batch.get(Data.SOURCE)
-                source_mask_b = 1 if (calibration_sources is None or not is_calibration_epoch) else \
-                    torch.sum(torch.vstack([(sources == source).int() for source in calibration_sources]), dim=-1)
+                    if epoch_type == Epoch.TRAIN:
+                        average_loss = losses.total_loss.item() / batch.size()
+                        if epoch > 1 and average_loss > 100.0:
+                            print(f"Very large batch loss {average_loss:.2f}.")
 
-                # first handle the labeled loss and the adversarial tasks, which treat the parent and downsampled batches independently
-                loss = 0
-                for n, (batch, output) in enumerate(zip(batches, outputs)):
-                    labels_b = batch.get_training_labels()
-                    is_labeled_b = batch.get_is_labeled_mask()
-
-                    source_losses_b = source_mask_b * model.compute_source_prediction_losses(output.features_be, batch)
-                    alt_count_losses_b = source_mask_b * model.compute_alt_count_losses(output.features_be, batch)
-                    supervised_losses_b = source_mask_b * is_labeled_b * bce(output.calibrated_logits_b, labels_b)
-
-                    # unsupervised loss is consistency not just between overall artifact / non-artifact predictions,
-                    # but between the particular cluster predictions.
-                    # TODO: should we detach() torch.sigmoid(other_output...)?
-                    other_output = outputs[1 if n == 0 else 0]
-
-                    # note that columns of output.calibrated_logits_bk are nonartifact, then outlier, then all the
-                    # different artifact clusters.
-                    nonart_logits_bk = output.calibrated_logits_bk[:,0][:,None]
-                    art_logits_bk = output.calibrated_logits_bk[:, 2:]
-                    nonoutlier_logits_bk = torch.cat((nonart_logits_bk, art_logits_bk), dim=-1)
-                    nonoutlier_logits_b = torch.logsumexp(nonoutlier_logits_bk, dim=-1)
-                    outlier_logits_b = output.calibrated_logits_bk[:, 1]
-
-                    # this is a binary logit representing the probability that the datum was classified as an outlier
-                    # i.e. not in the nonartifact Gaussian nor the artifact distributions
-                    outlier_binary_logits_b = outlier_logits_b - nonoutlier_logits_b
-
-                    # in our unsupervised loss, we want as little data as possible to be considered outlier, so the loss
-                    # is a binary cross entropy loss versus targets that are all "not-outlier" (i.e. 0).  However, since
-                    # some genuione outlier data does exist, such as rare or unmodeled artifacts, we clip the outlier
-                    # logit to avert unduly strong influence.
-                    outlier_losses_b = bce(torch.clip(outlier_binary_logits_b, max=MAX_LOGIT/2), torch.zeros_like(outlier_binary_logits_b))
-
-                    unsupervised_losses_b = (1 - is_labeled_b) * source_mask_b * outlier_losses_b
-
-                    losses = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + output.source_weights * source_losses_b
-                    loss += torch.sum(losses)
-
-                    #if not loss.isnan().any().item():
-                    loss_metrics.record(batch, supervised_losses_b, is_labeled_b * output.weights)
-                    loss_metrics.record(batch, unsupervised_losses_b, output.weights)
-                    source_prediction_loss_metrics.record(batch, source_losses_b, output.source_weights)
-                    alt_count_loss_metrics.record(batch, alt_count_losses_b, output.weights)
-
-                if epoch_type == Epoch.TRAIN:
-                    #if loss.isnan().any().item():
-                    #    print("Loss is NaN.  Skipping backpropagation for this batch.")
-                    #    print(f"There are {torch.sum(losses.isnan()).item()} with NaN loss out of {batch.size()} data in the batch.")
-
-                    #else:
-                    average_loss = loss.item() / batch.size()
-                    if epoch > 1 and average_loss > 100.0:
-                        print(f"Very large batch loss {average_loss:.2f}.")
-
-                    backpropagate(train_optimizer, loss, params_to_clip=model.parameters())
-
-                    nan_found = False
-                    for name, param in model.named_parameters():
-                        if param.grad is not None:
-                            if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                                print(f"Invalid gradient (NaN or Inf) found in parameter: {name}")
-                                nan_found = True
-                    assert not nan_found
-
-                # done with this batch
-            # done with one epoch type -- training or validation -- for this epoch
+                        backpropagate(train_optimizer, losses.total_loss, params_to_clip=model.parameters())
+                # done with this downsampled batch
+            # done with this parent batch
+            check_for_nan(model)
             if epoch_type == Epoch.TRAIN:
-                mean_over_labels = torch.mean(loss_metrics.get_marginal(BatchProperty.LABEL)).item()
-                train_scheduler.step(mean_over_labels)
+                mean_loss = torch.mean(loss_recorder.semisupervised_loss_metrics.get_marginal(BatchProperty.LABEL)).item()
+                train_scheduler.step(mean_loss)
 
-            loss_metrics.put_on_cpu()
-            alt_count_loss_metrics.put_on_cpu()
-            source_prediction_loss_metrics.put_on_cpu()
-            loss_metrics.write_to_summary_writer(epoch_type, epoch, summary_writer, prefix="semisupervised-loss")
-            alt_count_loss_metrics.write_to_summary_writer(epoch_type, epoch, summary_writer, prefix="alt-count-loss")
-            source_prediction_loss_metrics.write_to_summary_writer(epoch_type, epoch, summary_writer, prefix="source-loss")
-            loss_metrics.report_marginals(f"Semisupervised loss for {epoch_type.name} epoch {epoch}.")
-            if num_sources > 1:
-                source_prediction_loss_metrics.report_marginals(f"Source prediction loss for {epoch_type.name} epoch {epoch}.")
+            generate_plots = (epochs_per_evaluation is not None and epoch % epochs_per_evaluation == 0) or (epoch == last_epoch)
+            loss_recorder.output_results(epoch_type, epoch, summary_writer, generate_plots)
 
-            if (epochs_per_evaluation is not None and epoch % epochs_per_evaluation == 0) or (epoch == last_epoch):
-                balancer.make_plots(summary_writer, "log(label-balancing weights)", epoch_type, epoch, type_of_plot="weights")
-                balancer.make_plots(summary_writer, "unweighted data counts after downsampling", epoch_type, epoch, type_of_plot="counts")
-                loss_metrics.make_plots(summary_writer, "semisupervised loss", epoch_type, epoch)
-                loss_metrics.make_plots(summary_writer, "total weight of data vs alt and ref counts", epoch_type, epoch, type_of_plot="counts")
-                alt_count_loss_metrics.make_plots(summary_writer, "alt count prediction loss", epoch_type, epoch)
-                if num_sources > 1:
-                    source_prediction_loss_metrics.make_plots(summary_writer, "source prediction loss", epoch_type, epoch)
-
-                print(f"performing evaluation on epoch {epoch}")
-                if epoch_type == Epoch.VALID:
-                    evaluate_model(model, epoch, num_sources, balancer, downsampler, train_loader, valid_loader, summary_writer, collect_embeddings=False, report_worst=False)
+            if generate_plots:
+                balancer.make_plots(summary_writer, "log(label-balancing weights)", epoch_type, epoch,
+                                        type_of_plot="weights")
+                balancer.make_plots(summary_writer, "unweighted data counts after downsampling", epoch_type, epoch,
+                                        type_of_plot="counts")
+            print(f"performing evaluation on epoch {epoch}")
+            if epoch_type == Epoch.VALID:
+                evaluate_model(model, epoch, num_sources, balancer, downsampler, train_loader, valid_loader, summary_writer, collect_embeddings=False, report_worst=False)
 
             if not is_calibration_epoch and epoch_type == Epoch.TRAIN:
-                mean_over_labels = torch.mean(loss_metrics.get_marginal(BatchProperty.LABEL))
-                isnan = torch.isnan(mean_over_labels).any()
-                mean_over_labels = mean_over_labels.item()
+                mean_loss = torch.mean(loss_recorder.semisupervised_loss_metrics.get_marginal(BatchProperty.LABEL))
+                checkpoint.save_checkpoint_if_needed(epoch, mean_loss)
+                checkpoint.load_checkpoint_if_needed(mean_loss)
 
-                # If this is the lowest loss so far, overwrite the checkpoint state.
-                # If training has gone terribly awry due to an exploding gradient or some other freak occurrence, restore
-                # the state dict to a checkpoint
-                if best_checkpoint is None or mean_over_labels < best_checkpoint['loss']:
-                    print(f"New best mean loss: {mean_over_labels:.1f}, saving new checkpoint.")
-                    save_data = {constants.STATE_DICT_NAME: model.state_dict(),
-                                 constants.OPTIMIZER_STATE_DICT_NAME: train_optimizer.state_dict()}
-                    torch.save(save_data, checkpoint_file.name)
-                    best_checkpoint = {'epoch': epoch, 'loss': mean_over_labels}
-                elif isnan or mean_over_labels > 2 * best_checkpoint['loss']:
-                    print(f"Anomalously large mean loss: {mean_over_labels:.1f}, loading checkpoint.")
-                    saved = torch.load(checkpoint_file.name, map_location=device)
-                    model.load_state_dict(saved[constants.STATE_DICT_NAME])
-                    train_optimizer.load_state_dict(saved[constants.OPTIMIZER_STATE_DICT_NAME])
         # done with training and validation for this epoch
         report_memory_usage(f"End of epoch {epoch}.")
         print(f"Time elapsed(s): {time.time() - start_of_epoch:.1f}")
@@ -223,7 +115,7 @@ def train_artifact_model(model: ArtifactModel, train_dataset: ReadsDataset, vali
     # done with training
     report_memory_usage(f"Training complete, recording embeddings for tensorboard.")
     embeddings_timer = Timer("Creating training and validation datasets")
-    record_embeddings(model, embeddings_loader, summary_writer)
+    record_embeddings(model, train_loader, summary_writer)
     embeddings_timer.report("Time to record embeddings for tensorboard.")
 
 @torch.inference_mode()
@@ -246,10 +138,10 @@ def collect_evaluation_data(model: ArtifactModel, num_sources: int, balancer: Ba
                 batch = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
                 output = model.compute_batch_output(batch, balancer)
 
-                evaluation_metrics.record_batch(epoch_type, batch, logits=output.calibrated_logits_b, weights=output.weights)
+                evaluation_metrics.record_batch(epoch_type, batch, logits=output.logits_b, weights=output.weights)
 
                 if report_worst:
-                    for int_array, float_array, predicted_logit in zip(batch.get_int_array_be(), batch.get_float_array_be(), output.calibrated_logits_b.detach().cpu().tolist()):
+                    for int_array, float_array, predicted_logit in zip(batch.get_int_array_be(), batch.get_float_array_be(), output.logits_b.detach().cpu().tolist()):
                         datum = Datum(int_array, float_array)
                         wrong_call = (datum.get(Data.LABEL) == Label.ARTIFACT and predicted_logit < 0) or \
                                      (datum.get(Data.LABEL) == Label.VARIANT and predicted_logit > 0)
@@ -299,8 +191,8 @@ def evaluate_model(model: ArtifactModel, epoch: int, num_sources: int, balancer:
         # now go over just the validation data and generate feature vectors / metadata for tensorboard projectors
         batch: Batch
         for batch in tqdm(prefetch_generator(valid_loader), mininterval=60, total=len(valid_loader)):
-            logits_b, _, alt_means_be, ref_means_be = model.calculate_logits(batch)
-            pred_b = logits_b.detach().cpu()
+            output = model.compute_batch_output(batch)
+            pred_b = output.logits_b.detach().cpu()
             labels_b = batch.get_training_labels().cpu()
             correct_b = ((pred_b > 0) == (labels_b > 0.5)).tolist()
             is_labeled_list = batch.get_is_labeled_mask().cpu().tolist()
@@ -315,7 +207,7 @@ def evaluate_model(model: ArtifactModel, epoch: int, num_sources: int, balancer:
             embedding_metrics.correct_metadata.extend(correct_strings)
             embedding_metrics.type_metadata.extend([Variation(idx).name for idx in batch.get(Data.VARIANT_TYPE).cpu().tolist()])
             embedding_metrics.truncated_count_metadata.extend([alt_count_bin_name(alt_count_bin_index(alt_count)) for alt_count in batch.get(Data.ALT_COUNT).cpu().tolist()])
-            embedding_metrics.features.append(alt_means_be.detach().cpu())
-            embedding_metrics.ref_features.append(ref_means_be.detach().cpu())
+            embedding_metrics.features.append(output.features_be.detach().cpu())
+            embedding_metrics.ref_features.append(output.ref_features_be.detach().cpu())
         embedding_metrics.output_to_summary_writer(summary_writer, epoch=epoch)
     # done collecting data
