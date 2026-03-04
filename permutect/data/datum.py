@@ -38,7 +38,7 @@ def uint32_to_two_int16s(num: int):
 
 
 def uint32_from_two_int16s(int16_1, int16_2):
-    shifted1, shifted2 = int16_1 + (BIGGEST_INT16 + 1), int16_2 + (BIGGEST_INT16 + 1)
+    shifted1, shifted2 = int(int16_1) + (BIGGEST_INT16 + 1), int(int16_2) + (BIGGEST_INT16 + 1)
     return BIGGEST_UINT16 * shifted1 + shifted2
 
 class Data(enum.Enum):
