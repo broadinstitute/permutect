@@ -54,7 +54,7 @@ ENV GATK_LOCAL_JAR=/root/gatk.jar
 
 COPY requirements.txt /
 COPY setup.py /
-RUN pip install --no-cache-dir -r /requirements.txt
+RUN pip install --break-system-packages --no-cache-dir -r /requirements.txt
 
 ADD permutect/ /permutect
 
