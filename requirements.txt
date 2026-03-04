@@ -1,16 +1,11 @@
 torch == 2.10.0
 tensorboard>=2.8.0
-numpy >= 1.26.2
-tqdm~=4.66.1
+numpy>=1.26.2
+tqdm>=4.66.1
 setuptools>=78.1.1
-matplotlib~=3.8.2
-pysam~=0.22.0
+matplotlib>=3.8.2
 cyvcf2~=0.31.4
-# Protobuf 4.0 is incompatible with TF. Force < 3.20 until they unblock upgrade.
-protobuf >= 3.9.2, < 3.20
-
-intervaltree~=3.1.0
-psutil >= 5.9.2
+intervaltree>=3.1.0
+psutil>=5.9.2
 scikit-learn >= 1.3.2
-
-dill >= 0.3.7
+dill>=0.3.7
