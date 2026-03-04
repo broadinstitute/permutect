@@ -38,6 +38,7 @@ from queue import PriorityQueue
 from typing import List, Generator
 
 import numpy as np
+import torch
 from sklearn.preprocessing import QuantileTransformer
 
 from permutect.data.count_binning import cap_ref_count, cap_alt_count
@@ -345,7 +346,8 @@ def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> Lis
     orig_ref_counts = orig_depths - orig_alt_counts
 
     natural_log_tlod = LOG10_TO_LN * tlod_over_nalt * orig_alt_counts
-    tlod_correction = lgamma(orig_depths + 2) - lgamma(orig_alt_counts + 1) - lgamma(orig_ref_counts + 1)
+    a, b, c = (torch.lgamma(torch.from_numpy(x)).numpy() for x in (orig_depths+1, orig_alt_counts+1, orig_ref_counts+1))
+    tlod_correction = a - b - c
     average_qual_feature = ((natural_log_tlod + tlod_correction) / orig_alt_counts)/10
 
     all_info_transformed_ve = np.hstack([binary_info_array_ve, average_qual_feature.reshape(-1,1)])
