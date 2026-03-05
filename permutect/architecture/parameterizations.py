@@ -1,5 +1,6 @@
-from torch import nn, Tensor
 import torch
+from torch import Tensor
+from torch import nn
 
 """
 Constrain a vector to have unit norm.  Usage in a Module:
@@ -15,6 +16,8 @@ parametrize.register_parametrization(self, "unit_vec", UnitVector())
 Note that the forward function uses norm(. . ., dim=-1) so this works equally well for a single vector,
 or 2D, 3D etc arrays of vectors.
 """
+
+
 class UnitVector(nn.Module):
     def __init__(self):
         super().__init__()
@@ -27,6 +30,7 @@ class UnitVector(nn.Module):
     # unnormalized vector
     #   def right_inverse(self, A):
 
+
 """
 Constrain a parameter to have all positive values. Usage in a Module:
 
@@ -36,6 +40,8 @@ self.positive_values = nn.Parameter(torch.ones(dim1, dim2))
 
 parametrize.register_parametrization(self, "positive_values", PositiveNumber())
 """
+
+
 class PositiveNumber(nn.Module):
     def __init__(self, n):
         super().__init__()
@@ -48,6 +54,7 @@ class PositiveNumber(nn.Module):
     def right_inverse(self, P: Tensor):
         return torch.log(P)
 
+
 """
 Constrain a parameter to have values in range (min_val, max_val)
 
@@ -56,6 +63,8 @@ self.positive_values = nn.Parameter(torch.ones(dim1, dim2))
 
 parametrize.register_parametrization(self, "positive_values", PositiveNumber())
 """
+
+
 class BoundedNumber(nn.Module):
     def __init__(self, min_val: float, max_val: float):
         super().__init__()

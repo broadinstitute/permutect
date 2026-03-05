@@ -1,9 +1,8 @@
 import argparse
 from typing import List
+
 from permutect import constants
 from permutect.data.plain_text_data import make_normalized_mmap_data
-
-
 
 """
 This tool takes as input a list of text file Mutect3 training datasets, reads them in chunks that fit in memory,
@@ -12,13 +11,30 @@ normalizes each chunk, outputs each chunk as a binary PyTorch file, and bundles 
 
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description='preprocess plain text training dataset into tarfile of nprmalized binary data')
-    parser.add_argument('--' + constants.TRAINING_DATASETS_NAME, nargs='+', type=str, required=True,
-                        help='list of plain text data files')
-    parser.add_argument('--' + constants.SOURCES_NAME, nargs='+', type=int, required=False,
-                        help='integer sources corresponding to plain text data files for distinguishing different sequencing conditions')
-    parser.add_argument('--' + constants.OUTPUT_NAME, type=str, default=None, required=True,
-                        help='path to output tarfile of training data')
+    parser = argparse.ArgumentParser(
+        description="preprocess plain text training dataset into tarfile of nprmalized binary data"
+    )
+    parser.add_argument(
+        "--" + constants.TRAINING_DATASETS_NAME,
+        nargs="+",
+        type=str,
+        required=True,
+        help="list of plain text data files",
+    )
+    parser.add_argument(
+        "--" + constants.SOURCES_NAME,
+        nargs="+",
+        type=int,
+        required=False,
+        help="integer sources corresponding to plain text data files for distinguishing different sequencing conditions",
+    )
+    parser.add_argument(
+        "--" + constants.OUTPUT_NAME,
+        type=str,
+        default=None,
+        required=True,
+        help="path to output tarfile of training data",
+    )
     return parser.parse_args()
 
 
@@ -40,5 +56,5 @@ def main():
     main_without_parsing(args)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

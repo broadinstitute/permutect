@@ -1,27 +1,37 @@
 import torch
-from torch import Tensor, nn
+from torch import Tensor
+from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.autonotebook import tqdm
 
 from permutect import constants
 from permutect.architecture.adversarial import Adversarial
-from permutect.architecture.feature_clustering import FeatureClustering
-from permutect.data.batch import Batch
-from permutect.training.balancer import Balancer
 from permutect.architecture.dna_sequence_convolution import DNASequenceConvolution
+from permutect.architecture.feature_clustering import FeatureClustering
 from permutect.architecture.gated_mlp import GatedRefAltMLP
 from permutect.architecture.mlp import MLP
-from permutect.data.datum import DEFAULT_GPU_FLOAT, DEFAULT_CPU_FLOAT, Data
+from permutect.data.batch import Batch
+from permutect.data.count_binning import MAX_ALT_COUNT
+from permutect.data.count_binning import alt_count_bin_index
+from permutect.data.count_binning import alt_count_bin_name
+from permutect.data.datum import DEFAULT_CPU_FLOAT
+from permutect.data.datum import DEFAULT_GPU_FLOAT
+from permutect.data.datum import Data
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.metrics.evaluation_metrics import EmbeddingMetrics
-from permutect.data.count_binning import alt_count_bin_index, alt_count_bin_name, MAX_ALT_COUNT
+from permutect.misc_utils import freeze
+from permutect.misc_utils import gpu_if_available
+from permutect.misc_utils import unfreeze
 from permutect.parameters import ModelParameters
 from permutect.sets.ragged_sets import RaggedSets
-from permutect.misc_utils import unfreeze, freeze, gpu_if_available
-from permutect.utils.enums import Variation, Epoch
+from permutect.training.balancer import Balancer
+from permutect.utils.enums import Epoch
+from permutect.utils.enums import Variation
 
 MAX_OUTLIER_LOGIT = 10
-BCE = nn.BCEWithLogitsLoss(reduction='none')  # no reduction because we may want to first multiply by weights for unbalanced data
+BCE = nn.BCEWithLogitsLoss(
+    reduction="none"
+)  # no reduction because we may want to first multiply by weights for unbalanced data
 
 
 class BatchOutput:
@@ -29,7 +39,16 @@ class BatchOutput:
     simple container class for the output of the model over a single batch
     :return:
     """
-    def __init__(self, features_be: Tensor, ref_features_be: Tensor, logits_b: Tensor, logits_bk: Tensor, weights: Tensor, source_weights: Tensor):
+
+    def __init__(
+        self,
+        features_be: Tensor,
+        ref_features_be: Tensor,
+        logits_b: Tensor,
+        logits_bk: Tensor,
+        weights: Tensor,
+        source_weights: Tensor,
+    ):
         self.features_be = features_be
         self.ref_features_be = ref_features_be
         self.logits_b = logits_b
@@ -52,9 +71,16 @@ class BatchOutput:
         outlier_binary_logits_b = outlier_logits_b - nonoutlier_logits_b
         return outlier_binary_logits_b
 
+
 class BatchLosses:
-    def __init__(self, supervised_losses_b: Tensor, unsupervised_losses_b: Tensor, alt_count_losses_b: Tensor,
-                 source_prediction_losses_b: Tensor, total_losses_b: Tensor):
+    def __init__(
+        self,
+        supervised_losses_b: Tensor,
+        unsupervised_losses_b: Tensor,
+        alt_count_losses_b: Tensor,
+        source_prediction_losses_b: Tensor,
+        total_losses_b: Tensor,
+    ):
         self.supervised_losses_b = supervised_losses_b
         self.unsupervised_losses_b = unsupervised_losses_b
         self.alt_count_losses_b = alt_count_losses_b
@@ -62,13 +88,19 @@ class BatchLosses:
         self.total_losses_b = total_losses_b
         self.total_loss = torch.sum(total_losses_b)
 
+
 def sums_over_chunks(tensor2d: Tensor, chunk_size: int):
     assert len(tensor2d) % chunk_size == 0
     return torch.sum(tensor2d.reshape([len(tensor2d) // chunk_size, chunk_size, -1]), dim=1)
 
 
 def make_gated_ref_alt_mlp_encoder(input_dimension: int, params: ModelParameters) -> GatedRefAltMLP:
-    return GatedRefAltMLP(d_model=input_dimension, d_ffn=params.self_attention_hidden_dimension, num_blocks=params.num_self_attention_layers)
+    return GatedRefAltMLP(
+        d_model=input_dimension,
+        d_ffn=params.self_attention_hidden_dimension,
+        num_blocks=params.num_self_attention_layers,
+    )
+
 
 class ArtifactModel(torch.nn.Module):
     """
@@ -91,37 +123,73 @@ class ArtifactModel(torch.nn.Module):
     because we have different output layers for each variant type.
     """
 
-    def __init__(self, params: ModelParameters, num_read_features: int, num_info_features: int, haplotypes_length: int, device=gpu_if_available()):
+    def __init__(
+        self,
+        params: ModelParameters,
+        num_read_features: int,
+        num_info_features: int,
+        haplotypes_length: int,
+        device=gpu_if_available(),
+    ):
         super(ArtifactModel, self).__init__()
 
         self._device = device
         self._dtype = DEFAULT_GPU_FLOAT if device != torch.device("cpu") else DEFAULT_CPU_FLOAT
-        self._haplotypes_length = haplotypes_length # this is the length of ref and alt concatenated horizontally ie twice the CNN length
+        self._haplotypes_length = haplotypes_length  # this is the length of ref and alt concatenated horizontally ie twice the CNN length
         self._params = params
 
         # embeddings of reads, info, and reference sequence prior to the transformer layers
-        self.read_embedding = MLP([num_read_features] + params.read_layers, batch_normalize=params.batch_normalize, dropout_p=params.dropout_p)
-        self.info_embedding = MLP([num_info_features] + params.info_layers, batch_normalize=params.batch_normalize, dropout_p=params.dropout_p)
-        self.haplotypes_cnn = DNASequenceConvolution(params.ref_seq_layer_strings, haplotypes_length // 2)
+        self.read_embedding = MLP(
+            [num_read_features] + params.read_layers,
+            batch_normalize=params.batch_normalize,
+            dropout_p=params.dropout_p,
+        )
+        self.info_embedding = MLP(
+            [num_info_features] + params.info_layers,
+            batch_normalize=params.batch_normalize,
+            dropout_p=params.dropout_p,
+        )
+        self.haplotypes_cnn = DNASequenceConvolution(
+            params.ref_seq_layer_strings, haplotypes_length // 2
+        )
 
-        embedding_dim = self.read_embedding.output_dimension() + self.info_embedding.output_dimension() + self.haplotypes_cnn.output_dimension()
+        embedding_dim = (
+            self.read_embedding.output_dimension()
+            + self.info_embedding.output_dimension()
+            + self.haplotypes_cnn.output_dimension()
+        )
 
         # TODO: reduce dimension before sending to the encoder???
         self.ref_alt_reads_encoder = make_gated_ref_alt_mlp_encoder(embedding_dim, params)
 
         # reduce dimensionality of reads after gated MLP for better clustering etc
-        self.reducer = MLP([self.ref_alt_reads_encoder.output_dimension()] + params.aggregation_layers, batch_normalize=params.batch_normalize, dropout_p=params.dropout_p)
+        self.reducer = MLP(
+            [self.ref_alt_reads_encoder.output_dimension()] + params.aggregation_layers,
+            batch_normalize=params.batch_normalize,
+            dropout_p=params.dropout_p,
+        )
 
-        self.feature_clustering = FeatureClustering(feature_dimension=self.reducer.output_dimension(),
-            num_artifact_clusters=params.num_artifact_clusters, calibration_hidden_layer_sizes=params.calibration_layers)
+        self.feature_clustering = FeatureClustering(
+            feature_dimension=self.reducer.output_dimension(),
+            num_artifact_clusters=params.num_artifact_clusters,
+            calibration_hidden_layer_sizes=params.calibration_layers,
+        )
 
-        self.alt_count_predictor = Adversarial(MLP([self.reducer.output_dimension()] + [30, -1, -1, -1, 1]), adversarial_strength=0.01)
-        self.alt_count_loss_func = torch.nn.MSELoss(reduction='none')
+        self.alt_count_predictor = Adversarial(
+            MLP([self.reducer.output_dimension()] + [30, -1, -1, -1, 1]), adversarial_strength=0.01
+        )
+        self.alt_count_loss_func = torch.nn.MSELoss(reduction="none")
 
         # used for unlabeled domain adaptation -- needs to be reset depending on the number of sources, as well as
         # the particular sources used in training.  Note that we initialize as a trivial model with 1 source
-        self.source_predictor = Adversarial(MLP([self.reducer.output_dimension()] + [1], batch_normalize=params.batch_normalize,
-                dropout_p=params.dropout_p), adversarial_strength=0.01)
+        self.source_predictor = Adversarial(
+            MLP(
+                [self.reducer.output_dimension()] + [1],
+                batch_normalize=params.batch_normalize,
+                dropout_p=params.dropout_p,
+            ),
+            adversarial_strength=0.01,
+        )
         self.num_sources = 1
 
         self.to(device=self._device, dtype=self._dtype)
@@ -129,8 +197,14 @@ class ArtifactModel(torch.nn.Module):
     def reset_source_predictor(self, num_sources: int = 1):
         source_prediction_hidden_layers = [] if num_sources == 1 else [-1, -1]
         layers = [self.reducer.output_dimension()] + source_prediction_hidden_layers + [num_sources]
-        self.source_predictor = Adversarial(MLP(layers, batch_normalize=self._params.batch_normalize,
-            dropout_p=self._params.dropout_p), adversarial_strength=0.01).to(device=self._device, dtype=self._dtype)
+        self.source_predictor = Adversarial(
+            MLP(
+                layers,
+                batch_normalize=self._params.batch_normalize,
+                dropout_p=self._params.dropout_p,
+            ),
+            adversarial_strength=0.01,
+        ).to(device=self._device, dtype=self._dtype)
         self.num_sources = num_sources
 
     def ref_alt_seq_embedding_dimension(self) -> int:
@@ -157,22 +231,36 @@ class ArtifactModel(torch.nn.Module):
     # here 'b' is the batch index, 'r' is the flattened read index, and 'e' means an embedding dimension
     # so, for example, "re" means a 2D tensor with all reads in the batch stacked and "bre" means a 3D tensor indexed
     # first by variant within the batch, then the read within the variant
-    def calculate_features(self, batch: Batch, weight_range: float = 0) -> tuple[RaggedSets, RaggedSets, Tensor]:
+    def calculate_features(
+        self, batch: Batch, weight_range: float = 0
+    ) -> tuple[RaggedSets, RaggedSets, Tensor]:
         ref_counts_b, alt_counts_b = batch.get(Data.REF_COUNT), batch.get(Data.ALT_COUNT)
         total_ref, total_alt = torch.sum(ref_counts_b).item(), torch.sum(alt_counts_b).item()
 
         read_embeddings_re = self.read_embedding.forward(batch.get_reads_re().to(dtype=self._dtype))
         info_embeddings_be = self.info_embedding.forward(batch.get_info_be().to(dtype=self._dtype))
-        ref_seq_embeddings_be = self.haplotypes_cnn(batch.get_one_hot_haplotypes_bcs().to(dtype=self._dtype))
+        ref_seq_embeddings_be = self.haplotypes_cnn(
+            batch.get_one_hot_haplotypes_bcs().to(dtype=self._dtype)
+        )
         info_and_seq_be = torch.hstack((info_embeddings_be, ref_seq_embeddings_be))
-        info_and_seq_re = torch.vstack((torch.repeat_interleave(info_and_seq_be, repeats=ref_counts_b, dim=0),
-                                       torch.repeat_interleave(info_and_seq_be, repeats=alt_counts_b, dim=0)))
+        info_and_seq_re = torch.vstack(
+            (
+                torch.repeat_interleave(info_and_seq_be, repeats=ref_counts_b, dim=0),
+                torch.repeat_interleave(info_and_seq_be, repeats=alt_counts_b, dim=0),
+            )
+        )
         reads_info_seq_re = torch.hstack((read_embeddings_re, info_and_seq_re))
 
         # TODO: might be a bug if every datum in batch has zero ref reads?
-        ref_bre = RaggedSets(flattened_tensor_nf=reads_info_seq_re[:total_ref], lengths_b=ref_counts_b)
-        alt_bre = RaggedSets(flattened_tensor_nf=reads_info_seq_re[total_ref:], lengths_b=alt_counts_b)
-        transformed_ref_bre, transformed_alt_bre = self.ref_alt_reads_encoder.forward(ref_bre, alt_bre)
+        ref_bre = RaggedSets(
+            flattened_tensor_nf=reads_info_seq_re[:total_ref], lengths_b=ref_counts_b
+        )
+        alt_bre = RaggedSets(
+            flattened_tensor_nf=reads_info_seq_re[total_ref:], lengths_b=alt_counts_b
+        )
+        transformed_ref_bre, transformed_alt_bre = self.ref_alt_reads_encoder.forward(
+            ref_bre, alt_bre
+        )
 
         reduced_ref_bre = transformed_ref_bre.apply_elementwise(self.reducer)
         reduced_alt_bre = transformed_alt_bre.apply_elementwise(self.reducer)
@@ -190,36 +278,67 @@ class ArtifactModel(torch.nn.Module):
         alt_means_ve = sums_over_rows(transformed_alt_re * normalized_alt_weights_r[:,None], alt_counts)
         """
 
-        return reduced_ref_bre, reduced_alt_bre, ref_seq_embeddings_be # ref seq embeddings are useful later
+        return (
+            reduced_ref_bre,
+            reduced_alt_bre,
+            ref_seq_embeddings_be,
+        )  # ref seq embeddings are useful later
 
     def compute_source_prediction_losses(self, features_be: Tensor, batch: Batch) -> Tensor:
         if self.num_sources > 1:
             source_logits_bs = self.source_predictor.adversarial_forward(features_be)
             source_probs_bs = torch.nn.functional.softmax(source_logits_bs, dim=-1)
-            source_targets_bs = torch.nn.functional.one_hot(batch.get(Data.SOURCE).long(), self.num_sources)
+            source_targets_bs = torch.nn.functional.one_hot(
+                batch.get(Data.SOURCE).long(), self.num_sources
+            )
             return torch.sum(torch.square(source_probs_bs - source_targets_bs), dim=-1)
         else:
             return torch.zeros(batch.size(), device=self._device, dtype=self._dtype)
 
     def compute_alt_count_losses(self, features_be: Tensor, batch: Batch):
-        alt_count_pred_b = torch.sigmoid(self.alt_count_predictor.adversarial_forward(features_be).view(-1))
-        alt_count_target_b = batch.get(Data.ALT_COUNT).to(dtype=alt_count_pred_b.dtype) / MAX_ALT_COUNT
+        alt_count_pred_b = torch.sigmoid(
+            self.alt_count_predictor.adversarial_forward(features_be).view(-1)
+        )
+        alt_count_target_b = (
+            batch.get(Data.ALT_COUNT).to(dtype=alt_count_pred_b.dtype) / MAX_ALT_COUNT
+        )
         return self.alt_count_loss_func(alt_count_pred_b, alt_count_target_b)
 
     def compute_batch_output(self, batch: Batch, balancer: Balancer = None):
-        ref_bre, alt_bre, _ = self.calculate_features(batch)  # ragged sets of reduced and transformed reads
-        logits_b, logits_bk = self.feature_clustering.calculate_logits(ref_bre, alt_bre, ref_counts_b=batch.get(Data.REF_COUNT),
-            alt_counts_b=batch.get(Data.ALT_COUNT), var_types_b=batch.get(Data.VARIANT_TYPE))
+        ref_bre, alt_bre, _ = self.calculate_features(
+            batch
+        )  # ragged sets of reduced and transformed reads
+        logits_b, logits_bk = self.feature_clustering.calculate_logits(
+            ref_bre,
+            alt_bre,
+            ref_counts_b=batch.get(Data.REF_COUNT),
+            alt_counts_b=batch.get(Data.ALT_COUNT),
+            var_types_b=batch.get(Data.VARIANT_TYPE),
+        )
 
         # feature clustering shifts reads to be centered around the origin
         recentered_alt_bre = self.feature_clustering.transform_reads(alt_bre)
         recentered_ref_bre = self.feature_clustering.transform_reads(ref_bre)
-        result = logits_b, logits_bk, recentered_alt_bre.means_over_sets(), recentered_ref_bre.means_over_sets()
+        result = (
+            logits_b,
+            logits_bk,
+            recentered_alt_bre.means_over_sets(),
+            recentered_ref_bre.means_over_sets(),
+        )
         calibrated_logits_b, calibrated_logits_bk, alt_means_be, ref_means_be = result
-        weights_b, source_weights_b = (torch.ones_like(calibrated_logits_b), torch.ones_like(calibrated_logits_b)) if \
-            balancer is None else balancer.process_batch_and_compute_weights(batch)
-        return BatchOutput(features_be=alt_means_be, ref_features_be=ref_means_be, logits_b=calibrated_logits_b,
-                           logits_bk=calibrated_logits_bk, weights=weights_b, source_weights=weights_b * source_weights_b)
+        weights_b, source_weights_b = (
+            (torch.ones_like(calibrated_logits_b), torch.ones_like(calibrated_logits_b))
+            if balancer is None
+            else balancer.process_batch_and_compute_weights(batch)
+        )
+        return BatchOutput(
+            features_be=alt_means_be,
+            ref_features_be=ref_means_be,
+            logits_b=calibrated_logits_b,
+            logits_bk=calibrated_logits_bk,
+            weights=weights_b,
+            source_weights=weights_b * source_weights_b,
+        )
 
     def compute_batch_losses(self, output: BatchOutput, batch: Batch):
         labels_b = batch.get_training_labels()
@@ -230,34 +349,43 @@ class ArtifactModel(torch.nn.Module):
         # We do this by penalizes the probability assigned to the outlier pseudo-cluster. Since
         # some genuine outlier data does exist, such as rare or unmodeled artifacts, we clip the outlier
         # logit to avert unduly strong influence.
-        outlier_losses_b = BCE(torch.clip(output.outlier_binary_logits, max=MAX_OUTLIER_LOGIT),
-                               torch.zeros_like(output.outlier_binary_logits))
+        outlier_losses_b = BCE(
+            torch.clip(output.outlier_binary_logits, max=MAX_OUTLIER_LOGIT),
+            torch.zeros_like(output.outlier_binary_logits),
+        )
 
         unsupervised_losses_b = (1 - is_labeled_b) * outlier_losses_b
         alt_count_losses_b = self.compute_alt_count_losses(output.features_be, batch)
         source_losses_b = self.compute_source_prediction_losses(output.features_be, batch)
 
-        total_losses_b = output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b) + \
-                 output.source_weights * source_losses_b
-        return BatchLosses(supervised_losses_b=supervised_losses_b,
-                           unsupervised_losses_b=unsupervised_losses_b,
-                           alt_count_losses_b=alt_count_losses_b,
-                           source_prediction_losses_b=source_losses_b,
-                           total_losses_b=total_losses_b)
-
+        total_losses_b = (
+            output.weights * (supervised_losses_b + unsupervised_losses_b + alt_count_losses_b)
+            + output.source_weights * source_losses_b
+        )
+        return BatchLosses(
+            supervised_losses_b=supervised_losses_b,
+            unsupervised_losses_b=unsupervised_losses_b,
+            alt_count_losses_b=alt_count_losses_b,
+            source_prediction_losses_b=source_losses_b,
+            total_losses_b=total_losses_b,
+        )
 
     def make_dict_for_saving(self, artifact_log_priors=None, artifact_spectra=None):
-        return {constants.STATE_DICT_NAME: self.state_dict(),
-                constants.HYPERPARAMS_NAME: self._params,
-                constants.NUM_READ_FEATURES_NAME: self.read_embedding.input_dimension(),
-                constants.NUM_INFO_FEATURES_NAME: self.info_embedding.input_dimension(),
-                constants.REF_SEQUENCE_LENGTH_NAME: self.haplotypes_length(),
-                constants.ARTIFACT_LOG_PRIORS_NAME: artifact_log_priors,
-                constants.ARTIFACT_SPECTRA_STATE_DICT_NAME: artifact_spectra.state_dict() if artifact_spectra is not None else None}
+        return {
+            constants.STATE_DICT_NAME: self.state_dict(),
+            constants.HYPERPARAMS_NAME: self._params,
+            constants.NUM_READ_FEATURES_NAME: self.read_embedding.input_dimension(),
+            constants.NUM_INFO_FEATURES_NAME: self.info_embedding.input_dimension(),
+            constants.REF_SEQUENCE_LENGTH_NAME: self.haplotypes_length(),
+            constants.ARTIFACT_LOG_PRIORS_NAME: artifact_log_priors,
+            constants.ARTIFACT_SPECTRA_STATE_DICT_NAME: artifact_spectra.state_dict()
+            if artifact_spectra is not None
+            else None,
+        }
 
     # save a model, optionally with artifact log priors and spectra
     def save_model(self, path, artifact_log_priors=None, artifact_spectra=None):
-        self.reset_source_predictor()   # this way it's always the same in save/load to avoid state_dict mismatches
+        self.reset_source_predictor()  # this way it's always the same in save/load to avoid state_dict mismatches
         torch.save(self.make_dict_for_saving(artifact_log_priors, artifact_spectra), path)
 
 
@@ -268,8 +396,13 @@ def load_model(path, device: torch.device = gpu_if_available()):
     num_info_features = saved[constants.NUM_INFO_FEATURES_NAME]
     ref_sequence_length = saved[constants.REF_SEQUENCE_LENGTH_NAME]
 
-    model = ArtifactModel(hyperparams, num_read_features=num_read_features, num_info_features=num_info_features,
-                          haplotypes_length=ref_sequence_length, device=device)
+    model = ArtifactModel(
+        hyperparams,
+        num_read_features=num_read_features,
+        num_info_features=num_info_features,
+        haplotypes_length=ref_sequence_length,
+        device=device,
+    )
     model.load_state_dict(saved[constants.STATE_DICT_NAME])
 
     # in case the state dict had the wrong dtype for the device we're on now eg base model was pretrained on GPU
@@ -301,7 +434,9 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
 
     batch: Batch
     for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
-        ref_bre, alt_bre, ref_alt_seq_embeddings_be = model.calculate_features(batch, weight_range=model._params.reweighting_range)
+        ref_bre, alt_bre, ref_alt_seq_embeddings_be = model.calculate_features(
+            batch, weight_range=model._params.reweighting_range
+        )
 
         recentered_alt_bre = model.feature_clustering.transform_reads(alt_bre)
         recentered_ref_bre = model.feature_clustering.transform_reads(ref_bre)
@@ -311,17 +446,30 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
         ref_means_be = recentered_ref_bre.means_over_sets().cpu()
         ref_alt_seq_embeddings_be = ref_alt_seq_embeddings_be.cpu()
 
-        labels = [("artifact" if label > 0.5 else "non-artifact") if is_labeled > 0.5 else "unlabeled" for (label, is_labeled) in
-                  zip(batch.get_training_labels().tolist(), batch.get_is_labeled_mask().tolist())]
-        for (metrics, embeddings, ref_features_be) in [(embedding_metrics, alt_means_be, ref_means_be), (ref_alt_seq_metrics, ref_alt_seq_embeddings_be, None)]:
+        labels = [
+            ("artifact" if label > 0.5 else "non-artifact") if is_labeled > 0.5 else "unlabeled"
+            for (label, is_labeled) in zip(
+                batch.get_training_labels().tolist(), batch.get_is_labeled_mask().tolist()
+            )
+        ]
+        for metrics, embeddings, ref_features_be in [
+            (embedding_metrics, alt_means_be, ref_means_be),
+            (ref_alt_seq_metrics, ref_alt_seq_embeddings_be, None),
+        ]:
             metrics.label_metadata.extend(labels)
             metrics.correct_metadata.extend(["unknown"] * batch.size())
-            metrics.type_metadata.extend([Variation(idx).name for idx in batch.get(Data.VARIANT_TYPE).tolist()])
-            alt_count_strings = [alt_count_bin_name(alt_count_bin_index(ac)) for ac in batch.get(Data.ALT_COUNT).tolist()]
+            metrics.type_metadata.extend(
+                [Variation(idx).name for idx in batch.get(Data.VARIANT_TYPE).tolist()]
+            )
+            alt_count_strings = [
+                alt_count_bin_name(alt_count_bin_index(ac))
+                for ac in batch.get(Data.ALT_COUNT).tolist()
+            ]
             metrics.truncated_count_metadata.extend(alt_count_strings)
             metrics.features.append(embeddings)
             if ref_features_be is not None:
                 metrics.ref_features.append(ref_features_be)
     embedding_metrics.output_to_summary_writer(summary_writer)
-    ref_alt_seq_metrics.output_to_summary_writer(summary_writer, prefix="ref and alt allele context")
-
+    ref_alt_seq_metrics.output_to_summary_writer(
+        summary_writer, prefix="ref and alt allele context"
+    )

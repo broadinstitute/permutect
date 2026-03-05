@@ -1,12 +1,14 @@
 import math
 
 import torch
-from torch import lgamma, logsumexp, Tensor
+from torch import Tensor
+from torch import lgamma
+from torch import logsumexp
 
 from permutect.utils.math_utils import subtract_in_log_space
 
 """
-Note: all functions below operate on inputs of the same or broadcasting-compatible size.  When, for example, count tensors 
+Note: all functions below operate on inputs of the same or broadcasting-compatible size.  When, for example, count tensors
 such as n and k pertain to a batch while parameters such as p, alpha, beta belong to a model, reshaping may be necessary.
 
 Outputs have same shape as the input eg for the log binomial output[i,j. .] = log binomial(n[i,j..], k[i,j..], p[i,j..]).
@@ -27,8 +29,15 @@ def beta_binomial_log_lk(n, k, alpha, beta):
     # beta binomial distribution log likelihood  log P (k | n, alpha, beta)
     #                   = log integral_{0 to 1} Binomial(k | n, p) Beta(p | alpha, beta) dp
     combinatorial_term = torch.lgamma(n + 1) - torch.lgamma(n - k + 1) - torch.lgamma(k + 1)
-    return combinatorial_term + torch.lgamma(k + alpha) + torch.lgamma(n - k + beta) + torch.lgamma(alpha + beta) \
-           - torch.lgamma(n + alpha + beta) - torch.lgamma(alpha) - torch.lgamma(beta)
+    return (
+        combinatorial_term
+        + torch.lgamma(k + alpha)
+        + torch.lgamma(n - k + beta)
+        + torch.lgamma(alpha + beta)
+        - torch.lgamma(n + alpha + beta)
+        - torch.lgamma(alpha)
+        - torch.lgamma(beta)
+    )
 
 
 def gamma_binomial_log_lk(n, k, alpha, beta):
@@ -40,9 +49,14 @@ def gamma_binomial_log_lk(n, k, alpha, beta):
     alpha_tilde = (k + 1) * (n + 2) / (n - k + 1)
     beta_tilde = (n + 1) * (n + 2) / (n - k + 1)
 
-    exponent_term = alpha_tilde * torch.log(beta_tilde) + alpha * torch.log(beta) -\
-                    (alpha + alpha_tilde - 1) * torch.log(beta + beta_tilde)
-    gamma_term = torch.lgamma(alpha + alpha_tilde - 1) - torch.lgamma(alpha) - torch.lgamma(alpha_tilde)
+    exponent_term = (
+        alpha_tilde * torch.log(beta_tilde)
+        + alpha * torch.log(beta)
+        - (alpha + alpha_tilde - 1) * torch.log(beta + beta_tilde)
+    )
+    gamma_term = (
+        torch.lgamma(alpha + alpha_tilde - 1) - torch.lgamma(alpha) - torch.lgamma(alpha_tilde)
+    )
     return exponent_term + gamma_term - torch.log(n + 1)
 
 
@@ -56,10 +70,10 @@ def _incomplete_beta_coeff(n: int, a: Tensor, b: Tensor, x: Tensor):
     """
     if n % 2 == 0:
         m = n // 2
-        return m*(b-m)*x / ((a+2*m-1) * (a+2*m))
+        return m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m))
     else:
         m = (n - 1) // 2
-        return -(a+m)*(a+b+m)*x/((a+2*m)*(a+2*m+1))
+        return -(a + m) * (a + b + m) * x / ((a + 2 * m) * (a + 2 * m + 1))
 
 
 def _incomplete_beta_cf_base(a: Tensor, b: Tensor, x: Tensor):
@@ -72,8 +86,8 @@ def _incomplete_beta_cf_base(a: Tensor, b: Tensor, x: Tensor):
     a, b, x should have the same or broadcast-compatible shape
     """
     d1, d2, d3, d4, d5, d6 = (_incomplete_beta_coeff(k, a, b, x) for k in (1, 2, 3, 4, 5, 6))
-    cf = 1 + d1/(1 + d2/(1 + d3/(1 + d4/(1 + d5/(1 + d6)))))
-    return (x**a) * ((1-x)**b)/(a * cf)
+    cf = 1 + d1 / (1 + d2 / (1 + d3 / (1 + d4 / (1 + d5 / (1 + d6)))))
+    return (x**a) * ((1 - x) ** b) / (a * cf)
 
 
 def _log_incomplete_beta_cf_base(a: Tensor, b: Tensor, x: Tensor):
@@ -85,9 +99,11 @@ def _log_incomplete_beta_cf_base(a: Tensor, b: Tensor, x: Tensor):
     "flipped" for small x for good convergence
     a, b, x should have the same or broadcast-compatible shape
     """
-    d1, d2, d3, d4, d5, d6, d7, d8 = (_incomplete_beta_coeff(k, a, b, x) for k in (1, 2, 3, 4, 5, 6, 7, 8))
+    d1, d2, d3, d4, d5, d6, d7, d8 = (
+        _incomplete_beta_coeff(k, a, b, x) for k in (1, 2, 3, 4, 5, 6, 7, 8)
+    )
     cf = 1 + d1 / (1 + d2 / (1 + d3 / (1 + d4 / (1 + d5 / (1 + d6 / (1 + d7 / (1 + d8)))))))
-    return a * torch.log(x) + b * torch.log(1-x) - torch.log(a) - torch.log(cf)
+    return a * torch.log(x) + b * torch.log(1 - x) - torch.log(a) - torch.log(cf)
 
 
 def incomplete_beta(a: Tensor, b: Tensor, x: Tensor):
@@ -97,9 +113,11 @@ def incomplete_beta(a: Tensor, b: Tensor, x: Tensor):
     a, b, x should have the same or broadcast-compatible shape
     :return:
     """
-    small_x = x < (a + 1)/(a+b+2)
-    beta = torch.gamma(a) * torch.gamma(b) / torch.gamma(a+b)
-    return _incomplete_beta_cf_base(a, b, x)*small_x + (beta - _incomplete_beta_cf_base(b, a, 1 - x))*(1-small_x)
+    small_x = x < (a + 1) / (a + b + 2)
+    beta = torch.gamma(a) * torch.gamma(b) / torch.gamma(a + b)
+    return _incomplete_beta_cf_base(a, b, x) * small_x + (
+        beta - _incomplete_beta_cf_base(b, a, 1 - x)
+    ) * (1 - small_x)
 
 
 def log_incomplete_beta(a: Tensor, b: Tensor, x: Tensor):
@@ -109,8 +127,10 @@ def log_incomplete_beta(a: Tensor, b: Tensor, x: Tensor):
     a, b, x should have the same or broadcast-compatible shape
     :return:
     """
-    small_x = x < (a + 1)/(a+b+2)   # this is a mask, not a value, we it doesn't get logartihmed!!!
-    log_beta = torch.lgamma(a) + torch.lgamma(b) - torch.lgamma(a+b)
+    small_x = x < (a + 1) / (
+        a + b + 2
+    )  # this is a mask, not a value, we it doesn't get logartihmed!!!
+    log_beta = torch.lgamma(a) + torch.lgamma(b) - torch.lgamma(a + b)
     small_result = _log_incomplete_beta_cf_base(a, b, x)
     large_result = subtract_in_log_space(log_beta, _log_incomplete_beta_cf_base(b, a, 1 - x))
 
@@ -119,14 +139,15 @@ def log_incomplete_beta(a: Tensor, b: Tensor, x: Tensor):
 
 def log_regularized_incomplete_beta(a, b, x):
     """
-        log space continued fraction approximation to the regularized incomplete beta function:
-        log I(a,b,x) = log [(int_{0 to x} t^(a-1) (1-t)^(b-1) dt) / Beta(a,b)]
+    log space continued fraction approximation to the regularized incomplete beta function:
+    log I(a,b,x) = log [(int_{0 to x} t^(a-1) (1-t)^(b-1) dt) / Beta(a,b)]
 
-        This is also the cumulative distribution function of the beta distribution.
-        a, b, x should have the same or broadcast-compatible shape
-        :return:
-        """
-    return log_incomplete_beta(a, b, x) + lgamma(a+b) -lgamma(a) - lgamma(b)
+    This is also the cumulative distribution function of the beta distribution.
+    a, b, x should have the same or broadcast-compatible shape
+    :return:
+    """
+    return log_incomplete_beta(a, b, x) + lgamma(a + b) - lgamma(a) - lgamma(b)
+
 
 """
 def uniform_binomial_log_lk(n, k, x1, x2):
@@ -155,11 +176,8 @@ def uniform_binomial_log_lk(n: Tensor, k: Tensor, x1: Tensor, x2: Tensor):
     x2_x = x2.view(*x1.shape, 1)
     n_x = n.view(*n.shape, 1)
     k_x = k.view(*k.shape, 1)
-    interp_x = interp.view(*([1]*x1.dim()), -1)
+    interp_x = interp.view(*([1] * x1.dim()), -1)
     p_x = x2_x * interp_x + x1_x * (1 - interp_x)
     binom_log_lks_x = binomial_log_lk(n_x, k_x, p_x)
     binom_log_lks_o = logsumexp(binom_log_lks_x, dim=-1) - math.log(num_mix)
     return binom_log_lks_o
-
-
-

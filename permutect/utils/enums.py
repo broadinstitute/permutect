@@ -44,7 +44,7 @@ class Label(enum.IntEnum):
             if label_str == label.name:
                 return label
 
-        raise ValueError('label is invalid: %s' % label_str)
+        raise ValueError("label is invalid: %s" % label_str)
 
     @staticmethod
     def is_label(label_str: str):

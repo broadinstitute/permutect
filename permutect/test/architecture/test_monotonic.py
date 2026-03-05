@@ -1,4 +1,5 @@
 import torch
+
 from permutect.architecture.monotonic import MonoDense
 from permutect.misc_utils import backpropagate
 
@@ -7,12 +8,17 @@ def test_is_monotonic():
     input_dim = 3
     num_samples = 100
     x = torch.randn(num_samples, input_dim)
-    x[:, 0] = torch.arange(num_samples) / num_samples   # 0th column is sorted least to greatest
-    x[:,1] = 0.5    # other columns are constant
+    x[:, 0] = torch.arange(num_samples) / num_samples  # 0th column is sorted least to greatest
+    x[:, 1] = 0.5  # other columns are constant
     x[:, 2] = 0.7
 
     # an initialized random model.  We're not learning anything here.
-    model = MonoDense(input_dimension=input_dim, output_dimensions=[12,-2,-2,1], num_increasing=1, num_decreasing=0)
+    model = MonoDense(
+        input_dimension=input_dim,
+        output_dimensions=[12, -2, -2, 1],
+        num_increasing=1,
+        num_decreasing=0,
+    )
 
     prediction = model.forward(x).flatten()
 
@@ -27,10 +33,12 @@ def test_monotonic_linear_data():
     num_samples = 100
     a = torch.ones(input_dim)
     x = torch.rand(num_samples, input_dim)
-    y = torch.sum(x*a, dim=1)   # row-by-row dot product
+    y = torch.sum(x * a, dim=1)  # row-by-row dot product
 
-    model = MonoDense(input_dimension=input_dim, output_dimensions=[1], num_increasing=input_dim, num_decreasing=0)
-    loss_func = torch.nn.MSELoss(reduction='mean')
+    model = MonoDense(
+        input_dimension=input_dim, output_dimensions=[1], num_increasing=input_dim, num_decreasing=0
+    )
+    loss_func = torch.nn.MSELoss(reduction="mean")
     optimizer = torch.optim.Adam(model.parameters())
     loss_list = []
 
@@ -55,8 +63,13 @@ def test_mix():
     x = torch.rand(num_samples, input_dim)
     y = x[:, 0] - x[:, 1] + torch.square(x[:, 2])
 
-    model = MonoDense(input_dimension=input_dim, output_dimensions=[6, 6, 6, 1], num_increasing=1, num_decreasing=1)
-    loss_func = torch.nn.MSELoss(reduction='mean')
+    model = MonoDense(
+        input_dimension=input_dim,
+        output_dimensions=[6, 6, 6, 1],
+        num_increasing=1,
+        num_decreasing=1,
+    )
+    loss_func = torch.nn.MSELoss(reduction="mean")
     optimizer = torch.optim.Adam(model.parameters())
     loss_list = []
 
@@ -79,8 +92,13 @@ def test_cant_learn_non_monotonic():
     x = torch.randn(num_samples, input_dim)
     y = torch.square(x)
 
-    model = MonoDense(input_dimension=input_dim, output_dimensions=[6, 6, 6, 1], num_increasing=1, num_decreasing=0)
-    loss_func = torch.nn.MSELoss(reduction='mean')
+    model = MonoDense(
+        input_dimension=input_dim,
+        output_dimensions=[6, 6, 6, 1],
+        num_increasing=1,
+        num_decreasing=0,
+    )
+    loss_func = torch.nn.MSELoss(reduction="mean")
     optimizer = torch.optim.Adam(model.parameters())
     loss_list = []
 
@@ -102,8 +120,13 @@ def test_cubic():
     x = torch.rand(num_samples, input_dim)
     y = torch.sum(x**3, dim=1)
 
-    model = MonoDense(input_dimension=input_dim, output_dimensions=[12, 12, 12, 1], num_increasing=input_dim, num_decreasing=0)
-    loss_func = torch.nn.MSELoss(reduction='mean')
+    model = MonoDense(
+        input_dimension=input_dim,
+        output_dimensions=[12, 12, 12, 1],
+        num_increasing=input_dim,
+        num_decreasing=0,
+    )
+    loss_func = torch.nn.MSELoss(reduction="mean")
     optimizer = torch.optim.Adam(model.parameters())
     loss_list = []
 
