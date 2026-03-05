@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools >= 64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "permutect"
+version = "0.1.0"
+description = "A new way to filter somatic variant calls"
+license = "Apache-2.0"
+requires-python = ">=3.10,<3.12"
+authors = [
+    { name = "David Benjamin", email = "davidben@broadinstitute.org" },
+]
+dependencies = [
+    "torch==2.10.0",
+    "tensorboard>=2.8.0",
+    "numpy>=1.26.2",
+    "tqdm>=4.66.1",
+    "setuptools>=78.1.1",
+    "matplotlib>=3.8.2",
+    "cyvcf2~=0.31.4",
+    "intervaltree>=3.1.0",
+    "psutil>=5.9.2",
+    "scikit-learn>=1.3.2",
+    "dill>=0.3.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+refine_artifact_model = "permutect.tools.refine_artifact_model:main"
+train_artifact_model = "permutect.tools.train_artifact_model:main"
+filter_variants = "permutect.tools.filter_variants:main"
+preprocess_dataset = "permutect.tools.preprocess_dataset:main"
+edit_dataset = "permutect.tools.edit_dataset:main"
+prune_dataset = "permutect.tools.prune_dataset:main"
+
+[tool.setuptools.packages.find]
+include = ["permutect*"]
+
+[tool.pytest.ini_options]
+testpaths = ["permutect/test"]

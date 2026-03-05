@@ -52,14 +52,10 @@ RUN wget https://raw.githubusercontent.com/broadinstitute/gatk/refs/heads/master
     chmod +x /bin/gatk
 ENV GATK_LOCAL_JAR=/root/gatk.jar
 
-COPY requirements.txt /
-COPY setup.py /
-RUN pip install --break-system-packages --no-cache-dir -r /requirements.txt
-
+COPY pyproject.toml /
 ADD permutect/ /permutect
 
-RUN pip install --break-system-packages build
-RUN python3 -m build --sdist
-RUN pip install --break-system-packages dist/*.tar.gz
+RUN pip install --break-system-packages --no-cache-dir .
+RUN pip install --break-system-packages torch-scatter -f https://data.pyg.org/whl/torch-2.1.0+cu121.html
 
 CMD ["/bin/sh"]
