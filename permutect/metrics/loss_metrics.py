@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import List
-from typing import Tuple
 
 import numpy as np
 import torch
@@ -57,9 +56,9 @@ class LossMetrics:
     def get_averages(self) -> BatchIndexedTensor:
         return self.totals_slvra / (0.001 + self.counts_slvra)
 
-    def get_marginal(self, *properties: Tuple[BatchProperty, ...]) -> Tensor:
-        return self.totals_slvra.get_marginal(properties) / self.counts_slvra.get_marginal(
-            properties
+    def get_marginal(self, *properties: BatchProperty) -> Tensor:
+        return self.totals_slvra.get_marginal(*properties) / self.counts_slvra.get_marginal(
+            *properties
         )
 
     def report_marginals(self, message: str):

@@ -321,13 +321,15 @@ class MemoryMappedData:
         )
         loading_timer.report("Time to load data from tarfile")
 
-        return cls(
+        result = cls(
             int_mmap=int_mmap,
             float_mmap=float_mmap,
             num_data=num_data,
             reads_mmap=reads_mmap,
             num_reads=num_reads,
         )
+        result._temp_dir = temp_dir  # prevent GC of temp dir while mmaps are in use
+        return result
 
     @classmethod
     def from_generator(
