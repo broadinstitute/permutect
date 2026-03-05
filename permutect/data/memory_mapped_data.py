@@ -45,7 +45,7 @@ class MemoryMappedData:
         self.read_end_indices = np.zeros(shape=(num_data,), dtype=np.uint32)
         idx = 0
         for n in range(num_data):
-            idx += Datum(self.int_mmap[n], self.float_mmap[n]).get_read_count()
+            idx += int(Datum(self.int_mmap[n], self.float_mmap[n]).get_read_count())
             self.read_end_indices[n] = idx
 
     def __len__(self):
@@ -203,7 +203,7 @@ class MemoryMappedData:
         assert len(int_array_files) == 1
         assert len(float_data_files) == 1
 
-        loaded_metadata = torch.load(metadata_files[0])
+        loaded_metadata = torch.load(metadata_files[0], weights_only=False)
         num_data, int_array_dim, float_array_dim, num_reads, reads_dim = loaded_metadata[0], loaded_metadata[1], loaded_metadata[2], loaded_metadata[3], loaded_metadata[4]
 
         assert len(reads_files) == (0 if num_reads == 0 else 1)

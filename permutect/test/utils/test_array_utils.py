@@ -1,12 +1,7 @@
 import torch
 from torch import IntTensor, Tensor, LongTensor
 
-from permutect.utils.array_utils import cumsum_starting_from_zero, select_and_sum, add_at_index
-
-
-def test_cumsum_starting_from_zero():
-    assert torch.sum(cumsum_starting_from_zero(IntTensor([1, 3, 2, 0, 3])) - IntTensor([0, 1, 4, 6, 6])).item() == 0
-
+from permutect.utils.array_utils import select_and_sum, add_at_index
 
 def test_add_to_array():
     x = torch.zeros(4,5).int()

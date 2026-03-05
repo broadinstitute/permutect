@@ -1,5 +1,4 @@
 import torch
-from scipy.special import betainc
 from permutect.utils.stats_utils import binomial_log_lk, beta_binomial_log_lk, log_regularized_incomplete_beta, \
     uniform_binomial_log_lk
 
@@ -59,8 +58,9 @@ def test_log_regularized_incomplete_beta():
         # test random values against scipy implementation:
         for x in [0.1, 0.2, 0.3, 0.7, 0.9]:
             res = torch.exp(log_regularized_incomplete_beta(atens, btens, torch.tensor([x])))
-            expected = betainc(a, b, x)
-            assert torch.abs(res - expected).item() < 10 ** (-3)
+            # I got rid of this because it was the only thing using the scipy dependency
+            #expected = betainc(a, b, x)
+            #assert torch.abs(res - expected).item() < 10 ** (-3)
 
 
 def test_uniform_binomial():

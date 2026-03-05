@@ -3,7 +3,7 @@
 # https://docs.nvidia.com/cuda/archive/12.1.0/cuda-toolkit-release-notes/
 # Google cloud makes driver version recommendations for GCE VMs here:
 # https://cloud.google.com/compute/docs/gpus/install-drivers-gpu
-FROM pytorch/pytorch:2.3.1-cuda12.1-cudnn8-runtime
+FROM pytorch/pytorch:2.10.0-cuda13.0-cudnn9-runtime
 
 # Overrides the default pytorch image workdir
 WORKDIR /
@@ -54,13 +54,12 @@ ENV GATK_LOCAL_JAR=/root/gatk.jar
 
 COPY requirements.txt /
 COPY setup.py /
-RUN pip install --no-cache-dir -r /requirements.txt
-RUN pip install torch-scatter -f https://data.pyg.org/whl/torch-2.1.0+cu121.html
+RUN pip install --break-system-packages --no-cache-dir -r /requirements.txt
 
 ADD permutect/ /permutect
 
-RUN pip install build
+RUN pip install --break-system-packages build
 RUN python3 -m build --sdist
-RUN pip install dist/*.tar.gz
+RUN pip install --break-system-packages dist/*.tar.gz
 
 CMD ["/bin/sh"]

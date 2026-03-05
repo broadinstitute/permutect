@@ -39,29 +39,6 @@ def downsample_tensor(tensor2d: np.ndarray, new_length: int):
     return tensor2d[perm[:new_length]]
 
 
-# for tensor of shape (R, C...) and row counts n1, n2. . nK, return a tensor of shape (K, C...) whose 1st row is the sum of the
-# first n1 rows of the input, 2nd row is the sum of the next n2 rows etc
-# note that this works for arbitrary C, including empty.  That is, it works for 1D, 2D, 3D etc input.
-def sums_over_rows(input_tensor: Tensor, counts: IntTensor):
-    range_ends = torch.cumsum(counts, dim=0)
-    assert range_ends[-1] == len(input_tensor)   # the counts need to add up!
-
-    row_cumsums = torch.cumsum(input_tensor, dim=0)
-
-    # if counts are eg 1, 2, 3 then range ends are 1, 3, 6 and we are interested in cumsums[0, 2, 5]
-    relevant_cumsums = row_cumsums[(range_ends - 1).long()]
-
-    # if counts are eg 1, 2, 3 we now have, the sum of the first 1, 3, and 6 rows.  To get the sums of row 0, rows 1-2, rows 3-5
-    # we need the consecutive differences, with a row of zeroes prepended
-    row_of_zeroes = torch.zeros_like(relevant_cumsums[0])[None] # the [None] makes it (1xC)
-    relevant_sums = torch.diff(relevant_cumsums, dim=0, prepend=row_of_zeroes)
-    return relevant_sums
-
-
-def cumsum_starting_from_zero(x: Tensor):
-    return (torch.sum(x) - torch.cumsum(x.flip(dims=(0,)), dim=0)).flip(dims=(0,))
-
-
 def select_and_sum(x: Tensor, select: dict[int, int]={}, sum: Tuple[int]=()):
     """
     select specific indices over certain dimensions and sum over others.  For example suppose
