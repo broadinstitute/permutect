@@ -8,15 +8,9 @@ from permutect.architecture.artifact_model import load_model
 from permutect.test.test_file_names import *
 from permutect.tools import train_artifact_model
 
-MAKE_NEW_ARTIFACT_MODEL = False
-
 
 def test_train_artifact_model():
-    training_data_tarfile = PREPROCESSED_DATA
-    # training_data_tarfile = "/Users/davidben/permutect/integration-tests/preprocessed-dataset.tar"
-    saved_model = (
-        tempfile.NamedTemporaryFile() if not MAKE_NEW_ARTIFACT_MODEL else SMALL_ARTIFACT_MODEL
-    )
+    saved_model = tempfile.NamedTemporaryFile()
     training_tensorboard_dir = tempfile.TemporaryDirectory()
 
     train_model_args = Namespace()
@@ -39,7 +33,7 @@ def test_train_artifact_model():
     setattr(train_model_args, constants.BATCH_NORMALIZE_NAME, False)
 
     # Training data inputs
-    setattr(train_model_args, constants.TRAIN_TAR_NAME, training_data_tarfile)
+    setattr(train_model_args, constants.TRAIN_TAR_NAME, PREPROCESSED_DATA)
     setattr(train_model_args, constants.PRETRAINED_ARTIFACT_MODEL_NAME, None)
 
     # training hyperparameters
@@ -53,11 +47,7 @@ def test_train_artifact_model():
     setattr(train_model_args, constants.WEIGHT_DECAY_NAME, 0.01)
 
     # path to saved model
-    setattr(
-        train_model_args,
-        constants.OUTPUT_NAME,
-        saved_model if MAKE_NEW_ARTIFACT_MODEL else saved_model.name,
-    )
+    setattr(train_model_args, constants.OUTPUT_NAME, saved_model.name)
     setattr(train_model_args, constants.TENSORBOARD_DIR_NAME, training_tensorboard_dir.name)
 
     train_artifact_model.main_without_parsing(train_model_args)
@@ -66,12 +56,3 @@ def test_train_artifact_model():
     events.Reload()
 
     loaded_model, _, _ = load_model(saved_model)
-
-
-def main():
-    test_train_artifact_model()
-
-
-# this is necessary; otherwise running with multiple workers will create a weird multiprocessing error
-if __name__ == "__main__":
-    main()
