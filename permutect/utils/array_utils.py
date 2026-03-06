@@ -5,7 +5,7 @@ import torch
 from torch import Tensor, IntTensor
 
 
-def flattened_indices(shape: Tuple[int], idx: Tuple[IntTensor]):
+def flattened_indices(shape: Tuple[int,...], idx: Tuple[IntTensor,...]):
     dim = len(shape)
     if dim < 4:
         if dim == 2:
@@ -28,7 +28,7 @@ def index_tensor(tens: Tensor, idx: Tuple[IntTensor]) -> Tensor:
 
 # add in-place
 # note that the flattened view(-1) shares memory with the original tensor
-def add_at_index(tens: Tensor, idx: Tuple[IntTensor], values: Tensor) -> Tensor:
+def add_at_index(tens: Tensor, idx: Tuple[IntTensor,...], values: Tensor) -> Tensor:
     return tens.view(-1).index_add_(dim=0, index=flattened_indices(tens.shape, idx), source=values)
 
 
