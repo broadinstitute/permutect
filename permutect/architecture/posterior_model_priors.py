@@ -131,15 +131,16 @@ class PosteriorModelPriors(nn.Module):
             # shared Beta(alpha, beta) prior on all context-dependent mutation rates.  In the M step for a particular
             # context these act as pseudocounts.
             # TODO: should we initialize this better?
-            alpha, beta = torch.tensor([1.1], requires_grad=True, device=self._device), torch.tensor([1.1], requires_grad=True, device=self._device)
-
-            shared_prior_optimizer = torch.optim.Adam([alpha, beta])
+            alpha, beta =  0.00001, 1.0
             for iteration in range(50):
                 # closed form optimization (since shared beta prior is conjugate) of context-dependent priors
                 # with shared prior parameters alpha, beta held fixed
                 with torch.no_grad():
-                    self.somatic_snv_log_priors_rrra.copy_(torch.log((somatic_snv_totals_rrra + alpha - 1) /
-                        (snv_context_totals_rrra + total_ignored_per_context + alpha + beta - 2)))
+                    # here we use the *mean* of the beta distribution on each prior (alpha/(alpha + beta)), not the
+                    # maximum likelihood estimate ((alpha - 1)/(alpha + beta - 2)), because 1) the former is more
+                    # in the spirit of variational Bayes and 2) the latter is undefined when alpha, beta <= 1.
+                    self.somatic_snv_log_priors_rrra.copy_(torch.log((somatic_snv_totals_rrra + alpha) /
+                        (snv_context_totals_rrra + total_ignored_per_context + alpha + beta)))
 
                     # make a 1D tensor of the different nontrivial log SNV priors and fit alpha, beta to initialize
                     nontrivial_priors = torch.exp(self.somatic_snv_log_priors_rrra.flatten()[self.NONTRIVIAL_CONTEXTS_rrra.flatten().nonzero()])
@@ -147,19 +148,9 @@ class PosteriorModelPriors(nn.Module):
                     # initial guess for alpha and beta via method of moments.  This is taken from the scipy.stats.beta.fit code
                     # which we don't use in its entirety because it throws weird errors
                     xbar = torch.mean(nontrivial_priors).item()
-                    fac = xbar * (1 - xbar) / (torch.var(nontrivial_priors).item()+0.0000001) - 1
-                    new_alpha = xbar * fac
-                    new_beta = (1 - xbar) * fac
-                    # since pseudocounts are alpha - 1, beta - 1, we want them alpha and beta to be greater than 1
-                    # to avoid weird numerical problems.  If we scale them by the same factor the mean is unchanged
-                    if new_alpha < 1.1:
-                        scale_factor = 1.1 / new_alpha
-                        new_alpha = new_alpha * scale_factor
-                        new_beta = new_beta * scale_factor
-
-                    alpha[0] = new_alpha
-                    beta[0] = new_beta
-                    #new_alpha, new_beta, _, _ = stats.beta.fit(nontrivial_priors.cpu(), floc=0, fscale=1)
+                    # variance is E[x^2] - E[x]^2, whereas the numerator below is E[x] - E[x]^2.
+                    fac = max(xbar * (1 - xbar) / (torch.var(nontrivial_priors).item()+0.0000001) - 1, 0.0000001)
+                    alpha, beta = xbar * fac, (1 - xbar) * fac
 
                 # non-closed form gradient descent optimization of alpha, beta with context-dependent priors held fixed
                 # the contribution of the shared prior to the log likelihood is
