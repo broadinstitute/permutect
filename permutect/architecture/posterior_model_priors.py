@@ -1,19 +1,18 @@
-from collections import defaultdict
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
-from torch import nn
+from torch import nn, Tensor
 from torch.nn import Parameter
-from scipy import stats
 
-from permutect.data.posterior_data import PosteriorBatch
+from permutect.data.batch import Batch
+from permutect.data.datum import Data
 from permutect.metrics import plotting
-from permutect.misc_utils import gpu_if_available, backpropagate
+from permutect.misc_utils import gpu_if_available
 from permutect.utils.array_utils import index_tensor, add_at_index
 from permutect.utils.enums import Variation, Call
 
 
-def get_ref_contexts_and_alt_bases(batch: PosteriorBatch):
+def get_ref_contexts_and_alt_bases(batch: Batch) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     # each row is the ref sequence, followed by the alt sequence (hstacked) with A = 0, C = 1 . . . deletion = 4
     haplotypes_bs = batch.get_haplotypes_bs()
     seq_length = haplotypes_bs.shape[-1] // 2
@@ -83,21 +82,21 @@ class PosteriorModelPriors(nn.Module):
         return torch.zeros(5, 5, 5, 5, device=device)
 
     @classmethod
-    def increment_somatic_snv_context_totals_rrra(cls, snv_totals_rrra, context_totals_rrra, batch: PosteriorBatch,
-                                                  posteriors_bc) -> torch.Tensor:
-        is_snv = (batch.get_variant_types() == Variation.SNV).float()
+    def increment_somatic_snv_context_totals_rrra(cls, snv_totals_rrra, context_totals_rrra, batch: Batch,
+                                                  posteriors_bc):
+        is_snv = (batch.get(Data.VARIANT_TYPE) == Variation.SNV).float()
         somatic_snv_posteriors_b = posteriors_bc[:, Call.SOMATIC] * is_snv
         idx0, idx1, idx2, idx3 = get_ref_contexts_and_alt_bases(batch)
         add_at_index(tens=snv_totals_rrra, idx=(idx0, idx1, idx2, idx3), values=somatic_snv_posteriors_b)
         add_at_index(tens=context_totals_rrra, idx=(idx0, idx1, idx2, idx3), values=is_snv)
 
-    def somatic_snv_log_priors(self, batch: PosteriorBatch) -> torch.Tensor:
+    def somatic_snv_log_priors(self, batch: Batch) -> torch.Tensor:
         idx0, idx1, idx2, idx3 = get_ref_contexts_and_alt_bases(batch)
         return index_tensor(self.somatic_snv_log_priors_rrra, (idx0, idx1, idx2, idx3))
 
-    def log_priors_bc(self, batch: PosteriorBatch) -> torch.Tensor:
-        variant_types_b = batch.get_variant_types().long()
-        allele_frequencies_b = batch.get_allele_frequencies()
+    def log_priors_bc(self, batch: Batch) -> torch.Tensor:
+        variant_types_b = batch.get(Data.VARIANT_TYPE).long()
+        allele_frequencies_b = batch.get(Data.ALLELE_FREQUENCY)
         is_snv_b = (variant_types_b == Variation.SNV).float()
 
         # seq error and germline initialized to 0 or -9999 as discussed above

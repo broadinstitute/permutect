@@ -170,13 +170,11 @@ def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_
                                                             output.logits_b.detach().tolist(), output.features_be.cpu()):
             # make a Datum with no reads or haplotypes whose 1D info array is the embedding
             empty_reads = np.zeros((0,0), dtype=COMPRESSED_READS_ARRAY_DTYPE)
-            empty_haplotypes = np.zeros((0,), dtype=INT_DTYPE)
             output_datum = Datum(int_array=int_array, float_array=float_array, reads_re=empty_reads, compressed_reads=True)
             output_datum.set(Data.REF_COUNT, 0)
             output_datum.set(Data.ALT_COUNT, 0)
             output_datum.set(Data.CACHED_ARTIFACT_LOGIT, logit)
             output_datum.set_info_1d(embedding)
-            output_datum.set_haplotypes_1d(empty_haplotypes)
             yield output_datum
 
 @torch.inference_mode()
