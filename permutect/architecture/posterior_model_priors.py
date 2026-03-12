@@ -1,4 +1,5 @@
 import numpy as np
+import pymc as pm
 import torch
 from matplotlib import pyplot as plt
 from torch import nn, Tensor
@@ -128,6 +129,22 @@ class PosteriorModelPriors(nn.Module):
             self.log_priors_vc[:, Call.GERMLINE] = -9999 if self.no_germline_mode else 0
 
         if self.use_context_dependent_snv_priors:
+            with pm.Model() as mutation_rate_model:
+                overall_rate = pm.Beta("overall_rate", alpha=1.0, beta=1e6)
+                concentration = pm.Gamma("concentration", alpha=4.0, beta=0.1)
+                concentration_s = pm.math.ones(shape=(12,)) * concentration
+                theta_s = pm.Dirichlet("theta_s", a=concentration_s)
+                rate_s = pm.Deterministic("rate_s", overall_rate * 12 * theta_s)
+
+                # TODO: left off here; this line is wrong
+                outcome = pm.Binomial("outcome", n=1, p=rate_s, observed=somatic_snv_totals_rrra)
+
+
+
+
+
+
+
             # shared Beta(alpha, beta) prior on all context-dependent mutation rates.  In the M step for a particular
             # context these act as pseudocounts.
             # TODO: should we initialize this better?
@@ -152,19 +169,6 @@ class PosteriorModelPriors(nn.Module):
                     fac = max(xbar * (1 - xbar) / (torch.var(nontrivial_priors).item()+0.0000001) - 1, 0.0000001)
                     alpha, beta = xbar * fac, (1 - xbar) * fac
 
-                # non-closed form gradient descent optimization of alpha, beta with context-dependent priors held fixed
-                # the contribution of the shared prior to the log likelihood is
-                # sum_context log Beta(context mutation rate | alpha, beta)
-                # = sum_context {-log Beta(alpha, beta) + (alpha - 1) log(rate_contxt) + (beta-1)log(1-rate_context)
-                # where the sum is over non-trivial contexts (exclude eg context = AGG, alt base = G)
-                # that is
-                #sum_1 = torch.sum(self.somatic_snv_log_priors_rrra * self.NONTRIVIAL_CONTEXTS_rrra).detach()
-                #sum_2 = torch.sum(torch.log1p(-self.somatic_snv_log_priors_rrra) * self.NONTRIVIAL_CONTEXTS_rrra).detach()
-
-                #for subiteration in range(100):
-                #    log_prob = self.NUM_NONTRIVIAL_CONTEXTS * (torch.lgamma(alpha + beta) - torch.lgamma(alpha) - torch.lgamma(beta)) + \
-                #               (alpha - 1) * sum_1 + (beta - 1) * sum_2
-                #    backpropagate(shared_prior_optimizer, -log_prob)
         else:   # if not using context-dependent SNV priors
             with torch.no_grad():
                 self.somatic_snv_log_priors_rrra.fill_(self.log_priors_vc[Variation.SNV, Call.SOMATIC])
