@@ -1,65 +1,54 @@
-# Using this image will ensure a specific Python version (3.10) and specific CUDA Version (12.1)
-# Note that `nvidiaDriverVersion` must be at least 525.60.13 on linux to support Cuda 12.1:
-# https://docs.nvidia.com/cuda/archive/12.1.0/cuda-toolkit-release-notes/
+# Base image provides Python 3.12 and CUDA 13.0
+# nvidiaDriverVersion must be at least 570.86.15 on linux to support CUDA 13.0:
+# https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/
 # Google cloud makes driver version recommendations for GCE VMs here:
 # https://cloud.google.com/compute/docs/gpus/install-drivers-gpu
 FROM pytorch/pytorch:2.10.0-cuda13.0-cudnn9-runtime
 
-# Overrides the default pytorch image workdir
-WORKDIR /
+WORKDIR /app
 
 # extra utilities for WDL tasks -- command line tools, not python packages
-# for easy upgrade later. ARG variables only persist during build time
 ARG bcftoolsVer="1.21"
 
-# install dependencies, cleanup apt garbage
+# install system dependencies (consolidated into one layer)
 RUN apt-get update && apt-get install --no-install-recommends -y \
- wget \
- bzip2 \
- autoconf \
- automake \
- make \
- gcc \
- zlib1g-dev \
- libbz2-dev \
- liblzma-dev \
- libcurl4-gnutls-dev \
- libssl-dev \
- libgsl0-dev && \
- rm -rf /var/lib/apt/lists/* && apt-get autoclean
-
-# get bcftools and make /data
-RUN wget https://github.com/samtools/bcftools/releases/download/${bcftoolsVer}/bcftools-${bcftoolsVer}.tar.bz2 && \
- tar -vxjf bcftools-${bcftoolsVer}.tar.bz2 && \
- rm bcftools-${bcftoolsVer}.tar.bz2 && \
- cd bcftools-${bcftoolsVer} && \
- make && \
- make install
-
-# install java for running GATK
-RUN apt-get update && apt-get install -y \
-    openjdk-17-jdk \
-    && apt-get clean \
+    wget \
+    bzip2 \
+    autoconf \
+    automake \
+    make \
+    gcc \
+    zlib1g-dev \
+    libbz2-dev \
+    liblzma-dev \
+    libcurl4-gnutls-dev \
+    libssl-dev \
+    libgsl0-dev \
+    openjdk-17-jre-headless \
     && rm -rf /var/lib/apt/lists/*
+
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 
-# get the GATK launcher Python script from the GATK repo and a GATK jar so that the Permutect docker can emulate
-# a GATK docker
-RUN wget https://storage.googleapis.com/broad-dsp-david-benjamin/gatk-builds/gatk-4-5-2025.jar && \
-    cp gatk-4-5-2025.jar /root/gatk.jar
-RUN wget https://raw.githubusercontent.com/broadinstitute/gatk/refs/heads/master/gatk && \
-    cp gatk /bin && \
-    chmod +x /bin/gatk
+# build and install bcftools, then clean up source
+RUN wget -q https://github.com/samtools/bcftools/releases/download/${bcftoolsVer}/bcftools-${bcftoolsVer}.tar.bz2 \
+    && tar -xjf bcftools-${bcftoolsVer}.tar.bz2 \
+    && rm bcftools-${bcftoolsVer}.tar.bz2 \
+    && cd bcftools-${bcftoolsVer} \
+    && make \
+    && make install \
+    && cd / \
+    && rm -rf bcftools-${bcftoolsVer}
+
+# install GATK launcher and jar
+RUN wget -q -O /root/gatk.jar https://storage.googleapis.com/broad-dsp-david-benjamin/gatk-builds/gatk-4-5-2025.jar
+RUN wget -q -O /bin/gatk https://raw.githubusercontent.com/broadinstitute/gatk/refs/heads/master/gatk \
+    && chmod +x /bin/gatk
 ENV GATK_LOCAL_JAR=/root/gatk.jar
 
-COPY requirements.txt /
-COPY setup.py /
-RUN pip install --break-system-packages --no-cache-dir -r /requirements.txt
+# install permutect: copy pyproject.toml first for better layer caching
+COPY pyproject.toml /app/
+COPY permutect/ /app/permutect/
 
-ADD permutect/ /permutect
-
-RUN pip install --break-system-packages build
-RUN python3 -m build --sdist
-RUN pip install --break-system-packages dist/*.tar.gz
+RUN pip install --break-system-packages --no-cache-dir .
 
 CMD ["/bin/sh"]
