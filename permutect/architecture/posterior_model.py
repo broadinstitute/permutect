@@ -4,24 +4,38 @@ import torch
 from matplotlib import pyplot as plt
 from torch import Tensor
 from torch.utils.tensorboard import SummaryWriter
-from tqdm.autonotebook import trange, tqdm
+from tqdm.autonotebook import tqdm
+from tqdm.autonotebook import trange
 
 from permutect.architecture.posterior_model_priors import PosteriorModelPriors
 from permutect.architecture.spectra.posterior_model_spectra import PosteriorModelSpectra
 from permutect.data.batch import Batch
-from permutect.data.datum import DEFAULT_GPU_FLOAT, DEFAULT_CPU_FLOAT, Data
+from permutect.data.count_binning import NUM_ALT_COUNT_BINS
+from permutect.data.count_binning import alt_count_bin_index
+from permutect.data.count_binning import count_from_alt_bin_index
+from permutect.data.datum import DEFAULT_CPU_FLOAT
+from permutect.data.datum import DEFAULT_GPU_FLOAT
+from permutect.data.datum import Data
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.metrics import plotting
-from permutect.data.count_binning import NUM_ALT_COUNT_BINS, count_from_alt_bin_index, alt_count_bin_index
-from permutect.misc_utils import StreamingAverage, gpu_if_available, backpropagate
-from permutect.utils.enums import Variation, Call
+from permutect.misc_utils import StreamingAverage
+from permutect.misc_utils import backpropagate
+from permutect.misc_utils import gpu_if_available
+from permutect.utils.enums import Call
+from permutect.utils.enums import Variation
 
 
 class PosteriorModel(torch.nn.Module):
-    """
+    """ """
 
-    """
-    def __init__(self, variant_log_prior: float, artifact_log_prior: float, no_germline_mode: bool = False, device=gpu_if_available(), het_beta: float = None):
+    def __init__(
+        self,
+        variant_log_prior: float,
+        artifact_log_prior: float,
+        no_germline_mode: bool = False,
+        device=gpu_if_available(),
+        het_beta: float = None,
+    ):
         super(PosteriorModel, self).__init__()
 
         self._device = device
@@ -30,7 +44,9 @@ class PosteriorModel(torch.nn.Module):
         self.het_beta = het_beta
 
         self.spectra = PosteriorModelSpectra()
-        self.priors = PosteriorModelPriors(variant_log_prior, artifact_log_prior, no_germline_mode, device)
+        self.priors = PosteriorModelPriors(
+            variant_log_prior, artifact_log_prior, no_germline_mode, device
+        )
 
         self.to(device=self._device, dtype=self._dtype)
 
@@ -47,8 +63,15 @@ class PosteriorModel(torch.nn.Module):
         :param batch:
         :return: non-log error probabilities as a 1D tensor with length batch size
         """
-        assert not (germline_mode and self.no_germline_mode), "germline mode and no-germline mode are incompatible"
-        return 1 - self.posterior_probabilities_bc(batch)[:, Call.GERMLINE if germline_mode else Call.SOMATIC]     # 0th column is variant
+        assert not (germline_mode and self.no_germline_mode), (
+            "germline mode and no-germline mode are incompatible"
+        )
+        return (
+            1
+            - self.posterior_probabilities_bc(batch)[
+                :, Call.GERMLINE if germline_mode else Call.SOMATIC
+            ]
+        )  # 0th column is variant
 
     def log_posterior_and_ingredients(self, batch: Batch) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """
@@ -73,7 +96,9 @@ class PosteriorModel(torch.nn.Module):
         log_posteriors_bc[:, Call.NORMAL_ARTIFACT] += batch.get(Data.CACHED_ARTIFACT_LOGIT)
 
         # TODO: HACK / EXPERIMENT: make it impossible to call an artifact when the artifact logits are negative
-        log_posteriors_bc[:, Call.ARTIFACT] = torch.where(batch.get(Data.CACHED_ARTIFACT_LOGIT) < 0, -9999, log_posteriors_bc[:, Call.ARTIFACT])
+        log_posteriors_bc[:, Call.ARTIFACT] = torch.where(
+            batch.get(Data.CACHED_ARTIFACT_LOGIT) < 0, -9999, log_posteriors_bc[:, Call.ARTIFACT]
+        )
         # TODO: END OF HACK / EXPERIMENT
 
         return log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, log_posteriors_bc
@@ -82,8 +107,14 @@ class PosteriorModel(torch.nn.Module):
         _, _, _, log_posteriors_bc = self.log_posterior_and_ingredients(batch)
         return log_posteriors_bc
 
-    def learn_priors_and_spectra(self, posterior_loader, num_iterations, ignored_to_non_ignored_ratio: float,
-                                 summary_writer: SummaryWriter = None, learning_rate: float = 0.001):
+    def learn_priors_and_spectra(
+        self,
+        posterior_loader,
+        num_iterations,
+        ignored_to_non_ignored_ratio: float,
+        summary_writer: SummaryWriter = None,
+        learning_rate: float = 0.001,
+    ):
         """
         :param summary_writer:
         :param num_iterations:
@@ -102,17 +133,21 @@ class PosteriorModel(torch.nn.Module):
             posterior_totals_tc = torch.zeros((len(Variation), len(Call)), device=self._device)
 
             batch: Batch
-            for batch in tqdm(prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)):
+            for batch in tqdm(
+                prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)
+            ):
                 relative_posteriors = self.log_relative_posteriors_bc(batch)
                 log_evidence = torch.logsumexp(relative_posteriors, dim=1)
 
                 # the next line performs "for b in batch: posterior_total_tc[var_types[b],:] += posteriors_bc[b, :]"
                 posteriors_bc = torch.softmax(relative_posteriors, dim=-1).detach()
-                posterior_totals_tc.index_add_(dim=0, index=batch.get(Data.VARIANT_TYPE), source=posteriors_bc)
+                posterior_totals_tc.index_add_(
+                    dim=0, index=batch.get(Data.VARIANT_TYPE), source=posteriors_bc
+                )
 
                 # confidence_mask = torch.logical_or(batch.get_artifact_logits() < 0, batch.get_artifact_logits() > 3)
                 loss = -torch.mean(log_evidence)
-                #loss = - torch.sum(confidence_mask * log_evidence) / (torch.sum(confidence_mask) + 0.000001)
+                # loss = - torch.sum(confidence_mask * log_evidence) / (torch.sum(confidence_mask) + 0.000001)
 
                 backpropagate(optimizer, loss)
 
@@ -121,17 +156,21 @@ class PosteriorModel(torch.nn.Module):
 
             self.priors.update_priors_m_step(posterior_totals_tc, ignored_to_non_ignored_ratio)
             # TODO: fix the M step for the new somatic spectrum?
-            #self.somatic_spectrum.update_m_step(posteriors_nc[:, Call.SOMATIC], alt_counts_n, depths_n)
+            # self.somatic_spectrum.update_m_step(posteriors_nc[:, Call.SOMATIC], alt_counts_n, depths_n)
 
             if summary_writer is not None:
                 summary_writer.add_scalar("spectrum negative log evidence", epoch_loss.get(), epoch)
 
                 for depth in [9, 19, 30, 50, 100]:
-                    art_spectra_fig, art_spectra_axs = self.spectra.artifact_spectra.plot_artifact_spectra(depth)
-                    summary_writer.add_figure("Artifact AF Spectra at depth = " + str(depth), art_spectra_fig, epoch)
+                    art_spectra_fig, art_spectra_axs = (
+                        self.spectra.artifact_spectra.plot_artifact_spectra(depth)
+                    )
+                    summary_writer.add_figure(
+                        "Artifact AF Spectra at depth = " + str(depth), art_spectra_fig, epoch
+                    )
 
-                #normal_artifact_spectra_fig, normal_artifact_spectra_axs = plot_artifact_spectra(self.normal_artifact_spectra)
-                #summary_writer.add_figure("Normal Artifact AF Spectra", normal_artifact_spectra_fig, epoch)
+                # normal_artifact_spectra_fig, normal_artifact_spectra_axs = plot_artifact_spectra(self.normal_artifact_spectra)
+                # summary_writer.add_figure("Normal Artifact AF Spectra", normal_artifact_spectra_fig, epoch)
 
                 var_spectra_fig, var_spectra_axs = plt.subplots()
                 frac, dens = self.spectra.somatic_spectrum.spectrum_density_vs_fraction()
@@ -152,44 +191,80 @@ class PosteriorModel(torch.nn.Module):
 
     # map of Variant type to probability threshold that maximizes F1 score
     # loader is a Dataloader whose collate_fn is the PosteriorBatch constructor
-    def calculate_probability_thresholds(self, posterior_loader, summary_writer: SummaryWriter = None, germline_mode: bool = False):
+    def calculate_probability_thresholds(
+        self, posterior_loader, summary_writer: SummaryWriter = None, germline_mode: bool = False
+    ):
         self.train(False)
-        error_probs_by_type = {var_type: [] for var_type in Variation}   # includes both artifact and seq errors
+        error_probs_by_type = {
+            var_type: [] for var_type in Variation
+        }  # includes both artifact and seq errors
 
-        error_probs_by_type_by_cnt = {var_type: [[] for _ in range(NUM_ALT_COUNT_BINS)] for var_type in Variation}
+        error_probs_by_type_by_cnt = {
+            var_type: [[] for _ in range(NUM_ALT_COUNT_BINS)] for var_type in Variation
+        }
 
         # TODO: use the EvaluationMetrics class to generate the theoretical ROC curve
         # TODO: then delete plotting.plot_theoretical_roc_on_axis
         batch: Batch
-        for batch in tqdm(prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)):
+        for batch in tqdm(
+            prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)
+        ):
             # TODO: should this be the original alt counts instead?
             alt_counts_b = batch.get(Data.ALT_COUNT).cpu().tolist()
             # 0th column is true variant, subtract it from 1 to get error prob
             error_probs_b = self.error_probabilities_b(batch, germline_mode).cpu().tolist()
 
-            for var_type, alt_count, error_prob in zip(batch.get(Data.VARIANT_TYPE).cpu().tolist(), alt_counts_b, error_probs_b):
+            for var_type, alt_count, error_prob in zip(
+                batch.get(Data.VARIANT_TYPE).cpu().tolist(), alt_counts_b, error_probs_b
+            ):
                 error_probs_by_type[var_type].append(error_prob)
-                error_probs_by_type_by_cnt[var_type][alt_count_bin_index(alt_count)].append(error_prob)
+                error_probs_by_type_by_cnt[var_type][alt_count_bin_index(alt_count)].append(
+                    error_prob
+                )
 
         thresholds_by_type = {}
-        roc_fig, roc_axes = plt.subplots(1, len(Variation), sharex='all', sharey='all', squeeze=False)
-        roc_by_cnt_fig, roc_by_cnt_axes = plt.subplots(1, len(Variation), sharex='all', sharey='all', squeeze=False, figsize=(10, 6), dpi=100)
+        roc_fig, roc_axes = plt.subplots(
+            1, len(Variation), sharex="all", sharey="all", squeeze=False
+        )
+        roc_by_cnt_fig, roc_by_cnt_axes = plt.subplots(
+            1, len(Variation), sharex="all", sharey="all", squeeze=False, figsize=(10, 6), dpi=100
+        )
         for var_type in Variation:
             # plot all count ROC curves for this variant type
-            count_bin_labels = [str(count_from_alt_bin_index(count_bin)) for count_bin in range(NUM_ALT_COUNT_BINS)]
-            _ = plotting.plot_theoretical_roc_on_axis(error_probs_by_type_by_cnt[var_type], count_bin_labels, roc_by_cnt_axes[0, var_type])
-            best_threshold = plotting.plot_theoretical_roc_on_axis([error_probs_by_type[var_type]], [""], roc_axes[0, var_type])[0][0]
+            count_bin_labels = [
+                str(count_from_alt_bin_index(count_bin)) for count_bin in range(NUM_ALT_COUNT_BINS)
+            ]
+            _ = plotting.plot_theoretical_roc_on_axis(
+                error_probs_by_type_by_cnt[var_type], count_bin_labels, roc_by_cnt_axes[0, var_type]
+            )
+            best_threshold = plotting.plot_theoretical_roc_on_axis(
+                [error_probs_by_type[var_type]], [""], roc_axes[0, var_type]
+            )[0][0]
 
             # TODO: the theoretical ROC might need to return the best threshold for this
             thresholds_by_type[var_type] = best_threshold
 
         variation_types = [var_type.name for var_type in Variation]
-        plotting.tidy_subplots(roc_by_cnt_fig, roc_by_cnt_axes, x_label="sensitivity", y_label="precision",
-                               row_labels=[""], column_labels=variation_types)
-        plotting.tidy_subplots(roc_fig, roc_axes, x_label="sensitivity", y_label="precision",
-                               row_labels=[""], column_labels=variation_types)
+        plotting.tidy_subplots(
+            roc_by_cnt_fig,
+            roc_by_cnt_axes,
+            x_label="sensitivity",
+            y_label="precision",
+            row_labels=[""],
+            column_labels=variation_types,
+        )
+        plotting.tidy_subplots(
+            roc_fig,
+            roc_axes,
+            x_label="sensitivity",
+            y_label="precision",
+            row_labels=[""],
+            column_labels=variation_types,
+        )
         if summary_writer is not None:
             summary_writer.add_figure("theoretical ROC by variant type ", roc_fig)
-            summary_writer.add_figure("theoretical ROC by variant type and alt count ", roc_by_cnt_fig)
+            summary_writer.add_figure(
+                "theoretical ROC by variant type and alt count ", roc_by_cnt_fig
+            )
 
         return thresholds_by_type

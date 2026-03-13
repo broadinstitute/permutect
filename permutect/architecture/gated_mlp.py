@@ -29,19 +29,19 @@ class GatedMLPBlock(nn.Module):
     ## gMLP Block
 
     Each block does the following transformations to input embeddings
-    $X \in \mathbb{R}^{n \times d}$ where $n$ is the sequence length
+    $X \\in \\mathbb{R}^{n \times d}$ where $n$ is the sequence length
     and $d$ is the dimensionality of the embeddings:
 
     \begin{align}
-    Z &= \sigma(XU) \\
+    Z &= \\sigma(XU) \\
     \tilde{Z} &= s(Z) \\
     Y &= \tilde{Z}V \\
-    \end{align}
+    \\end{align}
 
     where $V$ and $U$ are learnable projection weights.
-    $s(\cdot)$ is the Spacial Gating Unit defined below.
-    Output dimensionality of $s(\cdot)$ will be half of $Z$.
-    $\sigma$ is an activation function such as
+    $s(\\cdot)$ is the Spacial Gating Unit defined below.
+    Output dimensionality of $s(\\cdot)$ will be half of $Z$.
+    $\\sigma$ is an activation function such as
     [GeLU](https://pytorch.org/docs/stable/generated/torch.nn.GELU.html).
     """
 
@@ -74,7 +74,11 @@ class GatedMLPBlock(nn.Module):
         * `x_bre` is the input read embedding tensor of shape Batch x Reads x Embedding
         """
         # Norm, projection to d_ffn, and activation $Z = \sigma(XU)$
-        z_brd = x_bre.apply_elementwise(self.norm).apply_elementwise(self.proj1).apply_elementwise(self.activation)
+        z_brd = (
+            x_bre.apply_elementwise(self.norm)
+            .apply_elementwise(self.proj1)
+            .apply_elementwise(self.activation)
+        )
         # Spacial Gating Unit $\tilde{Z} = s(Z)$
         gated_brd = self.sgu.forward(z_brd)
         # Final projection $Y = \tilde{Z}V$ back to embedding dimension
@@ -85,7 +89,7 @@ class GatedMLPBlock(nn.Module):
 
 
 class SpacialGatingUnit(nn.Module):
-    """
+    r"""
     ## Spatial Gating Unit
     ORIGINAL:
     $$s(Z) = Z_1 \odot f_{W,b}(Z_2)$$
@@ -99,6 +103,7 @@ class SpacialGatingUnit(nn.Module):
 
     Due to taking the mean the model no longer needs a constant sequence length.
     """
+
     def __init__(self, d_z: int):
         """
         * `d_z` is the dimensionality of $Z$, which is d_ffn of the SGU block
@@ -179,8 +184,16 @@ class GatedRefAltMLPBlock(nn.Module):
         * `x_bre` is the input read embedding tensor of shape Batch x Reads x Embedding
         """
         # Norm, projection to d_ffn, and activation $Z = \sigma(XU)$
-        zref_brd = ref_brf.apply_elementwise(self.norm).apply_elementwise(self.proj1_ref).apply_elementwise(self.activation)
-        zalt_brd = alt_brf.apply_elementwise(self.norm).apply_elementwise(self.proj1_alt).apply_elementwise(self.activation)
+        zref_brd = (
+            ref_brf.apply_elementwise(self.norm)
+            .apply_elementwise(self.proj1_ref)
+            .apply_elementwise(self.activation)
+        )
+        zalt_brd = (
+            alt_brf.apply_elementwise(self.norm)
+            .apply_elementwise(self.proj1_alt)
+            .apply_elementwise(self.activation)
+        )
 
         # Spacial Gating Unit $\tilde{Z} = s(Z)$
         gated_ref_brd, gated_alt_brd = self.sgu.forward(zref_brd, zalt_brd)
@@ -194,8 +207,8 @@ class GatedRefAltMLPBlock(nn.Module):
 
 
 class SpacialGatingUnitRefAlt(nn.Module):
-    """
-    """
+    """ """
+
     def __init__(self, d_z: int):
         """
         * `d_z` is the dimensionality of $Z$, which is d_ffn of the SGU block
@@ -218,7 +231,6 @@ class SpacialGatingUnitRefAlt(nn.Module):
         self.regularizer_weight_pre_exp = nn.Parameter(torch.log(torch.tensor(0.1)))
 
     def forward(self, zref_brd: RaggedSets, zalt_brd: RaggedSets) -> tuple[RaggedSets, RaggedSets]:
-
         # Split $Z$ into $Z_1$ and $Z_2$ over the hidden dimension and normalize $Z_2$ before $f_{W,b}(\cdot)$
         z1_ref_brd, z2_ref_brd = zref_brd.split_in_two_by_features()
         z1_alt_brd, z2_alt_brd = zalt_brd.split_in_two_by_features()
@@ -227,24 +239,35 @@ class SpacialGatingUnitRefAlt(nn.Module):
 
         reg_weight = torch.exp(self.regularizer_weight_pre_exp) + 0.25
         # means over reads for each variant (batch index)
-        ref_mean_field_bd = z2_ref_brd.means_over_sets(regularizer_f=self.ref_regularizer, regularizer_weight=reg_weight)
+        ref_mean_field_bd = z2_ref_brd.means_over_sets(
+            regularizer_f=self.ref_regularizer, regularizer_weight=reg_weight
+        )
         alt_mean_field_bd = z2_alt_brd.means_over_sets()
 
         # same as above except now there is an additional term for the ref mean field influence on alt
         # maybe later also let alt mean field influence ref
-        ref_gate_brd = (z2_ref_brd * self.alpha_ref + 1).broadcast_add(self.beta_ref * ref_mean_field_bd)
-        alt_gate_brd = (z2_alt_brd * self.alpha_alt + 1).broadcast_add(self.beta_alt * alt_mean_field_bd).\
-            broadcast_add(self.gamma * ref_mean_field_bd)
+        ref_gate_brd = (z2_ref_brd * self.alpha_ref + 1).broadcast_add(
+            self.beta_ref * ref_mean_field_bd
+        )
+        alt_gate_brd = (
+            (z2_alt_brd * self.alpha_alt + 1)
+            .broadcast_add(self.beta_alt * alt_mean_field_bd)
+            .broadcast_add(self.gamma * ref_mean_field_bd)
+        )
 
         # $Z_1 \odot f_{W,b}(Z_2)$
-        return z1_ref_brd.multiply_elementwise(ref_gate_brd), z1_alt_brd.multiply_elementwise(alt_gate_brd)
+        return z1_ref_brd.multiply_elementwise(ref_gate_brd), z1_alt_brd.multiply_elementwise(
+            alt_gate_brd
+        )
 
 
 class GatedRefAltMLP(nn.Module):
     def __init__(self, d_model: int, d_ffn: int, num_blocks: int):
         super(GatedRefAltMLP, self).__init__()
 
-        self.blocks = nn.ModuleList([GatedRefAltMLPBlock(d_model, d_ffn) for _ in range(num_blocks)])
+        self.blocks = nn.ModuleList(
+            [GatedRefAltMLPBlock(d_model, d_ffn) for _ in range(num_blocks)]
+        )
         self.dimension = d_model
 
     def input_dimension(self) -> int:

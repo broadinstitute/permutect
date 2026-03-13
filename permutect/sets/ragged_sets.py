@@ -1,9 +1,13 @@
-import torch
-from torch import Tensor, LongTensor, IntTensor
+from typing import Iterable
 
 # in Python 3.11 this would be from typing import Self
-from typing import TypeVar, Iterable
-ThisClass = TypeVar('ThisClass', bound='RaggedSets')
+from typing import TypeVar
+
+import torch
+from torch import LongTensor
+from torch import Tensor
+
+ThisClass = TypeVar("ThisClass", bound="RaggedSets")
 
 
 class RaggedSets:
@@ -69,7 +73,7 @@ class RaggedSets:
     # override the - operator for elementwise addition
     # works for numeric scalars and torch Tensors of compatible shape
     def __sub__(self, other) -> ThisClass:
-            return RaggedSets(self.flattened_tensor_nf - other, self.lengths_b)
+        return RaggedSets(self.flattened_tensor_nf - other, self.lengths_b)
 
     def __radd__(self, other) -> ThisClass:
         return self.__add__(other)
@@ -124,7 +128,9 @@ class RaggedSets:
         vii) divide iv) by vi)
         :return: a RaggedSets object with the same shape, but with softmax "normalization" applied
         """
-        maxes_bf = torch.segment_reduce(self.flattened_tensor_nf, reduce='max', axis=0, lengths=self.lengths_b)
+        maxes_bf = torch.segment_reduce(
+            self.flattened_tensor_nf, reduce="max", axis=0, lengths=self.lengths_b
+        )
         maxes_nf = self.expand_from_b_to_n(maxes_bf)
 
         stable_nf = self.flattened_tensor_nf - maxes_nf
@@ -134,7 +140,9 @@ class RaggedSets:
         result_nf = exp_nf / denom_nf
         return RaggedSets(result_nf, self.lengths_b)
 
-    def means_over_sets(self, regularizer_f: Tensor = None, regularizer_weight: float = 0.0001) -> Tensor:
+    def means_over_sets(
+        self, regularizer_f: Tensor = None, regularizer_weight: float = 0.0001
+    ) -> Tensor:
         """
         mean element of each set, with a regularizer to handle sets with zero or few elements.  The very small default
         regularizer weight means that the regularizer acts as an imputed value for empty sets and has basically no
@@ -148,4 +156,6 @@ class RaggedSets:
         return means_bf
 
     def sums_over_sets(self) -> Tensor:
-        return torch.segment_reduce(self.flattened_tensor_nf, lengths=self.lengths_b, reduce="sum", axis=0)
+        return torch.segment_reduce(
+            self.flattened_tensor_nf, lengths=self.lengths_b, reduce="sum", axis=0
+        )

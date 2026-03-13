@@ -1,5 +1,6 @@
-from .functional import revgrad
 from torch import nn
+
+from .functional import revgrad
 
 
 class GradientReversal(nn.Module):

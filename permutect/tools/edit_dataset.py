@@ -49,25 +49,41 @@ def generate_edited_data(memory_mapped_datas, edit_type: str, source: int):
 
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description='train the Mutect3 artifact model')
-    parser.add_argument('--' + constants.DATASET_EDIT_TYPE_NAME, type=str, required=True,
-                        help='how to modify the dataset')
-    parser.add_argument('--' + constants.SOURCE_NAME, type=int, required=False, help='new source integer to apply')
+    parser = argparse.ArgumentParser(description="train the Mutect3 artifact model")
+    parser.add_argument(
+        "--" + constants.DATASET_EDIT_TYPE_NAME,
+        type=str,
+        required=True,
+        help="how to modify the dataset",
+    )
+    parser.add_argument(
+        "--" + constants.SOURCE_NAME, type=int, required=False, help="new source integer to apply"
+    )
 
     # input / output
-    parser.add_argument('--' + constants.TRAIN_TAR_NAME, nargs='+', type=str, required=True,
-                        help='tarfile(s) of training/validation datasets produced by preprocess_dataset.py')
-    parser.add_argument('--' + constants.OUTPUT_NAME, type=str, required=True, help='path to pruned dataset file')
+    parser.add_argument(
+        "--" + constants.TRAIN_TAR_NAME,
+        nargs="+",
+        type=str,
+        required=True,
+        help="tarfile(s) of training/validation datasets produced by preprocess_dataset.py",
+    )
+    parser.add_argument(
+        "--" + constants.OUTPUT_NAME, type=str, required=True, help="path to pruned dataset file"
+    )
 
     return parser.parse_args()
 
 
 def main_without_parsing(args):
-    original_tarfiles = getattr(args, constants.TRAIN_TAR_NAME) # list of files
+    original_tarfiles = getattr(args, constants.TRAIN_TAR_NAME)  # list of files
     output_tarfile = getattr(args, constants.OUTPUT_NAME)
     edit_type = getattr(args, constants.DATASET_EDIT_TYPE_NAME)
     new_source = getattr(args, constants.SOURCE_NAME)
-    memory_mapped_datas = [MemoryMappedData.load_from_tarfile(data_tarfile=input_tarfile) for input_tarfile in original_tarfiles]
+    memory_mapped_datas = [
+        MemoryMappedData.load_from_tarfile(data_tarfile=input_tarfile)
+        for input_tarfile in original_tarfiles
+    ]
 
     for mmd in memory_mapped_datas:
         print(f"Input dataset with {mmd.num_data} data and {mmd.num_reads} reads.")
@@ -75,8 +91,11 @@ def main_without_parsing(args):
     output_data_generator = generate_edited_data(memory_mapped_datas, edit_type, new_source)
     total_num_data = sum([mmd.num_data for mmd in memory_mapped_datas])
     total_num_reads = sum([mmd.num_reads for mmd in memory_mapped_datas])
-    MemoryMappedData.from_generator(reads_datum_source=output_data_generator, estimated_num_data=total_num_data,
-                                    estimated_num_reads=total_num_reads).save_to_tarfile(output_tarfile=output_tarfile)
+    MemoryMappedData.from_generator(
+        reads_datum_source=output_data_generator,
+        estimated_num_data=total_num_data,
+        estimated_num_reads=total_num_reads,
+    ).save_to_tarfile(output_tarfile=output_tarfile)
 
 
 def main():
@@ -84,5 +103,5 @@ def main():
     main_without_parsing(args)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -1,16 +1,19 @@
-from argparse import Namespace
 import tempfile
+from argparse import Namespace
 
-from permutect.tools import preprocess_dataset, filter_variants
 from permutect import constants
+from permutect.tools import filter_variants
+from permutect.tools import preprocess_dataset
 
 
 def test_on_dream1():
     # Input Files
-    training_datasets = ["/Users/davidben/permutect/just-dream-1/dream1-normal-small-training.dataset"]
-    #mutect2_vcf = "/Users/davidben/permutect/dream-vcfs/dream1-50000.vcf"
+    training_datasets = [
+        "/Users/davidben/permutect/just-dream-1/dream1-normal-small-training.dataset"
+    ]
+    # mutect2_vcf = "/Users/davidben/permutect/dream-vcfs/dream1-50000.vcf"
     mutect2_vcf = "/Users/davidben/permutect/integration-test/dream1-mutect2-small.vcf"
-    #filtering_dataset = "/Users/davidben/permutect/just-dream-1/dream1-test.dataset"
+    # filtering_dataset = "/Users/davidben/permutect/just-dream-1/dream1-test.dataset"
     filtering_dataset = "/Users/davidben/permutect/integration-test/dream1-small-test.dataset"
 
     # Intermediate and Output Files
@@ -36,14 +39,16 @@ def test_on_dream1():
     setattr(train_model_args, constants.NUM_SELF_ATTENTION_LAYERS_NAME, 3)
     setattr(train_model_args, constants.INFO_LAYERS_NAME, [30, 30, 30])
     setattr(train_model_args, constants.AGGREGATION_LAYERS_NAME, [30, 30, 30, 30])
-    setattr(train_model_args, constants.CALIBRATION_LAYERS_NAME, [6,6])
-    cnn_layer_strings = ['convolution/kernel_size=3/out_channels=64',
-                     'pool/kernel_size=2',
-                     'leaky_relu',
-                     'convolution/kernel_size=3/dilation=2/out_channels=5',
-                     'leaky_relu',
-                     'flatten',
-                     'linear/out_features=10']
+    setattr(train_model_args, constants.CALIBRATION_LAYERS_NAME, [6, 6])
+    cnn_layer_strings = [
+        "convolution/kernel_size=3/out_channels=64",
+        "pool/kernel_size=2",
+        "leaky_relu",
+        "convolution/kernel_size=3/dilation=2/out_channels=5",
+        "leaky_relu",
+        "flatten",
+        "linear/out_features=10",
+    ]
     setattr(train_model_args, constants.REF_SEQ_LAYER_STRINGS_NAME, cnn_layer_strings)
     setattr(train_model_args, constants.DROPOUT_P_NAME, 0.0)
     setattr(train_model_args, constants.LEARNING_RATE_NAME, 0.001)
