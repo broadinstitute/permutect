@@ -150,7 +150,7 @@ class PosteriorModelPriors(nn.Module):
                 concentration_ra = pm.math.ones(shape=(12,)) * concentration
                 theta_ra = pm.Dirichlet("theta_ra", a=concentration_ra)
                 rate_ra = pm.Deterministic("rate_ra", overall_rate * 12 * theta_ra)
-                outcome = pm.Binomial("outcome", n=tot_ra.numpy().flatten(), p=rate_ra, observed=snv_ra.numpy().flatten())
+                outcome = pm.Binomial("outcome", n=tot_ra.cpu().numpy().flatten(), p=rate_ra, observed=snv_ra.cpu().numpy().flatten())
 
                 idata = pm.sample(1000, tune=2000)
 
