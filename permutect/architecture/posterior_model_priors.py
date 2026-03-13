@@ -1,5 +1,6 @@
 import numpy as np
 import pymc as pm
+import arviz as az
 import torch
 from matplotlib import pyplot as plt
 from torch import nn, Tensor
@@ -9,7 +10,7 @@ from permutect.data.batch import Batch
 from permutect.data.datum import Data
 from permutect.metrics import plotting
 from permutect.misc_utils import gpu_if_available
-from permutect.utils.array_utils import index_tensor, add_at_index
+from permutect.utils.array_utils import index_tensor, add_at_index, select_and_sum, omit_diagonal_elements
 from permutect.utils.enums import Variation, Call
 
 
@@ -122,6 +123,9 @@ class PosteriorModelPriors(nn.Module):
         overall_total = total_ignored + total_nonignored
         # coarse assumption that every context is equally likely
         total_ignored_per_context = total_ignored / 64
+        total_ignored_per_substitution = total_ignored / 12
+
+
 
         with torch.no_grad():
             self.log_priors_vc.copy_(torch.log(posterior_totals_vc / (posterior_totals_vc + overall_total)))
@@ -129,15 +133,30 @@ class PosteriorModelPriors(nn.Module):
             self.log_priors_vc[:, Call.GERMLINE] = -9999 if self.no_germline_mode else 0
 
         if self.use_context_dependent_snv_priors:
+            # totals by the basic substitution type eg C -> A instead of TCA -> TAA.  We sum over the flanking reference
+            # base indices
+            totals_ra = omit_diagonal_elements(select_and_sum(snv_context_totals_rrra[0:4, 0:4, 0:4, 0:4], sum=(0, 2)))
+            snv_counts_ra = omit_diagonal_elements(
+                select_and_sum(somatic_snv_totals_rrra[0:4, 0:4, 0:4, 0:4], sum=(0, 2)))
+
+            tot_ra = torch.round(totals_ra + total_ignored_per_substitution).int()
+            snv_ra = torch.round(snv_counts_ra).int()
+
             with pm.Model() as mutation_rate_model:
                 overall_rate = pm.Beta("overall_rate", alpha=1.0, beta=1e6)
-                concentration = pm.Gamma("concentration", alpha=4.0, beta=0.1)
-                concentration_s = pm.math.ones(shape=(12,)) * concentration
-                theta_s = pm.Dirichlet("theta_s", a=concentration_s)
-                rate_s = pm.Deterministic("rate_s", overall_rate * 12 * theta_s)
+                concentration = pm.Gamma("concentration", alpha=4.0, beta=10.0)
+                concentration_ra = pm.math.ones(shape=(12,)) * concentration
+                theta_ra = pm.Dirichlet("theta_ra", a=concentration_ra)
+                rate_ra = pm.Deterministic("rate_ra", overall_rate * 12 * theta_ra)
+                outcome = pm.Binomial("outcome", n=tot_ra.numpy().flatten(), p=rate_ra, observed=snv_ra.numpy().flatten())
 
-                # TODO: left off here; this line is wrong
-                outcome = pm.Binomial("outcome", n=1, p=rate_s, observed=somatic_snv_totals_rrra)
+                idata = pm.sample(1000, tune=2000)
+                #np.mean(idata.posterior["rate_ra"], axis=(0,1))    # axis 0 is the different MCMC samplers, axis 1 is the MCMC step
+
+                rvs = ["rate_ra"]
+                _ = az.plot_trace(idata, var_names=rvs, compact=False)
+
+                t= 99
 
 
 

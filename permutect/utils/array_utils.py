@@ -39,7 +39,7 @@ def downsample_tensor(tensor2d: np.ndarray, new_length: int):
     return tensor2d[perm[:new_length]]
 
 
-def select_and_sum(x: Tensor, select: dict[int, int]={}, sum: Tuple[int]=()):
+def select_and_sum(x: Tensor, select: dict[int, int]={}, sum: Tuple[int,...]=()):
     """
     select specific indices over certain dimensions and sum over others.  For example suppose
     x = [ [[1,2], [3,4]],
@@ -71,3 +71,20 @@ def select_and_sum(x: Tensor, select: dict[int, int]={}, sum: Tuple[int]=()):
         indices[select_dim] = 0
 
     return summed[tuple(indices)]
+
+def omit_diagonal_elements(x: Tensor):
+    """
+    input:  tensor([[ 1,  2,  3,  4],
+                    [ 5,  6,  7,  8],
+                    [ 9, 10, 11, 12],
+                    [13, 14, 15, 16]])
+
+    output:  tensor([[ 2,  3,  4],
+                    [ 5,  7,  8],
+                    [ 9, 10, 12],
+                    [13, 14, 15]])
+    """
+    assert x.dim() == 2
+    n = len(x)
+    assert x.shape[1] == n, "must be square matrix"
+    return x.flatten()[1:].view(n-1, n+1)[:, :-1].reshape(n, n-1)
