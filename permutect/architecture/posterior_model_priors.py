@@ -144,7 +144,7 @@ class PosteriorModelPriors(nn.Module):
 
             with pm.Model() as mutation_rate_model:
                 overall_rate = pm.Beta("overall_rate", alpha=1.0, beta=1e6)
-                concentration = pm.Gamma("concentration", alpha=4.0, beta=10.0)
+                concentration = pm.Gamma("concentration", alpha=4.0, beta=5.0)
 
                 # note: conceptually these are indexed ra, but in practice in PyMC they are flattened 1D arrays
                 concentration_ra = pm.math.ones(shape=(12,)) * concentration
