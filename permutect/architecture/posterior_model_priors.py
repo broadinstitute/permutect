@@ -145,49 +145,25 @@ class PosteriorModelPriors(nn.Module):
             with pm.Model() as mutation_rate_model:
                 overall_rate = pm.Beta("overall_rate", alpha=1.0, beta=1e6)
                 concentration = pm.Gamma("concentration", alpha=4.0, beta=10.0)
+
+                # note: conceptually these are indexed ra, but in practice in PyMC they are flattened 1D arrays
                 concentration_ra = pm.math.ones(shape=(12,)) * concentration
                 theta_ra = pm.Dirichlet("theta_ra", a=concentration_ra)
                 rate_ra = pm.Deterministic("rate_ra", overall_rate * 12 * theta_ra)
                 outcome = pm.Binomial("outcome", n=tot_ra.numpy().flatten(), p=rate_ra, observed=snv_ra.numpy().flatten())
 
                 idata = pm.sample(1000, tune=2000)
-                #np.mean(idata.posterior["rate_ra"], axis=(0,1))    # axis 0 is the different MCMC samplers, axis 1 is the MCMC step
 
-                rvs = ["rate_ra"]
-                _ = az.plot_trace(idata, var_names=rvs, compact=False)
+                mutation_rates_ra_flattened = np.mean(idata.posterior["rate_ra"], axis=(0,1))    # axis 0 is the different MCMC samplers, axis 1 is the MCMC step
+                mutation_rates_ra = torch.from_numpy(mutation_rates_ra_flattened.to_numpy()).view(4,3)
 
-                t= 99
-
-
-
-
-
-
-
-            # shared Beta(alpha, beta) prior on all context-dependent mutation rates.  In the M step for a particular
-            # context these act as pseudocounts.
-            # TODO: should we initialize this better?
-            alpha, beta =  0.00001, 1.0
-            for iteration in range(50):
-                # closed form optimization (since shared beta prior is conjugate) of context-dependent priors
-                # with shared prior parameters alpha, beta held fixed
                 with torch.no_grad():
-                    # here we use the *mean* of the beta distribution on each prior (alpha/(alpha + beta)), not the
-                    # maximum likelihood estimate ((alpha - 1)/(alpha + beta - 2)), because 1) the former is more
-                    # in the spirit of variational Bayes and 2) the latter is undefined when alpha, beta <= 1.
-                    self.somatic_snv_log_priors_rrra.copy_(torch.log((somatic_snv_totals_rrra + alpha) /
-                        (snv_context_totals_rrra + total_ignored_per_context + alpha + beta)))
-
-                    # make a 1D tensor of the different nontrivial log SNV priors and fit alpha, beta to initialize
-                    nontrivial_priors = torch.exp(self.somatic_snv_log_priors_rrra.flatten()[self.NONTRIVIAL_CONTEXTS_rrra.flatten().nonzero()])
-
-                    # initial guess for alpha and beta via method of moments.  This is taken from the scipy.stats.beta.fit code
-                    # which we don't use in its entirety because it throws weird errors
-                    xbar = torch.mean(nontrivial_priors).item()
-                    # variance is E[x^2] - E[x]^2, whereas the numerator below is E[x] - E[x]^2.
-                    fac = max(xbar * (1 - xbar) / (torch.var(nontrivial_priors).item()+0.0000001) - 1, 0.0000001)
-                    alpha, beta = xbar * fac, (1 - xbar) * fac
-
+                    for r in range(4):
+                        for a in range(4):
+                            if r != a:
+                                row = r
+                                col = a if a < r else a - 1 # "unskip" the diagonal
+                                self.somatic_snv_log_priors_rrra[:, r, :, a] = torch.log(mutation_rates_ra[row, col])
         else:   # if not using context-dependent SNV priors
             with torch.no_grad():
                 self.somatic_snv_log_priors_rrra.fill_(self.log_priors_vc[Variation.SNV, Call.SOMATIC])
