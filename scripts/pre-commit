@@ -1,0 +1,24 @@
+#!/bin/bash
+set -euo pipefail
+
+echo "Running pre-commit checks..."
+
+echo "==> Ruff format check"
+pixi run -e default ruff format --check --diff permutect/ || {
+    echo "ERROR: Ruff format check failed. Run 'pixi run ruff format permutect/' to fix."
+    exit 1
+}
+
+echo "==> Ruff lint check"
+pixi run -e default ruff check permutect/ || {
+    echo "ERROR: Ruff lint check failed. Run 'pixi run ruff check --fix permutect/' to fix."
+    exit 1
+}
+
+echo "==> Unit tests"
+pixi run test-unit || {
+    echo "ERROR: Unit tests failed."
+    exit 1
+}
+
+echo "All pre-commit checks passed."
