@@ -192,7 +192,7 @@ def generate_pruned_data_for_all_folds(
         summary_writer = SummaryWriter(tensorboard_dir + "/fold_" + str(pruning_fold))
         report_memory_usage(f"Pruning data from fold {pruning_fold} of {NUM_FOLDS}.")
 
-        totals_l = fold_dataset.totals_slvra.get_marginal((BatchProperty.LABEL,))  # totals by label
+        totals_l = fold_dataset.totals_slvra.get_marginal(BatchProperty.LABEL)  # totals by label
         label_art_frac = totals_l[Label.ARTIFACT].item() / (
             totals_l[Label.ARTIFACT].item() + totals_l[Label.VARIANT].item()
         )
