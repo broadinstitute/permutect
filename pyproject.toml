@@ -12,7 +12,7 @@ authors = [
     { name = "David Benjamin", email = "davidben@broadinstitute.org" },
 ]
 dependencies = [
-    "torch==2.10.0",
+    "torch>=2.10.0,<2.11",
     "tensorboard>=2.8.0",
     "numpy>=1.26.2",
     "tqdm>=4.66.1",
