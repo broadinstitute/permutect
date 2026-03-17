@@ -180,7 +180,9 @@ class PosteriorModelPriors(nn.Module):
                 rate_sc = pm.Deterministic("rate_sc", overall_rate * 12 * theta_s.reshape((12,1)) * 16 * theta_sc)
                 outcome = pm.Binomial("outcome", n=total_sc.cpu().numpy().flatten(), p=rate_sc.flatten(), observed=snv_sc.cpu().numpy().flatten())
 
-                idata = pm.sample(1000, tune=2000)
+                mean_field = pm.fit(method="advi")
+
+                idata = mean_field.sample(1000)
 
                 mutation_rates_sc = np.mean(idata.posterior["rate_sc"], axis=(0,1))    # axis 0 is the different MCMC samplers, axis 1 is the MCMC step
                 mutation_rates_sc = torch.from_numpy(mutation_rates_sc.to_numpy())
