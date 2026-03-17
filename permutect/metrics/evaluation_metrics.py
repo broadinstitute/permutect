@@ -386,6 +386,7 @@ class EmbeddingMetrics:
                 ]
             else:
                 boring_to_keep = np.array([], dtype=int)
+
             idx = sample_indices_for_tensorboard(
                 np.hstack((boring_to_keep, np.array([int(n) for n in interesting])))
             )
@@ -426,6 +427,7 @@ class EmbeddingMetrics:
                 ]
             else:
                 boring_to_keep = np.array([], dtype=int)
+
             idx = sample_indices_for_tensorboard(
                 np.hstack((boring_to_keep, np.array([int(n) for n in interesting])))
             )
