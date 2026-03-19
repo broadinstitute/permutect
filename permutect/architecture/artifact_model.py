@@ -124,9 +124,11 @@ class ArtifactModel(torch.nn.Module):
         num_read_features: int,
         num_info_features: int,
         haplotypes_length: int,
-        device=gpu_if_available(),
+        device=None,
     ):
         super(ArtifactModel, self).__init__()
+        if device is None:
+            device = gpu_if_available()
 
         self._device = device
         self._dtype = DEFAULT_GPU_FLOAT if device != torch.device("cpu") else DEFAULT_CPU_FLOAT
@@ -374,7 +376,9 @@ class ArtifactModel(torch.nn.Module):
         torch.save(self.make_dict_for_saving(artifact_log_priors, artifact_spectra), path)
 
 
-def load_model(path, device: torch.device = gpu_if_available()):
+def load_model(path, device: torch.device = None):
+    if device is None:
+        device = gpu_if_available()
     saved = torch.load(path, map_location=device, weights_only=False)
     hyperparams = saved[constants.HYPERPARAMS_NAME]
     num_read_features = saved[constants.NUM_READ_FEATURES_NAME]
@@ -400,6 +404,7 @@ def load_model(path, device: torch.device = gpu_if_available()):
 
 
 # after training for visualizing clustering etc of base model embeddings
+@torch.no_grad()
 def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWriter):
     # base_model.freeze_all() whoops -- it doesn't have freeze_all
     embedding_metrics = EmbeddingMetrics()
