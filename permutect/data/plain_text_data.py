@@ -260,7 +260,7 @@ def make_read_quantile_transform(read_end_indices, int_array_ve, float_array_ve,
 
     # define ref read ranges for each datum in the normalization set
     normalization_read_start_indices = [
-        read_end_indices[max(idx - 1, 0)] for idx in indices_for_normalization
+        0 if idx == 0 else read_end_indices[idx - 1] for idx in indices_for_normalization
     ]
     normalization_ref_counts = [
         Datum(int_array=int_array_ve[idx], float_array=float_array_ve[idx]).get(Data.REF_COUNT)
