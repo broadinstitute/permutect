@@ -206,8 +206,8 @@ def write_raw_unnormalized_data_to_memory_maps(dataset_files, sources: List[int]
 
     memory_mapped_data = MemoryMappedData.from_generator(
         reads_datum_source=generate_raw_data_from_text_files(dataset_files, sources),
-        estimated_num_data=num_data,
-        estimated_num_reads=num_reads,
+        estimated_num_data=total_num_data,
+        estimated_num_reads=total_num_reads,
     )
     return memory_mapped_data
 
