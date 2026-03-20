@@ -32,6 +32,10 @@ class Epoch(enum.IntEnum):
     VALID = 1
     TEST = 2
 
+class AdaptationStyle(enum.Enum):
+    NONE = "none"
+    
+
 
 class Label(enum.IntEnum):
     ARTIFACT = 0
