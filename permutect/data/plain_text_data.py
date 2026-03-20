@@ -144,9 +144,12 @@ def read_raw_unnormalized_data(
                 read_2d_array(file, alt_tensor_size)[:, 1:] if alt_tensor_size > 0 else None
             )
 
-            # normal_ref_tensor = read_2d_tensor(file, normal_ref_tensor_size)  # not currently used
-            # normal_alt_tensor = read_2d_tensor(file, normal_alt_tensor_size)  # not currently used
-            # round down normal tensors as well
+            # consume normal reads from the file even though we don't use them;
+            # in the future if the model changes to use normal reads, not just
+            # read counts, here is where we would read them with
+            # normal_ref_tensor = read_2d_tensor(file, normal_ref_tensor_size) etc.
+            for _ in range(normal_ref_tensor_size + normal_alt_tensor_size):
+                next(file)
 
             original_depth, original_alt_count, original_normal_depth, original_normal_alt_count = (
                 read_integers(file.readline())
