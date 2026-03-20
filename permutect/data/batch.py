@@ -4,7 +4,6 @@ import copy
 from enum import IntEnum
 from random import randint
 from typing import List
-from typing import Tuple
 
 import numpy as np
 import torch
@@ -388,12 +387,12 @@ class BatchIndexedTensor(Tensor):
             self, values=values, logits=logits
         )
 
-    def get_marginal(self, *properties: Tuple[BatchProperty, ...]) -> Tensor:
+    def get_marginal(self, *properties: BatchProperty) -> Tensor:
         """
         sum over all but one or more batch properties.
         For example self.get_marginal(BatchProperty.SOURCE, BatchProperty.LABEL) yields a (num sources x len(Label)) output
         """
-        property_set = set(*properties)
+        property_set = set(properties)
         num_dims = len(BatchProperty) - (0 if self.has_logits() else 1)
         other_dims = tuple(n for n in range(num_dims) if n not in property_set)
         return torch.sum(self, dim=other_dims)

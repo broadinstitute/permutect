@@ -93,7 +93,7 @@ class ReadsDataset(IterableDataset):
         data_recording_timer.report("Time to record data counts")
 
         self.totals_by_label_l = self.totals_slvra.get_marginal(
-            (BatchProperty.LABEL,)
+            BatchProperty.LABEL
         )  # totals by label
 
     def totals_by_label(self):
@@ -222,7 +222,7 @@ class ReadsDataset(IterableDataset):
 
     def report_totals(self):
         totals_slv = self.totals_slvra.get_marginal(
-            (BatchProperty.SOURCE, BatchProperty.LABEL, BatchProperty.VARIANT_TYPE)
+            BatchProperty.SOURCE, BatchProperty.LABEL, BatchProperty.VARIANT_TYPE
         )
         for source in range(len(totals_slv)):
             print(f"Data counts for source {source}:")
@@ -233,7 +233,7 @@ class ReadsDataset(IterableDataset):
 
     def validate_sources(self) -> int:
         num_sources = self.num_sources()
-        totals_by_source_s = self.totals_slvra.get_marginal((BatchProperty.SOURCE,))
+        totals_by_source_s = self.totals_slvra.get_marginal(BatchProperty.SOURCE)
         if num_sources == 1:
             print("Data come from a single source")
         else:
