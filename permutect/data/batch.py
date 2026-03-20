@@ -65,9 +65,9 @@ class Batch:
 
         # assert that the decompression got the expected tensor shape
         assert self.reads_re.shape[1] == data[0].num_read_features()
-        self._finish_initializiation_from_arrays()
+        self._finish_initialization_from_arrays()
 
-    def _finish_initializiation_from_arrays(self):
+    def _finish_initialization_from_arrays(self):
         self._size = len(self.int_tensor)
         self.lazy_batch_indices = None
 
@@ -173,6 +173,9 @@ class Batch:
     def copy_to(self, device, dtype):
         is_cuda = device.type == "cuda"
         new_batch = copy.copy(self)
+        # lazy_batch_indices are not reset here because BatchIndices are used
+        # exclusively for metrics and are always on CPU, even when batch tensors
+        # are on GPU.
         new_batch.reads_re = self.reads_re.to(device=device, dtype=dtype, non_blocking=is_cuda)
         new_batch.int_tensor = self.int_tensor.to(
             device, non_blocking=is_cuda
@@ -412,7 +415,7 @@ class DownsampledBatch(Batch):
         self.float_tensor = original_batch.float_tensor  # note: no copy -- we never modify it!!!
         self.device = self.int_tensor.device
         self.reads_re = original_batch.reads_re
-        self._finish_initializiation_from_arrays()
+        self._finish_initialization_from_arrays()
         # at this point all member variables needed by the parent class are available
 
         old_ref_counts, old_alt_counts = (
