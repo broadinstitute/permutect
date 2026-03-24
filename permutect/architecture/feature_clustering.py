@@ -119,6 +119,8 @@ class FeatureClustering(nn.Module):
         # nonartifact reads are posited to have a Gaussian in F-dimensional space
         # we shift and rotate so that the Gaussian is zero-centered and has diagonal covariance
         self.read_translation_e = Parameter(torch.rand(self.feature_dim))
+
+        # note: this looks like a Parameter but under the hood it's a Module
         self.read_rotation_ee = orthogonal(
             torch.nn.Linear(self.feature_dim, self.feature_dim, bias=False)
         )

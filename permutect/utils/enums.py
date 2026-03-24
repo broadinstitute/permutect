@@ -41,53 +41,60 @@ class ParameterSet(enum.Enum):
     --parameter_set flag that can be specified multiple times.
     """
 
+    # the member.value of each enum element is a lambda whopse argument is an artifact model, saying how to
+    # extract the iterable of relevant parameters from that artifact model.
+
     # the artifact model's read_embedding parameters
-    INITIAL_READ_EMBEDDING = "INITIAL_READ_EMBEDDING"
+    INITIAL_READ_EMBEDDING = lambda model: model.read_embedding.parameters()
 
     # the artifact model's info_embedding parameters
-    INFO = "INFO"
+    INFO = lambda model: model.info_embedding.parameters()
 
     # the artifact model's haplotypes_cnn parameter
-    HAPLOTYPES = "HAPLOTYPES"
+    HAPLOTYPES = lambda model: model.haplotypes_cnn.parameters()
 
     # the artifact model's ref_alt_reads_encoder parameter
-    GATED_MLP = "GATED_MLP"
+    GATED_MLP = lambda model: model.ref_alt_reads_encoder.parameters()
 
     # the artifact model's reducer parameter
-    REDUCER = "REDUCER"
+    REDUCER = lambda model: model.reducer.parameters()
 
     # the clustering model's global read translation parameter read_translation_e
-    TRANSLATION = "TRANSLATION"
+    TRANSLATION = lambda model: [model.feature_clustering.read_translation_e]
 
-    # the clustering model's global rotation parameter read_rotation_ee -- when unfreezing this or setting its use_gradient = True etc.
-    # be aware that it is parameterized via orthogonal and might need special care
-    ROTATION = "ROTATION"
+    # the clustering model's global rotation parameter read_rotation_ee
+    # It is parameterized via orthogonal and is a torch module, so .parameters() does include the underlying parameters.
+    ROTATION = lambda model: model.feature_clustering.read_rotation_ee.parameters()
 
     # the shape of the presumed Gaussian distribution of nonartifact reads in the clustering model.  Currently
     # the covariance is presumed diagonal, but that could change.  Careful -- the associated parameter nonartifact_stdev_e
     # is handled via parametrize.register_parametrization.
-    NONARTIFACT_COVARIANCE = "NONARTIFACT_COVARIANCE"
+    NONARTIFACT_COVARIANCE = lambda model: [model.feature_clustering.parametrizations.nonartifact_stdev_e.original]
 
     # the directions that artifacts point away from the centroid, associated with parameter artifact_directions_ke.
     # Careful, it is also handled via parametrize.register_parametrization.
-    ARTIFACT_DIRECTIONS = "ARTIFACT_DIRECTIONS"
+    ARTIFACT_DIRECTIONS = lambda model: [model.feature_clustering.parametrizations.artifact_directions_ke.original]
 
     # the exponentially modified Gaussian shape parameters for the 1D distribution of artifact reads along the projection
     # onto the artifact direction vectors.  This is associated with the cluster model parameters mu_k, sigma_k, and
     # lambda_k, of which lambda_k and sigma_k are handled via parametrize.register_parametrization.
-    ARTIFACT_PROJECTIONS = "ARTIFACT_PROJECTIONS"
+    ARTIFACT_PROJECTIONS = lambda model: [
+        model.feature_clustering.mu_k,
+        model.feature_clustering.parametrizations.sigma_k.original,
+        model.feature_clustering.parametrizations.lambda_k.original
+    ]
 
     # the standard deviation (this is necessarily isotropic) of artifact reads in the subspace of dimensions other
     # than the artifact vectors.  Also handled via parametrize.register_parametrization.
-    ARTIFACT_STDEV = "ARTIFACT_STDEV"
+    ARTIFACT_STDEV = lambda model: [model.feature_clustering.parametrizations.artifact_stdev_k.original]
 
     # predefined combinations of different sets for convenience
 
     # all parameters of the clustering model
-    ALL_CLUSTERING = "ALL_CLUSTERING"
+    ALL_CLUSTERING = lambda model: model.feature_clustering.parameters()
 
     # the entire artifact model -- this could be convenient
-    WHOLE_MODEL = "WHOLE_MODEL"
+    WHOLE_MODEL = lambda model: model.parameters()
 
     @staticmethod
     def get_parameter_set(set_str: str):
@@ -96,6 +103,9 @@ class ParameterSet(enum.Enum):
                 return parameter_set
 
         raise ValueError("parameter set type is invalid: %s" % set_str)
+
+    def get_parameters(self, artifact_model):
+        return self.value(artifact_model)
 
 
 class Label(enum.IntEnum):
