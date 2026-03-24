@@ -48,6 +48,7 @@ DATASET_EDIT_TYPE_NAME = "dataset_edit"
 
 TENSORBOARD_DIR_NAME = "tensorboard_dir"
 
+ADAPTATION_PARAMETER_SETS_NAME = "adaptation_parameter_sets"
 INITIAL_LOG_VARIANT_PRIOR_NAME = "initial_log_variant_prior"
 INITIAL_LOG_ARTIFACT_PRIOR_NAME = "initial_log_artifact_prior"
 CONTIGS_TABLE_NAME = "contigs_table"
