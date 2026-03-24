@@ -35,6 +35,8 @@ from permutect.misc_utils import encode_variant
 from permutect.misc_utils import gpu_if_available
 from permutect.misc_utils import overlapping_filters
 from permutect.misc_utils import report_memory_usage
+from permutect.parameters import TrainingParameters
+from permutect.training.model_training import train_artifact_model
 from permutect.utils.allele_utils import find_variant_type
 from permutect.utils.enums import Call, ParameterSet
 from permutect.utils.enums import Epoch
@@ -263,6 +265,20 @@ def make_filtered_vcf(
         segmentation=segmentation,
         normal_segmentation=normal_segmentation,
     )
+
+    if adaptation_parameter_sets:
+        # TODO: num_epochs and epochs per evaluation is magic constant!
+        adaptation_training_params = TrainingParameters(batch_size=batch_size, num_epochs=10)
+        summary_writer = SummaryWriter(tensorboard_dir, filename_suffix="_adaptation")
+        train_artifact_model(
+            model=model,
+            train_dataset=annotated_dataset,
+            valid_dataset=None,
+            training_params=adaptation_training_params,
+            summary_writer=summary_writer,
+            epochs_per_evaluation=5,
+            parameter_sets_to_train=adaptation_parameter_sets,
+        )
 
     posterior_model = PosteriorModel(
         initial_log_variant_prior,

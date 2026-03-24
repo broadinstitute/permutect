@@ -1,3 +1,5 @@
+from typing import List
+
 import torch
 from torch import Tensor
 from torch import nn
@@ -25,7 +27,7 @@ from permutect.misc_utils import unfreeze
 from permutect.parameters import ModelParameters
 from permutect.sets.ragged_sets import RaggedSets
 from permutect.training.balancer import Balancer
-from permutect.utils.enums import Epoch
+from permutect.utils.enums import Epoch, ParameterSet
 from permutect.utils.enums import Variation
 
 MAX_OUTLIER_LOGIT = 10
@@ -216,10 +218,15 @@ class ArtifactModel(torch.nn.Module):
             self.feature_clustering.parametrizations.artifact_stdev_k.original,
         ]
 
-    def set_epoch_type(self, epoch_type: Epoch):
+    def set_epoch_type(self, epoch_type: Epoch, parameter_sets_to_train: List[ParameterSet] = None):
         if epoch_type == Epoch.TRAIN:
-            self.train(True)
-            unfreeze(self.parameters())
+            if parameter_sets_to_train is None:
+                self.train(True)
+                unfreeze(self.parameters())
+            else:
+                freeze(self.parameters())
+                for parameter_set in parameter_sets_to_train:
+                    unfreeze(parameter_set.get_parameters(self))
         else:
             self.train(False)
             freeze(self.parameters())

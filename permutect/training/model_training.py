@@ -2,6 +2,7 @@ import math
 import time
 from collections import defaultdict
 from queue import PriorityQueue
+from typing import List
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -35,6 +36,7 @@ from permutect.training.downsampler import Downsampler
 from permutect.training.loss_recorder import LossRecorder
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
+from permutect.utils.enums import ParameterSet
 from permutect.utils.enums import Variation
 
 WORST_OFFENDERS_QUEUE_SIZE = 100
@@ -43,11 +45,14 @@ WORST_OFFENDERS_QUEUE_SIZE = 100
 def train_artifact_model(
     model: ArtifactModel,
     train_dataset: ReadsDataset,
-    valid_dataset: ReadsDataset,
+    valid_dataset: ReadsDataset | None,
     training_params: TrainingParameters,
     summary_writer: SummaryWriter,
     epochs_per_evaluation: int = None,
+    parameter_sets_to_train: List[ParameterSet] = None,
 ):
+    assert training_params.num_calibration_epochs == 0 or parameter_sets_to_train is None, \
+        "can't do calibration epochs with explicit parameter sets"
     device, dtype = model._device, model._dtype
     balancer = Balancer(num_sources=train_dataset.num_sources(), device=device).to(
         device=device, dtype=dtype
@@ -81,7 +86,7 @@ def train_artifact_model(
     train_loader = train_dataset.make_data_loader(
         training_params.batch_size, is_cuda, training_params.num_workers
     )
-    valid_loader = valid_dataset.make_data_loader(
+    valid_loader = None if valid_dataset is None else valid_dataset.make_data_loader(
         training_params.inference_batch_size, is_cuda, training_params.num_workers
     )
     report_memory_usage("Loaders created, about to train.")
@@ -95,9 +100,10 @@ def train_artifact_model(
             (2 / (1 + math.exp(-0.1 * (epoch - 1)))) - 1
         )
 
-        for epoch_type in [Epoch.TRAIN, Epoch.VALID]:
+        epoch_types = [Epoch.TRAIN] + ([] if valid_loader is None else [Epoch.VALID])
+        for epoch_type in epoch_types:
             loss_recorder = LossRecorder(device, num_sources)
-            model.set_epoch_type(epoch_type)
+            model.set_epoch_type(epoch_type, parameter_sets_to_train)
             if is_calibration_epoch and epoch_type == Epoch.TRAIN:
                 freeze(model.parameters())
                 unfreeze(
