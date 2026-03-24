@@ -26,6 +26,7 @@ def test_filtering_on_dream1_chr20():
     setattr(filtering_args, constants.HET_BETA_NAME, 10)
     setattr(filtering_args, constants.SPECTRUM_LEARNING_RATE_NAME, 0.001)
     setattr(filtering_args, constants.INITIAL_LOG_VARIANT_PRIOR_NAME, -10.0)
+    setattr(filtering_args, constants.ADAPTATION_PARAMETER_SETS_NAME, None)
     setattr(filtering_args, constants.INITIAL_LOG_ARTIFACT_PRIOR_NAME, -10.0)
     setattr(filtering_args, constants.GENOMIC_SPAN_NAME, 60000000)
     setattr(filtering_args, constants.MAF_SEGMENTS_NAME, None)
