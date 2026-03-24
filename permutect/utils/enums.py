@@ -1,4 +1,5 @@
 import enum
+from functools import partial
 
 
 class Variation(enum.IntEnum):
@@ -43,61 +44,64 @@ class ParameterSet(enum.Enum):
 
     # the member.value of each enum element is a lambda whopse argument is an artifact model, saying how to
     # extract the iterable of relevant parameters from that artifact model.
+    # Wrapping the lambdas in functools.partial is necessary; otherwise members are treated as class functions,
+    # not elements of the enum
 
     # the artifact model's read_embedding parameters
-    INITIAL_READ_EMBEDDING = lambda model: model.read_embedding.parameters()
+    INITIAL_READ_EMBEDDING = partial(lambda model: model.read_embedding.parameters())
 
     # the artifact model's info_embedding parameters
-    INFO = lambda model: model.info_embedding.parameters()
+    INFO = partial(lambda model: model.info_embedding.parameters())
 
     # the artifact model's haplotypes_cnn parameter
-    HAPLOTYPES = lambda model: model.haplotypes_cnn.parameters()
+    HAPLOTYPES = partial(lambda model: model.haplotypes_cnn.parameters())
 
     # the artifact model's ref_alt_reads_encoder parameter
-    GATED_MLP = lambda model: model.ref_alt_reads_encoder.parameters()
+    GATED_MLP = partial(lambda model: model.ref_alt_reads_encoder.parameters())
 
     # the artifact model's reducer parameter
-    REDUCER = lambda model: model.reducer.parameters()
+    REDUCER = partial(lambda model: model.reducer.parameters())
 
     # the clustering model's global read translation parameter read_translation_e
-    TRANSLATION = lambda model: [model.feature_clustering.read_translation_e]
+    TRANSLATION = partial(lambda model: [model.feature_clustering.read_translation_e])
 
     # the clustering model's global rotation parameter read_rotation_ee
     # It is parameterized via orthogonal and is a torch module, so .parameters() does include the underlying parameters.
-    ROTATION = lambda model: model.feature_clustering.read_rotation_ee.parameters()
+    ROTATION = partial(lambda model: model.feature_clustering.read_rotation_ee.parameters())
 
     # the shape of the presumed Gaussian distribution of nonartifact reads in the clustering model.  Currently
     # the covariance is presumed diagonal, but that could change.  Careful -- the associated parameter nonartifact_stdev_e
     # is handled via parametrize.register_parametrization.
-    NONARTIFACT_COVARIANCE = lambda model: [model.feature_clustering.parametrizations.nonartifact_stdev_e.original]
+    NONARTIFACT_COVARIANCE = partial(lambda model: [model.feature_clustering.parametrizations.nonartifact_stdev_e.original])
 
     # the directions that artifacts point away from the centroid, associated with parameter artifact_directions_ke.
     # Careful, it is also handled via parametrize.register_parametrization.
-    ARTIFACT_DIRECTIONS = lambda model: [model.feature_clustering.parametrizations.artifact_directions_ke.original]
+    ARTIFACT_DIRECTIONS = partial(lambda model: [model.feature_clustering.parametrizations.artifact_directions_ke.original])
 
     # the exponentially modified Gaussian shape parameters for the 1D distribution of artifact reads along the projection
     # onto the artifact direction vectors.  This is associated with the cluster model parameters mu_k, sigma_k, and
     # lambda_k, of which lambda_k and sigma_k are handled via parametrize.register_parametrization.
-    ARTIFACT_PROJECTIONS = lambda model: [
+    ARTIFACT_PROJECTIONS = partial(lambda model: [
         model.feature_clustering.mu_k,
         model.feature_clustering.parametrizations.sigma_k.original,
         model.feature_clustering.parametrizations.lambda_k.original
-    ]
+    ])
 
     # the standard deviation (this is necessarily isotropic) of artifact reads in the subspace of dimensions other
     # than the artifact vectors.  Also handled via parametrize.register_parametrization.
-    ARTIFACT_STDEV = lambda model: [model.feature_clustering.parametrizations.artifact_stdev_k.original]
+    ARTIFACT_STDEV = partial(lambda model: [model.feature_clustering.parametrizations.artifact_stdev_k.original])
 
     # predefined combinations of different sets for convenience
 
     # all parameters of the clustering model
-    ALL_CLUSTERING = lambda model: model.feature_clustering.parameters()
+    ALL_CLUSTERING = partial(lambda model: model.feature_clustering.parameters())
 
     # the entire artifact model -- this could be convenient
-    WHOLE_MODEL = lambda model: model.parameters()
+    WHOLE_MODEL = partial(lambda model: model.parameters())
 
     @staticmethod
     def get_parameter_set(set_str: str):
+        j = 2
         for parameter_set in ParameterSet:
             if set_str == parameter_set.name:
                 return parameter_set
