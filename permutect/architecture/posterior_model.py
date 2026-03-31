@@ -129,7 +129,7 @@ class PosteriorModel(torch.nn.Module):
         # we begin learning with context-dependent priors turned off
         self.priors.disable_context_dependent_snv_priors()
         for epoch in trange(1, num_iterations + 1, desc="AF spectra epoch"):
-            use_context_dependence = (epoch > (num_iterations / 2))
+            use_context_dependence = epoch > (num_iterations / 2)
             if use_context_dependence:
                 self.priors.enable_context_dependent_snv_priors()
             epoch_loss = StreamingAverage()
@@ -138,8 +138,12 @@ class PosteriorModel(torch.nn.Module):
             # E-step totals indexed by variant type and call type
             # for somatic SNVs, totals indexed by 3-base context and substitution alt base
             posterior_totals_tc = torch.zeros((len(Variation), len(Call)), device=self._device)
-            somatic_snv_totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra(device=self._device)
-            snv_context_totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra(device=self._device)
+            somatic_snv_totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra(
+                device=self._device
+            )
+            snv_context_totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra(
+                device=self._device
+            )
 
             batch: Batch
             for batch in tqdm(
@@ -169,7 +173,10 @@ class PosteriorModel(torch.nn.Module):
             # iteration over posterior dataloader finished
 
             self.priors.update_priors_m_step(
-                posterior_totals_tc, somatic_snv_totals_rrra, snv_context_totals_rrra, ignored_to_non_ignored_ratio
+                posterior_totals_tc,
+                somatic_snv_totals_rrra,
+                snv_context_totals_rrra,
+                ignored_to_non_ignored_ratio,
             )
 
             if summary_writer is not None:

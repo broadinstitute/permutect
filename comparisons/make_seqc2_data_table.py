@@ -5,7 +5,9 @@ pair_set_membership = "pair_set_membership.tsv"
 participant = "seqc2"
 
 high_confidence_bedfile = "gs://broad-dsp-david-benjamin/seqc2/High-Confidence_Regions_v1.2.bed"
-high_confidence_exome_bedfile = "gs://broad-dsp-david-benjamin/seqc2/High-Confidence_Exonic_Regions_v1.2.bed"
+high_confidence_exome_bedfile = (
+    "gs://broad-dsp-david-benjamin/seqc2/High-Confidence_Exonic_Regions_v1.2.bed"
+)
 truth_vcf = "gs://broad-dsp-david-benjamin/seqc2/high-confidence_SNV_INDEL_in_HC_regions_v1.2.1.vcf"
 truth_vcf_idx = truth_vcf + ".idx"
 
@@ -21,10 +23,17 @@ wgs_novaseq_bucket = seqc2_bucket + "/wgs/novaseq"
 wes_hiseq_bucket = seqc2_bucket + "/wes/hiseq"
 wes_novaseq_bucket = seqc2_bucket + "/wes/novaseq"
 
-with open(sample_table, 'w') as sample_file, open(pair_table, 'w') as pair_file, open(pair_set_entity, 'w') as entity_file, open(pair_set_membership, 'w') as membership_file:
+with (
+    open(sample_table, "w") as sample_file,
+    open(pair_table, "w") as pair_file,
+    open(pair_set_entity, "w") as entity_file,
+    open(pair_set_membership, "w") as membership_file,
+):
     # write the headers
-    sample_file.write('entity:sample_id\tbam\tbai\tevaluation_truth\tevaluation_truth_idx\tparticipant\n')
-    pair_file.write('entity:pair_id\tcalling_intervals\tcase_sample\tcontrol_sample\tparticipant\n')
+    sample_file.write(
+        "entity:sample_id\tbam\tbai\tevaluation_truth\tevaluation_truth_idx\tparticipant\n"
+    )
+    pair_file.write("entity:pair_id\tcalling_intervals\tcase_sample\tcontrol_sample\tparticipant\n")
 
     entity_file.write("entity:pair_set_id\n")
     membership_file.write("membership:pair_set_id\tpair\n")
@@ -35,7 +44,9 @@ with open(sample_table, 'w') as sample_file, open(pair_table, 'w') as pair_file,
             pair_set_id = f"seqc2_{target}_{platform}"
             entity_file.write(f"{pair_set_id}\n")
 
-            high_conf_bed = high_confidence_exome_bedfile if target == "wes" else high_confidence_bedfile
+            high_conf_bed = (
+                high_confidence_exome_bedfile if target == "wes" else high_confidence_bedfile
+            )
 
             bucket = f"{seqc2_bucket}/{target}/{platform}"
             for n in (1, 2, 3):
@@ -49,9 +60,13 @@ with open(sample_table, 'w') as sample_file, open(pair_table, 'w') as pair_file,
                 pair_id = f"{target_string}_{platform_string}_TN_{n}"
                 membership_file.write(f"{pair_set_id}\t{pair_id}\n")
 
-                sample_file.write(f"{tumor_id}\t{tumor_bam}\t{tumor_bai}\t{truth_vcf}\t{truth_vcf_idx}\t{participant}\n")
+                sample_file.write(
+                    f"{tumor_id}\t{tumor_bam}\t{tumor_bai}\t{truth_vcf}\t{truth_vcf_idx}\t{participant}\n"
+                )
                 sample_file.write(f"{normal_id}\t{normal_bam}\t{normal_bai}\t\t\t{participant}\n")
-                pair_file.write(f"{pair_id}\t{high_conf_bed}\t{tumor_id}\t{normal_id}\t{participant}\n")
+                pair_file.write(
+                    f"{pair_id}\t{high_conf_bed}\t{tumor_id}\t{normal_id}\t{participant}\n"
+                )
 
     # now the titration series
     for coverage, suffix in [(30, ".s0.3"), (50, ".s0.5"), (100, "")]:
@@ -65,18 +80,24 @@ with open(sample_table, 'w') as sample_file, open(pair_table, 'w') as pair_file,
             bam = f"{bucket}/SPP_GT_{tumor_normal_ratio}_1.bwa.dedup{suffix}.bam"
             bai = bam + ".bai"
             sample_id = f"SPP_GT_{coverage}x_{tumor_normal_ratio}_1"
-            sample_file.write(f"{sample_id}\t{bam}\t{bai}\t{truth_vcf}\t{truth_vcf_idx}\t{participant}\n")
+            sample_file.write(
+                f"{sample_id}\t{bam}\t{bai}\t{truth_vcf}\t{truth_vcf_idx}\t{participant}\n"
+            )
 
-            if tumor_normal_ratio == "0-1":     # this is the pure normal
+            if tumor_normal_ratio == "0-1":  # this is the pure normal
                 normal_sample_id = sample_id
-            else:           # form a pair with the normal
+            else:  # form a pair with the normal
                 pair_id = sample_id + "_TN"
-                pair_file.write(f"{pair_id}\t{high_confidence_bedfile}\t{sample_id}\t{normal_sample_id}\t{participant}\n")
+                pair_file.write(
+                    f"{pair_id}\t{high_confidence_bedfile}\t{sample_id}\t{normal_sample_id}\t{participant}\n"
+                )
                 membership_file.write(f"{pair_set_id}\t{pair_id}\n")
 
     # first do the 2x2 combinations of WGS/WES and hiseq/novaseq
     for target, target_string in [("wgs", "FFG"), ("wes", "FFX")]:
-        high_conf_bed = high_confidence_exome_bedfile if target == "wes" else high_confidence_bedfile
+        high_conf_bed = (
+            high_confidence_exome_bedfile if target == "wes" else high_confidence_bedfile
+        )
 
         bucket = f"{seqc2_bucket}/ffpe/{target}"
 
@@ -97,8 +118,8 @@ with open(sample_table, 'w') as sample_file, open(pair_table, 'w') as pair_file,
             pair_id = f"{target_string}_IL_TN_{time}h"
             membership_file.write(f"{pair_set_id}\t{pair_id}\n")
 
-            sample_file.write(f"{tumor_id}\t{tumor_bam}\t{tumor_bai}\t{truth_vcf}\t{truth_vcf_idx}\t{participant}\n")
+            sample_file.write(
+                f"{tumor_id}\t{tumor_bam}\t{tumor_bai}\t{truth_vcf}\t{truth_vcf_idx}\t{participant}\n"
+            )
             sample_file.write(f"{normal_id}\t{normal_bam}\t{normal_bai}\t\t\t{participant}\n")
             pair_file.write(f"{pair_id}\t{high_conf_bed}\t{tumor_id}\t{normal_id}\t{participant}\n")
-
-

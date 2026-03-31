@@ -6,7 +6,7 @@ from torch import IntTensor
 from torch import Tensor
 
 
-def flattened_indices(shape: Tuple[int,...], idx: Tuple[IntTensor,...]):
+def flattened_indices(shape: Tuple[int, ...], idx: Tuple[IntTensor, ...]):
     dim = len(shape)
     if dim < 4:
         if dim == 2:
@@ -28,13 +28,13 @@ def flattened_indices(shape: Tuple[int,...], idx: Tuple[IntTensor,...]):
         raise Exception("Not implemented yet.")
 
 
-def index_tensor(tens: Tensor, idx: Tuple[IntTensor,...]) -> Tensor:
+def index_tensor(tens: Tensor, idx: Tuple[IntTensor, ...]) -> Tensor:
     return tens.view(-1)[flattened_indices(tens.shape, idx)]
 
 
 # add in-place
 # note that the flattened view(-1) shares memory with the original tensor
-def add_at_index(tens: Tensor, idx: Tuple[IntTensor,...], values: Tensor) -> Tensor:
+def add_at_index(tens: Tensor, idx: Tuple[IntTensor, ...], values: Tensor) -> Tensor:
     return tens.view(-1).index_add_(dim=0, index=flattened_indices(tens.shape, idx), source=values)
 
 
@@ -45,7 +45,7 @@ def downsample_tensor(tensor2d: np.ndarray, new_length: int):
     return tensor2d[perm[:new_length]]
 
 
-def select_and_sum(x: Tensor, select: dict[int, int] = {}, sum: Tuple[int,...] = ()):
+def select_and_sum(x: Tensor, select: dict[int, int] = {}, sum: Tuple[int, ...] = ()):
     """
     select specific indices over certain dimensions and sum over others.  For example suppose
     x = [ [[1,2], [3,4]],
