@@ -83,12 +83,10 @@ class PosteriorModel(torch.nn.Module):
         of length batch_size.
         :return:
         """
-        var_types_b = batch.get(Data.VARIANT_TYPE)
-
         # All log likelihood/relative posterior tensors below have shape batch.size() x len(CallType)
         # spectra tensors contain the likelihood that these *particular* reads (that is, not just the read count) are alt
         # normal log likelihoods contain everything going on in the matched normal sample
-        log_priors_bc = self.priors.log_priors_bc(var_types_b, batch.get(Data.ALLELE_FREQUENCY))
+        log_priors_bc = self.priors.log_priors_bc(batch)
         spectra_log_lks_bc, normal_log_lks_bc = self.spectra.spectra_log_likelihoods_bc(batch)
 
         log_posteriors_bc = log_priors_bc + spectra_log_lks_bc + normal_log_lks_bc
@@ -123,14 +121,29 @@ class PosteriorModel(torch.nn.Module):
         sufficient evidence was found to emit test data.  Without this parameter (i.e. if it were set to zero) we would
         underestimate the frequency of sequencing error, hence overestimate the prior probability of variation.
         """
+        # spectra parameters are learned via batched stochastic gradient descent during the e step of each epoch.
+        # the loss is the negative log evidence.  Prior parameters are adjusted in the M steo.
         spectra_params = chain(self.spectra.parameters())
         optimizer = torch.optim.Adam(spectra_params, lr=learning_rate)
 
+        # we begin learning with context-dependent priors turned off
+        self.priors.disable_context_dependent_snv_priors()
         for epoch in trange(1, num_iterations + 1, desc="AF spectra epoch"):
+            use_context_dependence = epoch > (num_iterations / 2)
+            if use_context_dependence:
+                self.priors.enable_context_dependent_snv_priors()
             epoch_loss = StreamingAverage()
 
             # data for M step
+            # E-step totals indexed by variant type and call type
+            # for somatic SNVs, totals indexed by 3-base context and substitution alt base
             posterior_totals_tc = torch.zeros((len(Variation), len(Call)), device=self._device)
+            somatic_snv_totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra(
+                device=self._device
+            )
+            snv_context_totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra(
+                device=self._device
+            )
 
             batch: Batch
             for batch in tqdm(
@@ -141,6 +154,11 @@ class PosteriorModel(torch.nn.Module):
 
                 # the next line performs "for b in batch: posterior_total_tc[var_types[b],:] += posteriors_bc[b, :]"
                 posteriors_bc = torch.softmax(relative_posteriors, dim=-1).detach()
+
+                # collect the somatic SNV E step counts for subsequent M step
+                PosteriorModelPriors.increment_somatic_snv_context_totals_rrra(
+                    somatic_snv_totals_rrra, snv_context_totals_rrra, batch, posteriors_bc
+                )
                 posterior_totals_tc.index_add_(
                     dim=0, index=batch.get(Data.VARIANT_TYPE), source=posteriors_bc
                 )
@@ -154,9 +172,12 @@ class PosteriorModel(torch.nn.Module):
                 epoch_loss.record_sum(batch.size() * loss.detach().item(), batch.size())
             # iteration over posterior dataloader finished
 
-            self.priors.update_priors_m_step(posterior_totals_tc, ignored_to_non_ignored_ratio)
-            # TODO: fix the M step for the new somatic spectrum?
-            # self.somatic_spectrum.update_m_step(posteriors_nc[:, Call.SOMATIC], alt_counts_n, depths_n)
+            self.priors.update_priors_m_step(
+                posterior_totals_tc,
+                somatic_snv_totals_rrra,
+                snv_context_totals_rrra,
+                ignored_to_non_ignored_ratio,
+            )
 
             if summary_writer is not None:
                 summary_writer.add_scalar("spectrum negative log evidence", epoch_loss.get(), epoch)
@@ -178,8 +199,10 @@ class PosteriorModel(torch.nn.Module):
                 var_spectra_axs.set_title("Variant AF Spectrum")
                 summary_writer.add_figure("Variant AF Spectra", var_spectra_fig, epoch)
 
-                prior_fig, prior_ax = self.priors.plot_log_priors()
+                prior_fig, prior_ax = self.priors.make_priors_bar_plot(snv_context_totals_rrra)
+                context_prior_fig, context_prior_ax = self.priors.make_context_priors_plot()
                 summary_writer.add_figure("log priors", prior_fig, epoch)
+                summary_writer.add_figure("log SNV priors", context_prior_fig, epoch)
 
                 # normal artifact joint tumor-normal spectra
                 # na_fig, na_axes = plt.subplots(1, len(Variation), sharex='all', sharey='all', squeeze=False)

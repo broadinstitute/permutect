@@ -281,7 +281,6 @@ def evaluate_model(
     collect_embeddings: bool = False,
     report_worst: bool = False,
 ):
-
     # self.freeze_all()
     evaluation_metrics, worst_offenders_by_label_and_alt_count = collect_evaluation_data(
         model, num_sources, balancer, downsampler, train_loader, valid_loader, report_worst
