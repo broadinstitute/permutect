@@ -1,11 +1,14 @@
 import tempfile
 from argparse import Namespace
 
+import torch
+
 from permutect import constants
 from permutect.test.test_file_names import *
 from permutect.tools import filter_variants
 
 
+torch.autograd.set_detect_anomaly(True)
 def test_filtering_on_dream1_chr20():
     # NOTE: EXPERIMENTAL_MODEL does not currently exist in the repo, so this
     # test will fail with FileNotFoundError until a compatible model is committed.

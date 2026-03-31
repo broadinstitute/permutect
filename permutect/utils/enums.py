@@ -101,7 +101,6 @@ class ParameterSet(enum.Enum):
 
     @staticmethod
     def get_parameter_set(set_str: str):
-        j = 2
         for parameter_set in ParameterSet:
             if set_str == parameter_set.name:
                 return parameter_set
