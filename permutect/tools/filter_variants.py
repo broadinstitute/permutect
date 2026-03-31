@@ -18,7 +18,6 @@ from permutect.data.count_binning import MAX_ALT_COUNT
 from permutect.data.count_binning import alt_count_bin_index
 from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
-from permutect.data.datum import INTEGER_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.data.memory_mapped_data import MemoryMappedData
