@@ -27,3 +27,4 @@ gpu = { features = ["gpu"], solve-group = "gpu" }
 [tasks]
 test = "pytest permutect/test -x -v"
 test-unit = "pytest permutect/test/utils permutect/test/architecture permutect/test/data -x -v"
+install-hooks = "ln -sf ../../scripts/pre-commit .git/hooks/pre-commit && echo 'Pre-commit hook installed.'"
