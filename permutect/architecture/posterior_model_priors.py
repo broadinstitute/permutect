@@ -155,7 +155,7 @@ class PosteriorModelPriors(nn.Module):
             total_sc = torch.round(convert_rrra_tensor_to_sc(snv_context_totals_rrra) + total_ignored_per_context).int()
             snv_sc = torch.round(convert_rrra_tensor_to_sc(somatic_snv_totals_rrra)).int()
 
-            with pm.Model() as mutation_rate_model:
+            with pm.Model() as _mutation_rate_model:
                 # NOTE: indices here are i) 's' for the 4x3=12 different substitutions, flattened so that
                 # A->C = 0, A->G = 1. . .T->G = 11 and ii) 'c' for 4x4=16 different two bases of flanking
                 # context, also flattened into one dimension rather than two.
@@ -178,7 +178,7 @@ class PosteriorModelPriors(nn.Module):
                 theta_sc = pm.Dirichlet("theta_sc", a=concentration_c, shape=(12,16))
 
                 rate_sc = pm.Deterministic("rate_sc", overall_rate * 12 * theta_s.reshape((12,1)) * 16 * theta_sc)
-                outcome = pm.Binomial("outcome", n=total_sc.cpu().numpy().flatten(), p=rate_sc.flatten(), observed=snv_sc.cpu().numpy().flatten())
+                _outcome = pm.Binomial("outcome", n=total_sc.cpu().numpy().flatten(), p=rate_sc.flatten(), observed=snv_sc.cpu().numpy().flatten())
 
                 mean_field = pm.fit(method="advi")
 
