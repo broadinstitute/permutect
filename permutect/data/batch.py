@@ -346,10 +346,9 @@ class BatchIndexedTensor(Tensor):
             else:
                 raise Exception("Datum source doesn't fit.")
         # no logits here
-        ref_idx, alt_idx = (
-            ref_count_bin_index(datum.get(Data.REF_COUNT)),
-            alt_count_bin_index(datum.get(Data.ALT_COUNT)),
-        )
+        ref_idx = ref_count_bin_index(datum.get(Data.REF_COUNT))
+        alt_idx = alt_count_bin_index(datum.get(Data.ALT_COUNT))
+
         self[source, datum.get(Data.LABEL), datum.get(Data.VARIANT_TYPE), ref_idx, alt_idx] += value
 
     # TODO: move to a metrics subclass -- this class should really only be for indexing, not recording
