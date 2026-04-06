@@ -12,6 +12,8 @@ from torch.nn.utils.parametrizations import orthogonal
 
 from permutect.architecture.parameterizations import BoundedNumber
 from permutect.architecture.parameterizations import UnitVector
+from permutect.data.batch import Batch
+from permutect.data.datum import Data
 from permutect.sets.ragged_sets import RaggedSets
 
 LOG2 = torch.log(torch.tensor(2.0))
@@ -159,14 +161,7 @@ class FeatureClustering(nn.Module):
             lambda reads_re: self.read_rotation_ee(reads_re + self.read_translation_e[None, :])
         )
 
-    def weighted_log_likelihoods_bk(
-        self,
-        ref_bre: RaggedSets,
-        alt_bre: RaggedSets,
-        ref_counts_b: IntTensor,
-        alt_counts_b: IntTensor,
-        var_types_b: IntTensor,
-    ):
+    def weighted_log_likelihoods_bk(self, alt_bre: RaggedSets, alt_counts_b: IntTensor):
         # recenter reads so that Gaussian's centroid is the origin
         shifted_alt_bre = self.transform_reads(alt_bre)
         alt_re = shifted_alt_bre.flattened_tensor_nf
@@ -222,24 +217,11 @@ class FeatureClustering(nn.Module):
         # the first column is nonartifact; next is outlier; other columns are different artifact clusters
         return torch.cat((nonartifact_log_lks_bk, outlier_log_lks_bk, artifact_log_lks_bk), dim=-1)
 
-    def calculate_logits(
-        self,
-        ref_bre: RaggedSets,
-        alt_bre: RaggedSets,
-        ref_counts_b: IntTensor,
-        alt_counts_b: IntTensor,
-        var_types_b: IntTensor,
-    ):
+    def calculate_logits(self, alt_bre: RaggedSets, batch: Batch):
         # order is 0) nonartifact; 1) outlier; 2 and up) artifact clusters
-        log_lks_bk = self.weighted_log_likelihoods_bk(
-            ref_bre=ref_bre,
-            alt_bre=alt_bre,
-            ref_counts_b=ref_counts_b,
-            alt_counts_b=alt_counts_b,
-            var_types_b=var_types_b,
-        )
+        log_lks_bk = self.weighted_log_likelihoods_bk(alt_bre=alt_bre, alt_counts_b=batch.get(Data.ALT_COUNT))
 
-        # outliers are simply ignored for classification.  They are onky used for the unsupervised loss.
+        # outliers are simply ignored for classification.  They are only used for the unsupervised loss.
         # TODO: perhaps outliers should count as artifacts?
         artifact_log_lk_b = torch.logsumexp(log_lks_bk[:, 2:], dim=-1)
         non_artifact_log_lk_b = log_lks_bk[:, 0]

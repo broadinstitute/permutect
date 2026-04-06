@@ -277,13 +277,7 @@ class ArtifactModel(torch.nn.Module):
 
     def compute_batch_output(self, batch: Batch, balancer: Balancer = None):
         ref_bre, alt_bre, _ = self.calculate_features(batch)  # ragged sets of reduced and transformed reads
-        logits_b, logits_bk = self.feature_clustering.calculate_logits(
-            ref_bre,
-            alt_bre,
-            ref_counts_b=batch.get(Data.REF_COUNT),
-            alt_counts_b=batch.get(Data.ALT_COUNT),
-            var_types_b=batch.get(Data.VARIANT_TYPE),
-        )
+        logits_b, logits_bk = self.feature_clustering.calculate_logits(alt_bre, batch)
 
         # feature clustering shifts reads to be centered around the origin
         recentered_alt_bre = self.feature_clustering.transform_reads(alt_bre)
