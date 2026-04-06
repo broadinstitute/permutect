@@ -51,7 +51,7 @@ def train_artifact_model(
     valid_dataset: ReadsDataset,
     training_params: TrainingParameters,
     summary_writer: SummaryWriter,
-    epochs_per_evaluation: int = None,
+    epochs_per_evaluation: int = 5,
 ):
     device, dtype = model._device, model._dtype
     balancer = Balancer(num_sources=train_dataset.num_sources(), device=device).to(device=device, dtype=dtype)
@@ -109,7 +109,7 @@ def train_artifact_model(
 
 
 def train_one_epoch(balancer: Balancer, checkpoint: Checkpoint, device: device, downsampler: Downsampler,
-                    epoch: int, epoch_type: Epoch, epochs_per_evaluation: int | None, is_calibration_epoch: bool,
+                    epoch: int, epoch_type: Epoch, epochs_per_evaluation: int, is_calibration_epoch: bool,
                     last_epoch: int, model: ArtifactModel, num_sources: int, summary_writer: SummaryWriter,
                     train_loader: DataLoader[Any], train_optimizer: AdamW, train_scheduler: ReduceLROnPlateau,
                     valid_loader: DataLoader[Any]):
@@ -145,9 +145,7 @@ def train_one_epoch(balancer: Balancer, checkpoint: Checkpoint, device: device, 
         ).item()
         train_scheduler.step(mean_loss)
 
-    generate_plots = (epochs_per_evaluation is not None and epoch % epochs_per_evaluation == 0) or (
-            epoch == last_epoch
-    )
+    generate_plots = epoch % epochs_per_evaluation == 0 or epoch == last_epoch
     loss_recorder.output_results(epoch_type, epoch, summary_writer, generate_plots)
 
     if generate_plots:
