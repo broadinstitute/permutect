@@ -288,23 +288,17 @@ class ArtifactModel(torch.nn.Module):
         # feature clustering shifts reads to be centered around the origin
         recentered_alt_bre = self.feature_clustering.transform_reads(alt_bre)
         recentered_ref_bre = self.feature_clustering.transform_reads(ref_bre)
-        result = (
-            logits_b,
-            logits_bk,
-            recentered_alt_bre.means_over_sets(),
-            recentered_ref_bre.means_over_sets(),
-        )
-        calibrated_logits_b, calibrated_logits_bk, alt_means_be, ref_means_be = result
+
         weights_b, source_weights_b = (
-            (torch.ones_like(calibrated_logits_b), torch.ones_like(calibrated_logits_b))
+            (torch.ones_like(logits_b), torch.ones_like(logits_b))
             if balancer is None
             else balancer.process_batch_and_compute_weights(batch)
         )
         return BatchOutput(
-            features_be=alt_means_be,
-            ref_features_be=ref_means_be,
-            logits_b=calibrated_logits_b,
-            logits_bk=calibrated_logits_bk,
+            features_be=recentered_alt_bre.means_over_sets(),
+            ref_features_be=recentered_ref_bre.means_over_sets(),
+            logits_b=logits_b,
+            logits_bk=logits_bk,
             weights=weights_b,
             source_weights=weights_b * source_weights_b,
         )
