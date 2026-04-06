@@ -14,13 +14,10 @@ def flattened_indices(shape: Tuple[int, ...], idx: Tuple[IntTensor, ...]):
         elif dim == 3:
             return idx[2] + shape[2] * (idx[1] + shape[1] * idx[0])
     elif dim == 5:
-        return idx[4] + shape[4] * (
-            idx[3] + shape[3] * (idx[2] + shape[2] * (idx[1] + shape[1] * idx[0]))
-        )
+        return idx[4] + shape[4] * (idx[3] + shape[3] * (idx[2] + shape[2] * (idx[1] + shape[1] * idx[0])))
     elif dim == 6:
         return idx[5] + shape[5] * (
-            idx[4]
-            + shape[4] * (idx[3] + shape[3] * (idx[2] + shape[2] * (idx[1] + shape[1] * idx[0])))
+            idx[4] + shape[4] * (idx[3] + shape[3] * (idx[2] + shape[2] * (idx[1] + shape[1] * idx[0])))
         )
     elif dim == 4:
         return idx[3] + shape[3] * (idx[2] + shape[2] * (idx[1] + shape[1] * idx[0]))

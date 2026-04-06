@@ -108,12 +108,8 @@ class Datum:
         assert float_array.ndim == 1 and len(float_array) >= Data.NUM_SCALAR_FLOAT_ELEMENTS
         self.float_array: np.ndarray = np.ndarray.astype(float_array, FLOAT_DTYPE)
 
-        self.reads_re: np.ndarray = (
-            np.zeros((0, 0), dtype=RAW_READS_ARRAY_DTYPE) if reads_re is None else reads_re
-        )
-        assert self.reads_re.dtype == (
-            COMPRESSED_READS_ARRAY_DTYPE if compressed_reads else RAW_READS_ARRAY_DTYPE
-        )
+        self.reads_re: np.ndarray = np.zeros((0, 0), dtype=RAW_READS_ARRAY_DTYPE) if reads_re is None else reads_re
+        assert self.reads_re.dtype == (COMPRESSED_READS_ARRAY_DTYPE if compressed_reads else RAW_READS_ARRAY_DTYPE)
 
     # this is what we get from GATK plain text data.  It must be normalized and processed before becoming the
     # data used by Permutect
@@ -152,21 +148,15 @@ class Datum:
         haplotypes = np.hstack((ref_hap, alt_hap))
 
         haplotypes_length, info_length = len(haplotypes), len(info_array)
-        zeroed_int_array = np.zeros(
-            Data.NUM_SCALAR_INT_ELEMENTS + haplotypes_length, dtype=INTEGER_DTYPE
-        )
-        zeroed_float_array = np.zeros(
-            Data.NUM_SCALAR_FLOAT_ELEMENTS + info_length, dtype=FLOAT_DTYPE
-        )
+        zeroed_int_array = np.zeros(Data.NUM_SCALAR_INT_ELEMENTS + haplotypes_length, dtype=INTEGER_DTYPE)
+        zeroed_float_array = np.zeros(Data.NUM_SCALAR_FLOAT_ELEMENTS + info_length, dtype=FLOAT_DTYPE)
         reads_array_re = (
             np.vstack([ref_reads_array_re, alt_reads_array_re])
             if ref_reads_array_re is not None
             else alt_reads_array_re
         )
 
-        result = cls(
-            int_array=zeroed_int_array, float_array=zeroed_float_array, reads_re=reads_array_re
-        )
+        result = cls(int_array=zeroed_int_array, float_array=zeroed_float_array, reads_re=reads_array_re)
         result.set(Data.REF_COUNT, 0 if ref_reads_array_re is None else len(ref_reads_array_re))
         result.set(Data.ALT_COUNT, 0 if alt_reads_array_re is None else len(alt_reads_array_re))
         result.set(Data.LABEL, label)
@@ -182,9 +172,7 @@ class Datum:
         result.set(Data.ALT_ALLELE_AS_BASE_5, bases_as_base5_int(trimmed_alt))
         result.int_array[Data.HAPLOTYPES_START_IDX :] = haplotypes
 
-        result.set(
-            Data.SEQ_ERROR_LOG_LK, seq_error_log_lk
-        )  # this is -log10ToLog(TLOD) - log(tumorDepth + 1)
+        result.set(Data.SEQ_ERROR_LOG_LK, seq_error_log_lk)  # this is -log10ToLog(TLOD) - log(tumorDepth + 1)
         result.set(
             Data.NORMAL_SEQ_ERROR_LOG_LK, normal_seq_error_log_lk
         )  # this is -log10ToLog(NALOD) - log(normalDepth + 1)
@@ -238,15 +226,11 @@ class Datum:
 
     def get_haplotypes_1d(self) -> np.ndarray:
         # 1D array of integer array reference and alt haplotypes concatenated -- A, C, G, T, deletion = 0, 1, 2, 3, 4
-        assert len(self.int_array) > Data.NUM_SCALAR_INT_ELEMENTS, (
-            "trying to get ref seq array when none exists"
-        )
+        assert len(self.int_array) > Data.NUM_SCALAR_INT_ELEMENTS, "trying to get ref seq array when none exists"
         return self.int_array[Data.HAPLOTYPES_START_IDX :]
 
     def get_info_1d(self) -> np.ndarray:
-        assert len(self.float_array) > Data.NUM_SCALAR_FLOAT_ELEMENTS, (
-            "trying to get info array when none exists"
-        )
+        assert len(self.float_array) > Data.NUM_SCALAR_FLOAT_ELEMENTS, "trying to get info array when none exists"
         return self.float_array[Data.INFO_START_IDX :]
 
     # note: this potentially resizes the array
@@ -315,9 +299,7 @@ class Datum:
             # new reads are random selection of ref reads vstacked on top of all the alts
             random_ref_read_indices = torch.randperm(old_ref_count)[:new_ref_count]
             random_alt_read_indices = old_ref_count + torch.randperm(old_alt_count)[:new_alt_count]
-            new_reads = np.vstack(
-                (self.reads_re[random_ref_read_indices], self.reads_re[random_alt_read_indices])
-            )
+            new_reads = np.vstack((self.reads_re[random_ref_read_indices], self.reads_re[random_alt_read_indices]))
             result = Datum(
                 int_array=self.int_array.copy(),
                 float_array=self.float_array.copy(),

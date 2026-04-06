@@ -132,7 +132,9 @@ class ArtifactModel(torch.nn.Module):
 
         self._device = device
         self._dtype = DEFAULT_GPU_FLOAT if device != torch.device("cpu") else DEFAULT_CPU_FLOAT
-        self._haplotypes_length = haplotypes_length  # this is the length of ref and alt concatenated horizontally ie twice the CNN length
+        self._haplotypes_length = (
+            haplotypes_length  # this is the length of ref and alt concatenated horizontally ie twice the CNN length
+        )
         self._params = params
 
         # embeddings of reads, info, and reference sequence prior to the transformer layers
@@ -146,9 +148,7 @@ class ArtifactModel(torch.nn.Module):
             batch_normalize=params.batch_normalize,
             dropout_p=params.dropout_p,
         )
-        self.haplotypes_cnn = DNASequenceConvolution(
-            params.ref_seq_layer_strings, haplotypes_length // 2
-        )
+        self.haplotypes_cnn = DNASequenceConvolution(params.ref_seq_layer_strings, haplotypes_length // 2)
 
         embedding_dim = (
             self.read_embedding.output_dimension()
@@ -231,17 +231,13 @@ class ArtifactModel(torch.nn.Module):
     # here 'b' is the batch index, 'r' is the flattened read index, and 'e' means an embedding dimension
     # so, for example, "re" means a 2D tensor with all reads in the batch stacked and "bre" means a 3D tensor indexed
     # first by variant within the batch, then the read within the variant
-    def calculate_features(
-        self, batch: Batch, weight_range: float = 0
-    ) -> tuple[RaggedSets, RaggedSets, Tensor]:
+    def calculate_features(self, batch: Batch, weight_range: float = 0) -> tuple[RaggedSets, RaggedSets, Tensor]:
         ref_counts_b, alt_counts_b = batch.get(Data.REF_COUNT), batch.get(Data.ALT_COUNT)
         total_ref = torch.sum(ref_counts_b).item()
 
         read_embeddings_re = self.read_embedding.forward(batch.get_reads_re().to(dtype=self._dtype))
         info_embeddings_be = self.info_embedding.forward(batch.get_info_be().to(dtype=self._dtype))
-        ref_seq_embeddings_be = self.haplotypes_cnn(
-            batch.get_one_hot_haplotypes_bcs().to(dtype=self._dtype)
-        )
+        ref_seq_embeddings_be = self.haplotypes_cnn(batch.get_one_hot_haplotypes_bcs().to(dtype=self._dtype))
         info_and_seq_be = torch.hstack((info_embeddings_be, ref_seq_embeddings_be))
         info_and_seq_re = torch.vstack(
             (
@@ -252,15 +248,9 @@ class ArtifactModel(torch.nn.Module):
         reads_info_seq_re = torch.hstack((read_embeddings_re, info_and_seq_re))
 
         # TODO: might be a bug if every datum in batch has zero ref reads?
-        ref_bre = RaggedSets(
-            flattened_tensor_nf=reads_info_seq_re[:total_ref], lengths_b=ref_counts_b
-        )
-        alt_bre = RaggedSets(
-            flattened_tensor_nf=reads_info_seq_re[total_ref:], lengths_b=alt_counts_b
-        )
-        transformed_ref_bre, transformed_alt_bre = self.ref_alt_reads_encoder.forward(
-            ref_bre, alt_bre
-        )
+        ref_bre = RaggedSets(flattened_tensor_nf=reads_info_seq_re[:total_ref], lengths_b=ref_counts_b)
+        alt_bre = RaggedSets(flattened_tensor_nf=reads_info_seq_re[total_ref:], lengths_b=alt_counts_b)
+        transformed_ref_bre, transformed_alt_bre = self.ref_alt_reads_encoder.forward(ref_bre, alt_bre)
 
         reduced_ref_bre = transformed_ref_bre.apply_elementwise(self.reducer)
         reduced_alt_bre = transformed_alt_bre.apply_elementwise(self.reducer)
@@ -275,26 +265,18 @@ class ArtifactModel(torch.nn.Module):
         if self.num_sources > 1:
             source_logits_bs = self.source_predictor.adversarial_forward(features_be)
             source_probs_bs = torch.nn.functional.softmax(source_logits_bs, dim=-1)
-            source_targets_bs = torch.nn.functional.one_hot(
-                batch.get(Data.SOURCE).long(), self.num_sources
-            )
+            source_targets_bs = torch.nn.functional.one_hot(batch.get(Data.SOURCE).long(), self.num_sources)
             return torch.sum(torch.square(source_probs_bs - source_targets_bs), dim=-1)
         else:
             return torch.zeros(batch.size(), device=self._device, dtype=self._dtype)
 
     def compute_alt_count_losses(self, features_be: Tensor, batch: Batch):
-        alt_count_pred_b = torch.sigmoid(
-            self.alt_count_predictor.adversarial_forward(features_be).view(-1)
-        )
-        alt_count_target_b = (
-            batch.get(Data.ALT_COUNT).to(dtype=alt_count_pred_b.dtype) / MAX_ALT_COUNT
-        )
+        alt_count_pred_b = torch.sigmoid(self.alt_count_predictor.adversarial_forward(features_be).view(-1))
+        alt_count_target_b = batch.get(Data.ALT_COUNT).to(dtype=alt_count_pred_b.dtype) / MAX_ALT_COUNT
         return self.alt_count_loss_func(alt_count_pred_b, alt_count_target_b)
 
     def compute_batch_output(self, batch: Batch, balancer: Balancer = None):
-        ref_bre, alt_bre, _ = self.calculate_features(
-            batch
-        )  # ragged sets of reduced and transformed reads
+        ref_bre, alt_bre, _ = self.calculate_features(batch)  # ragged sets of reduced and transformed reads
         logits_b, logits_bk = self.feature_clustering.calculate_logits(
             ref_bre,
             alt_bre,
@@ -426,9 +408,7 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
 
         labels = [
             ("artifact" if label > 0.5 else "non-artifact") if is_labeled > 0.5 else "unlabeled"
-            for (label, is_labeled) in zip(
-                batch.get_training_labels().tolist(), batch.get_is_labeled_mask().tolist()
-            )
+            for (label, is_labeled) in zip(batch.get_training_labels().tolist(), batch.get_is_labeled_mask().tolist())
         ]
         for metrics, embeddings, ref_features_be in [
             (embedding_metrics, alt_means_be, ref_means_be),
@@ -436,18 +416,13 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
         ]:
             metrics.label_metadata.extend(labels)
             metrics.correct_metadata.extend(["unknown"] * batch.size())
-            metrics.type_metadata.extend(
-                [Variation(idx).name for idx in batch.get(Data.VARIANT_TYPE).tolist()]
-            )
+            metrics.type_metadata.extend([Variation(idx).name for idx in batch.get(Data.VARIANT_TYPE).tolist()])
             alt_count_strings = [
-                alt_count_bin_name(alt_count_bin_index(ac))
-                for ac in batch.get(Data.ALT_COUNT).tolist()
+                alt_count_bin_name(alt_count_bin_index(ac)) for ac in batch.get(Data.ALT_COUNT).tolist()
             ]
             metrics.truncated_count_metadata.extend(alt_count_strings)
             metrics.features.append(embeddings)
             if ref_features_be is not None:
                 metrics.ref_features.append(ref_features_be)
     embedding_metrics.output_to_summary_writer(summary_writer)
-    ref_alt_seq_metrics.output_to_summary_writer(
-        summary_writer, prefix="ref and alt allele context"
-    )
+    ref_alt_seq_metrics.output_to_summary_writer(summary_writer, prefix="ref and alt allele context")

@@ -55,9 +55,7 @@ class SetPooling(torch.nn.Module):
         self.mlp1 = MLP([input_dim] + mlp_layers, batch_normalize, dropout_p)
         self.mlp2 = MLP([input_dim] + mlp_layers, batch_normalize, dropout_p)
 
-        self.mlp3 = MLP(
-            [self.mlp1.output_dimension()] + final_mlp_layers, batch_normalize, dropout_p
-        )
+        self.mlp3 = MLP([self.mlp1.output_dimension()] + final_mlp_layers, batch_normalize, dropout_p)
 
     def forward(self, x_bsf: RaggedSets) -> Tensor:
         values_bsd = x_bsf.apply_elementwise(self.mlp1)

@@ -56,9 +56,7 @@ def parse_arguments():
         required=True,
         help="how to modify the dataset",
     )
-    parser.add_argument(
-        "--" + constants.SOURCE_NAME, type=int, required=False, help="new source integer to apply"
-    )
+    parser.add_argument("--" + constants.SOURCE_NAME, type=int, required=False, help="new source integer to apply")
 
     # input / output
     parser.add_argument(
@@ -68,9 +66,7 @@ def parse_arguments():
         required=True,
         help="tarfile(s) of training/validation datasets produced by preprocess_dataset.py",
     )
-    parser.add_argument(
-        "--" + constants.OUTPUT_NAME, type=str, required=True, help="path to pruned dataset file"
-    )
+    parser.add_argument("--" + constants.OUTPUT_NAME, type=str, required=True, help="path to pruned dataset file")
 
     return parser.parse_args()
 
@@ -81,8 +77,7 @@ def main_without_parsing(args):
     edit_type = getattr(args, constants.DATASET_EDIT_TYPE_NAME)
     new_source = getattr(args, constants.SOURCE_NAME)
     memory_mapped_datas = [
-        MemoryMappedData.load_from_tarfile(data_tarfile=input_tarfile)
-        for input_tarfile in original_tarfiles
+        MemoryMappedData.load_from_tarfile(data_tarfile=input_tarfile) for input_tarfile in original_tarfiles
     ]
 
     for mmd in memory_mapped_datas:

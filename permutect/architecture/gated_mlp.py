@@ -74,11 +74,7 @@ class GatedMLPBlock(nn.Module):
         * `x_bre` is the input read embedding tensor of shape Batch x Reads x Embedding
         """
         # Norm, projection to d_ffn, and activation $Z = \sigma(XU)$
-        z_brd = (
-            x_bre.apply_elementwise(self.norm)
-            .apply_elementwise(self.proj1)
-            .apply_elementwise(self.activation)
-        )
+        z_brd = x_bre.apply_elementwise(self.norm).apply_elementwise(self.proj1).apply_elementwise(self.activation)
         # Spatial Gating Unit $\tilde{Z} = s(Z)$
         gated_brd = self.sgu.forward(z_brd)
         # Final projection $Y = \tilde{Z}V$ back to embedding dimension
@@ -185,14 +181,10 @@ class GatedRefAltMLPBlock(nn.Module):
         """
         # Norm, projection to d_ffn, and activation $Z = \sigma(XU)$
         zref_brd = (
-            ref_brf.apply_elementwise(self.norm)
-            .apply_elementwise(self.proj1_ref)
-            .apply_elementwise(self.activation)
+            ref_brf.apply_elementwise(self.norm).apply_elementwise(self.proj1_ref).apply_elementwise(self.activation)
         )
         zalt_brd = (
-            alt_brf.apply_elementwise(self.norm)
-            .apply_elementwise(self.proj1_alt)
-            .apply_elementwise(self.activation)
+            alt_brf.apply_elementwise(self.norm).apply_elementwise(self.proj1_alt).apply_elementwise(self.activation)
         )
 
         # Spatial Gating Unit $\tilde{Z} = s(Z)$
@@ -246,9 +238,7 @@ class SpatialGatingUnitRefAlt(nn.Module):
 
         # same as above except now there is an additional term for the ref mean field influence on alt
         # maybe later also let alt mean field influence ref
-        ref_gate_brd = (z2_ref_brd * self.alpha_ref + 1).broadcast_add(
-            self.beta_ref * ref_mean_field_bd
-        )
+        ref_gate_brd = (z2_ref_brd * self.alpha_ref + 1).broadcast_add(self.beta_ref * ref_mean_field_bd)
         alt_gate_brd = (
             (z2_alt_brd * self.alpha_alt + 1)
             .broadcast_add(self.beta_alt * alt_mean_field_bd)
@@ -256,18 +246,14 @@ class SpatialGatingUnitRefAlt(nn.Module):
         )
 
         # $Z_1 \odot f_{W,b}(Z_2)$
-        return z1_ref_brd.multiply_elementwise(ref_gate_brd), z1_alt_brd.multiply_elementwise(
-            alt_gate_brd
-        )
+        return z1_ref_brd.multiply_elementwise(ref_gate_brd), z1_alt_brd.multiply_elementwise(alt_gate_brd)
 
 
 class GatedRefAltMLP(nn.Module):
     def __init__(self, d_model: int, d_ffn: int, num_blocks: int):
         super(GatedRefAltMLP, self).__init__()
 
-        self.blocks = nn.ModuleList(
-            [GatedRefAltMLPBlock(d_model, d_ffn) for _ in range(num_blocks)]
-        )
+        self.blocks = nn.ModuleList([GatedRefAltMLPBlock(d_model, d_ffn) for _ in range(num_blocks)])
         self.dimension = d_model
 
     def input_dimension(self) -> int:

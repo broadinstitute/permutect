@@ -16,10 +16,7 @@ def pool_output_length(input_length, kernel_size=1, stride=None, pad=0, dilation
     Differs from convolution in that stride equals kernel_size by default.
     """
     return floor(
-        (
-            (input_length + (2 * pad) - (dilation * (kernel_size - 1)) - 1)
-            / (kernel_size if stride is None else stride)
-        )
+        ((input_length + (2 * pad) - (dilation * (kernel_size - 1)) - 1) / (kernel_size if stride is None else stride))
         + 1
     )
 
@@ -91,9 +88,7 @@ class DNASequenceConvolution(nn.Module):
                     1,
                 )  # no position left, everything is a "channel"
             elif layer_type_token == "linear":
-                assert last_layer_length == 1, (
-                    "Trying to use fully-connected layer before data have been flattened"
-                )
+                assert last_layer_length == 1, "Trying to use fully-connected layer before data have been flattened"
                 kwargs["in_features"] = last_layer_channels
                 layers.append(nn.Linear(**kwargs))
                 last_layer_channels = kwargs["out_features"]

@@ -67,11 +67,7 @@ class ArtifactSpectra(nn.Module):
                 batch_start = batch * batch_size
                 batch_end = min(batch_start + batch_size, len(alt_counts_b))
                 batch_slice = slice(batch_start, batch_end)
-                loss = -torch.mean(
-                    self.forward(
-                        types_b[batch_slice], depths_b[batch_slice], alt_counts_b[batch_slice]
-                    )
-                )
+                loss = -torch.mean(self.forward(types_b[batch_slice], depths_b[batch_slice], alt_counts_b[batch_slice]))
                 backpropagate(optimizer, loss)
 
     """
@@ -97,16 +93,12 @@ class ArtifactSpectra(nn.Module):
     # this works for ArtifactSpectra and OverdispersedBinomialMixture
     def plot_artifact_spectra(self, depth: int = None):
         # plot AF spectra in two-column grid with as many rows as needed
-        art_spectra_fig, art_spectra_axs = plt.subplots(
-            math.ceil(len(Variation) / 2), 2, sharex="all", sharey="all"
-        )
+        art_spectra_fig, art_spectra_axs = plt.subplots(math.ceil(len(Variation) / 2), 2, sharex="all", sharey="all")
         for variant_type in Variation:
             n = variant_type
             row, col = int(n / 2), n % 2
             frac, dens = self.spectrum_density_vs_fraction(variant_type, depth)
-            art_spectra_axs[row, col].plot(
-                frac.detach().numpy(), dens.detach().numpy(), label=variant_type.name
-            )
+            art_spectra_axs[row, col].plot(frac.detach().numpy(), dens.detach().numpy(), label=variant_type.name)
             art_spectra_axs[row, col].set_title(variant_type.name + " artifact AF spectrum")
         for ax in art_spectra_fig.get_axes():
             ax.label_outer()

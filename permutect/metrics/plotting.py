@@ -49,9 +49,7 @@ def simple_plot_on_axis(ax, x_y_lab_tuples, x_label, y_label):
 
 # x bounds has length 1 greater than values's 0th dimension
 # y bounds has length 1 greater than values's 1st dimension
-def color_plot_2d_on_axis(
-    ax, x_bounds, y_bounds, values, x_label, y_label, vmin: float = None, vmax: float = None
-):
+def color_plot_2d_on_axis(ax, x_bounds, y_bounds, values, x_label, y_label, vmin: float = None, vmax: float = None):
     mesh = ax.pcolormesh(x_bounds, y_bounds, values, vmin=vmin, vmax=vmax)
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
@@ -91,16 +89,12 @@ def grouped_bar_plot(heights_by_category, x_labels, y_label):
     return fig, ax
 
 
-def plot_roc_on_axis(
-    list_of_tuple_lists, curve_labels, axis, sens_prec: bool, thresholds: List[float]
-):
+def plot_roc_on_axis(list_of_tuple_lists, curve_labels, axis, sens_prec: bool, thresholds: List[float]):
     # input is a list of lists
     # each constituent list is of tuples (threshold, nonartifact metric, artifact metric)
     x_y_lab_tuples = []
     small_dots, big_dots = [], []
-    for given_threshold, thresh_and_accs, curve_label in zip(
-        thresholds, list_of_tuple_lists, curve_labels
-    ):
+    for given_threshold, thresh_and_accs, curve_label in zip(thresholds, list_of_tuple_lists, curve_labels):
         nonart_metrics = [x[1] for x in thresh_and_accs]
         art_metrics = [x[2] for x in thresh_and_accs]
         x_y_lab_tuples.append((nonart_metrics, art_metrics, curve_label))
@@ -108,10 +102,7 @@ def plot_roc_on_axis(
         for threshold, nonart_metric, art_metric in thresh_and_accs:
             if abs(threshold) < 0.001:
                 big_dots.append((nonart_metric, art_metric, "rs"))  # red square
-            elif (
-                given_threshold is not None
-                and abs(threshold - given_threshold) <= LOGIT_BIN_SKIP / 2
-            ):
+            elif given_threshold is not None and abs(threshold - given_threshold) <= LOGIT_BIN_SKIP / 2:
                 big_dots.append((nonart_metric, art_metric, "kd"))  # black diamond
             else:
                 small_dots.append((nonart_metric, art_metric, "go"))  # green circle
@@ -142,9 +133,7 @@ def plot_theoretical_roc_on_axis(predicted_error_probs, curve_labels, axis):
         thresh_and_accs, best_threshold = get_theoretical_roc_data(
             error_probs
         )  # best threshold is (threshold, art accuracay, non-art accuracy)
-        x_y_lab_tuples.append(
-            ([x[1] for x in thresh_and_accs], [x[2] for x in thresh_and_accs], curve_label)
-        )
+        x_y_lab_tuples.append(([x[1] for x in thresh_and_accs], [x[2] for x in thresh_and_accs], curve_label))
 
         for threshold, art_acc, non_art_acc in thresh_and_accs:
             dots.append((art_acc, non_art_acc, "go"))
@@ -187,9 +176,7 @@ def get_theoretical_roc_data(artifact_probs):
         sensitivity = tp / total_non_artifact
         precision = tp / (tp + fp)
 
-        harmonic_mean = (
-            0 if (precision == 0 or sensitivity == 0) else 1 / ((1 / sensitivity) + (1 / precision))
-        )
+        harmonic_mean = 0 if (precision == 0 or sensitivity == 0) else 1 / ((1 / sensitivity) + (1 / precision))
 
         if harmonic_mean > best_harmonic_mean:
             best_harmonic_mean = harmonic_mean
@@ -197,9 +184,7 @@ def get_theoretical_roc_data(artifact_probs):
 
         if prob > next_threshold:
             thresh_and_accs.append((next_threshold, precision, sensitivity))
-            next_threshold = (
-                math.ceil(prob * 20) / 20
-            )  # we are basically having thresholds of 0.05, 0.1, 0.15. . .
+            next_threshold = math.ceil(prob * 20) / 20  # we are basically having thresholds of 0.05, 0.1, 0.15. . .
     return thresh_and_accs, best_threshold
 
 
@@ -250,9 +235,7 @@ def tidy_subplots(
     if row_labels is not None:
         assert len(row_labels) == len(axes)
         for row_idx, label in enumerate(row_labels):
-            axes[row_idx][0].set_ylabel(
-                label
-            )  # note that we use row 0 and set_title to make this a column heading
+            axes[row_idx][0].set_ylabel(label)  # note that we use row 0 and set_title to make this a column heading
 
     if column_labels is not None:
         assert len(column_labels) == len(axes[0])

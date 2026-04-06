@@ -117,17 +117,11 @@ def calculate_pruning_thresholds(
         print(f"Labeled non-artifact was actually artifact: {inv_nonart_error_rate:.3f}")
 
         print("calculating rank pruning thresholds")
-        nonart_threshold = torch.quantile(
-            torch.tensor(probs_of_agreeing_with_label[0]), inv_nonart_error_rate
-        ).item()
-        art_threshold = torch.quantile(
-            torch.tensor(probs_of_agreeing_with_label[1]), inv_art_error_rate
-        ).item()
+        nonart_threshold = torch.quantile(torch.tensor(probs_of_agreeing_with_label[0]), inv_nonart_error_rate).item()
+        art_threshold = torch.quantile(torch.tensor(probs_of_agreeing_with_label[1]), inv_art_error_rate).item()
 
         print("Rank pruning thresholds: ")
-        print(
-            f"Labeled artifacts are pruned if predicted artifact probability is less than {art_threshold:.3f}"
-        )
+        print(f"Labeled artifacts are pruned if predicted artifact probability is less than {art_threshold:.3f}")
         print(
             f"Labeled non-artifacts are pruned if predicted non-artifact probability is less than {nonart_threshold:.3f}"
         )
@@ -190,9 +184,7 @@ def generate_pruned_data_for_all_folds(
         label_art_frac = totals_l[Label.ARTIFACT].item() / (
             totals_l[Label.ARTIFACT].item() + totals_l[Label.VARIANT].item()
         )
-        train_artifact_model(
-            model, fold_dataset, valid_dataset, training_params, summary_writer=summary_writer
-        )
+        train_artifact_model(model, fold_dataset, valid_dataset, training_params, summary_writer=summary_writer)
 
         labeled_only_memmap_data = fold_dataset.memory_mapped_data.restrict_to_labeled_only()
         labeled_only_dataset = ReadsDataset(labeled_only_memmap_data)
@@ -233,9 +225,7 @@ def parse_arguments():
         type=str,
         help="Permutect artifact model from train_artifact_model.py",
     )
-    parser.add_argument(
-        "--" + constants.OUTPUT_NAME, type=str, required=True, help="path to pruned dataset file"
-    )
+    parser.add_argument("--" + constants.OUTPUT_NAME, type=str, required=True, help="path to pruned dataset file")
     parser.add_argument(
         "--" + constants.TENSORBOARD_DIR_NAME,
         type=str,
@@ -258,9 +248,7 @@ def main_without_parsing(args):
 
     memory_mapped_data = MemoryMappedData.load_from_tarfile(original_tarfile)
     input_fold_datasets = [
-        ReadsDataset(
-            memory_mapped_data=memory_mapped_data, num_folds=NUM_FOLDS, folds_to_use=[fold]
-        )
+        ReadsDataset(memory_mapped_data=memory_mapped_data, num_folds=NUM_FOLDS, folds_to_use=[fold])
         for fold in range(NUM_FOLDS)
     ]
     pruned_data_generator = generate_pruned_data_for_all_folds(

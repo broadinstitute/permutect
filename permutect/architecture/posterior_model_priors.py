@@ -91,9 +91,7 @@ class PosteriorModelPriors(nn.Module):
 
         # context and substitution dependent (the 3 r's stand for ref context, the 'a' is for alt base)
         # we have 5 values just in case there is a D in the ref context (an indel next to a SNV, perhaps)
-        self.somatic_snv_log_priors_rrra = Parameter(
-            variant_log_prior * torch.ones((5, 5, 5, 5), device=self._device)
-        )
+        self.somatic_snv_log_priors_rrra = Parameter(variant_log_prior * torch.ones((5, 5, 5, 5), device=self._device))
 
         self.NONTRIVIAL_CONTEXTS_rrra = torch.ones((5, 5, 5, 5), device=self._device)
         self.NONTRIVIAL_CONTEXTS_rrra[4, :, :, :] = 0
@@ -121,9 +119,7 @@ class PosteriorModelPriors(nn.Module):
         is_snv = (batch.get(Data.VARIANT_TYPE) == Variation.SNV).float()
         somatic_snv_posteriors_b = posteriors_bc[:, Call.SOMATIC] * is_snv
         idx0, idx1, idx2, idx3 = get_ref_contexts_and_alt_bases(batch)
-        add_at_index(
-            tens=snv_totals_rrra, idx=(idx0, idx1, idx2, idx3), values=somatic_snv_posteriors_b
-        )
+        add_at_index(tens=snv_totals_rrra, idx=(idx0, idx1, idx2, idx3), values=somatic_snv_posteriors_b)
         add_at_index(tens=context_totals_rrra, idx=(idx0, idx1, idx2, idx3), values=is_snv)
 
     def somatic_snv_log_priors(self, batch: Batch) -> torch.Tensor:
@@ -139,15 +135,12 @@ class PosteriorModelPriors(nn.Module):
         log_priors_bc = self.log_priors_vc[variant_types_b.long(), :]
         log_priors_bc[:, Call.SEQ_ERROR] = 0
         log_priors_bc[:, Call.GERMLINE] = (
-            -9999
-            if self.no_germline_mode
-            else torch.log(1 - torch.square(1 - allele_frequencies_b))
+            -9999 if self.no_germline_mode else torch.log(1 - torch.square(1 - allele_frequencies_b))
         )  # 1 minus hom ref probability
 
         if self.use_context_dependent_snv_priors:
             log_priors_bc[:, Call.SOMATIC] = (
-                is_snv_b * self.somatic_snv_log_priors(batch)
-                + (1 - is_snv_b) * log_priors_bc[:, Call.SOMATIC]
+                is_snv_b * self.somatic_snv_log_priors(batch) + (1 - is_snv_b) * log_priors_bc[:, Call.SOMATIC]
             )
         return torch.nn.functional.log_softmax(log_priors_bc, dim=-1)
 
@@ -169,16 +162,12 @@ class PosteriorModelPriors(nn.Module):
         total_ignored_per_context = total_ignored / 64
 
         with torch.no_grad():
-            self.log_priors_vc.copy_(
-                torch.log(posterior_totals_vc / (posterior_totals_vc + overall_total))
-            )
+            self.log_priors_vc.copy_(torch.log(posterior_totals_vc / (posterior_totals_vc + overall_total)))
             self.log_priors_vc[:, Call.SEQ_ERROR] = 0
             self.log_priors_vc[:, Call.GERMLINE] = -9999 if self.no_germline_mode else 0
 
         if self.use_context_dependent_snv_priors:
-            total_sc = torch.round(
-                convert_rrra_tensor_to_sc(snv_context_totals_rrra) + total_ignored_per_context
-            ).int()
+            total_sc = torch.round(convert_rrra_tensor_to_sc(snv_context_totals_rrra) + total_ignored_per_context).int()
             snv_sc = torch.round(convert_rrra_tensor_to_sc(somatic_snv_totals_rrra)).int()
 
             with pm.Model() as _mutation_rate_model:
@@ -191,9 +180,7 @@ class PosteriorModelPriors(nn.Module):
 
                 # concentration parameter for symmetric Dirichlet for relative mutation rates over the 4x3 = 12
                 # different possible substitutions
-                substitution_concentration = pm.Gamma(
-                    "substitution_concentration", alpha=4.0, beta=5.0
-                )
+                substitution_concentration = pm.Gamma("substitution_concentration", alpha=4.0, beta=5.0)
                 concentration_s = pm.math.ones(shape=(12,)) * substitution_concentration
                 theta_s = pm.Dirichlet("theta_s", a=concentration_s)
 
@@ -205,9 +192,7 @@ class PosteriorModelPriors(nn.Module):
                 concentration_c = pm.math.ones(shape=(16,)) * context_concentration
                 theta_sc = pm.Dirichlet("theta_sc", a=concentration_c, shape=(12, 16))
 
-                rate_sc = pm.Deterministic(
-                    "rate_sc", overall_rate * 12 * theta_s.reshape((12, 1)) * 16 * theta_sc
-                )
+                rate_sc = pm.Deterministic("rate_sc", overall_rate * 12 * theta_s.reshape((12, 1)) * 16 * theta_sc)
                 _outcome = pm.Binomial(
                     "outcome",
                     n=total_sc.cpu().numpy().flatten(),
@@ -231,17 +216,13 @@ class PosteriorModelPriors(nn.Module):
                             if ref != alt:
                                 context = lf * 4 + rf
                                 substitution_with_trivial = ref * 4 + alt
-                                substitution = (
-                                    substitution_with_trivial - (substitution_with_trivial // 5) - 1
-                                )
+                                substitution = substitution_with_trivial - (substitution_with_trivial // 5) - 1
                                 self.somatic_snv_log_priors_rrra[lf, ref, rf, alt] = torch.log(
                                     mutation_rates_sc[substitution, context]
                                 )
         else:  # if not using context-dependent SNV priors
             with torch.no_grad():
-                self.somatic_snv_log_priors_rrra.fill_(
-                    self.log_priors_vc[Variation.SNV, Call.SOMATIC]
-                )
+                self.somatic_snv_log_priors_rrra.fill_(self.log_priors_vc[Variation.SNV, Call.SOMATIC])
 
     def make_priors_bar_plot(self, snv_context_totals_rrra):
         # bar plot of log priors -- data is indexed by call type name, and x ticks are variant types
@@ -251,13 +232,9 @@ class PosteriorModelPriors(nn.Module):
             for call in [Call.SOMATIC, Call.ARTIFACT, Call.NORMAL_ARTIFACT]
         }
 
-        somatic_snv_rates_rrra = (
-            self.NONTRIVIAL_CONTEXTS_rrra * torch.exp(self.somatic_snv_log_priors_rrra).detach()
-        )
+        somatic_snv_rates_rrra = self.NONTRIVIAL_CONTEXTS_rrra * torch.exp(self.somatic_snv_log_priors_rrra).detach()
         average_somatic_snv_rate = torch.sum(somatic_snv_rates_rrra) / self.NUM_NONTRIVIAL_CONTEXTS
-        log_prior_bar_plot_data[Call.SOMATIC.name][Variation.SNV] = torch.log(
-            average_somatic_snv_rate
-        ).item()
+        log_prior_bar_plot_data[Call.SOMATIC.name][Variation.SNV] = torch.log(average_somatic_snv_rate).item()
 
         prior_fig, prior_ax = plotting.grouped_bar_plot(
             log_prior_bar_plot_data, [v_type.name for v_type in Variation], "log priors"

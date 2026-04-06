@@ -99,16 +99,12 @@ class OverdispersedBinomialMixture(nn.Module):
         return logsumexp(log_weighted_likelihoods_bk, dim=-1, keepdim=False)
 
     def get_concentration(self, types_b):
-        return self.max_concentration * torch.sigmoid(
-            self.concentration_pre_sigmoid_vk[types_b.long(), :]
-        )
+        return self.max_concentration * torch.sigmoid(self.concentration_pre_sigmoid_vk[types_b.long(), :])
 
     # given 1D input tensor, return 1D tensors of component alphas and betas
     def component_shapes(self, var_type: int):
         means_k = self.max_mean * torch.sigmoid(self.mean_pre_sigmoid_vk[var_type])
-        concentrations_k = self.max_concentration * torch.sigmoid(
-            self.concentration_pre_sigmoid_vk[var_type]
-        )
+        concentrations_k = self.max_concentration * torch.sigmoid(self.concentration_pre_sigmoid_vk[var_type])
         alphas_k = means_k * concentrations_k
         betas_k = (1 - means_k) * concentrations_k if self.mode == "beta" else concentrations_k
         return alphas_k, betas_k
@@ -133,9 +129,7 @@ class OverdispersedBinomialMixture(nn.Module):
         mixture_log_mean = torch.sum(weights * component_log_means)
 
         # E[x ln(x)]
-        component_log_linear_means = component_means * (
-            torch.digamma(alphas + 1) - torch.digamma(alphas + betas + 1)
-        )
+        component_log_linear_means = component_means * (torch.digamma(alphas + 1) - torch.digamma(alphas + betas + 1))
         mixture_log_linear_mean = torch.sum(weights * component_log_linear_means)
 
         return mixture_mean, mixture_log_mean, mixture_log_linear_mean
@@ -148,9 +142,7 @@ class OverdispersedBinomialMixture(nn.Module):
     def sample(self, types_b, n):
         # compute weights and select one mixture component from the corresponding multinomial for each datum / row
         weights = softmax(self.weights_pre_softmax_vk[types_b, :], dim=-1)
-        component_indices = torch.multinomial(
-            weights, num_samples=1, replacement=True
-        )  # 2D tensor with one column
+        component_indices = torch.multinomial(weights, num_samples=1, replacement=True)  # 2D tensor with one column
 
         # get 1D tensors of one selected alpha and beta shape parameter per datum / row, then sample a fraction from each
         # It may be very wasteful computing everything and only using one component, but this is just for unit testing
@@ -160,12 +152,7 @@ class OverdispersedBinomialMixture(nn.Module):
             .gather(dim=1, index=component_indices)
             .squeeze()
         )
-        concentrations = (
-            self.get_concentration(types_b)
-            .detach()
-            .gather(dim=1, index=component_indices)
-            .squeeze()
-        )
+        concentrations = self.get_concentration(types_b).detach().gather(dim=1, index=component_indices).squeeze()
         alphas = means * concentrations
         betas = (1 - means) * concentrations if self.mode == "beta" else concentrations
         dist = (
@@ -194,11 +181,7 @@ class OverdispersedBinomialMixture(nn.Module):
                 batch_start = batch * batch_size
                 batch_end = min(batch_start + batch_size, len(alt_counts_b))
                 batch_slice = slice(batch_start, batch_end)
-                loss = -torch.mean(
-                    self.forward(
-                        types_b[batch_slice], depths_b[batch_slice], alt_counts_b[batch_slice]
-                    )
-                )
+                loss = -torch.mean(self.forward(types_b[batch_slice], depths_b[batch_slice], alt_counts_b[batch_slice]))
                 backpropagate(optimizer, loss)
 
     """
@@ -210,12 +193,8 @@ class OverdispersedBinomialMixture(nn.Module):
         # device = self.mean_pre_sigmoid_vk.device
         fractions = torch.arange(0.01, 0.99, 0.001)  # 1D tensor on CPU
 
-        log_weights_k = log_softmax(
-            self.weights_pre_softmax_vk[variant_type].detach(), dim=-1
-        ).cpu()
-        means_k = (
-            self.max_mean * torch.sigmoid(self.mean_pre_sigmoid_vk[variant_type].detach()).cpu()
-        )
+        log_weights_k = log_softmax(self.weights_pre_softmax_vk[variant_type].detach(), dim=-1).cpu()
+        means_k = self.max_mean * torch.sigmoid(self.mean_pre_sigmoid_vk[variant_type].detach()).cpu()
 
         # now we're on CPU
         if self.mode == "none":
@@ -223,9 +202,7 @@ class OverdispersedBinomialMixture(nn.Module):
             # into a narrow Gaussian
             dist = torch.distributions.normal.Normal(means_k, 0.01 * torch.ones_like(means_k))
             densities = exp(
-                torch.logsumexp(
-                    log_weights_k + dist.log_prob(fractions.unsqueeze(dim=1)), dim=1, keepdim=False
-                )
+                torch.logsumexp(log_weights_k + dist.log_prob(fractions.unsqueeze(dim=1)), dim=1, keepdim=False)
             )  # 1D tensor
             return fractions, densities
         else:
@@ -245,9 +222,7 @@ class OverdispersedBinomialMixture(nn.Module):
                 else torch.distributions.gamma.Gamma(alphas_k, betas_k)
             )
             densities = exp(
-                torch.logsumexp(
-                    log_weights_k + dist.log_prob(fractions.unsqueeze(dim=1)), dim=1, keepdim=False
-                )
+                torch.logsumexp(log_weights_k + dist.log_prob(fractions.unsqueeze(dim=1)), dim=1, keepdim=False)
             )  # 1D tensor
 
             return fractions, densities

@@ -140,9 +140,7 @@ def main_without_parsing(args):
     report_memory_usage("Finished training.")
 
     artifact_log_priors, artifact_spectra = (
-        learn_artifact_priors_and_spectra(train_dataset, genomic_span)
-        if learn_artifact_spectra
-        else (None, None)
+        learn_artifact_priors_and_spectra(train_dataset, genomic_span) if learn_artifact_spectra else (None, None)
     )
     if artifact_spectra is not None:
         art_spectra_fig, art_spectra_axs = artifact_spectra.plot_artifact_spectra(depth=50)

@@ -33,37 +33,21 @@ class Calibration(nn.Module):
         # the input features are logit, ref count, alt count, var_type embedding
         # the positive logit function is increasing in logits, increasing in counts
         # the negative logit function is increasing in logits, decreasing in counts
-        self.positive_fxn = MonoDense(
-            3 + Calibration.VAR_TYPE_EMBEDDING_DIM, hidden_layer_sizes + [1], 3, 0
-        )
-        self.negative_fxn = MonoDense(
-            3 + Calibration.VAR_TYPE_EMBEDDING_DIM, hidden_layer_sizes + [1], 1, 2
-        )
+        self.positive_fxn = MonoDense(3 + Calibration.VAR_TYPE_EMBEDDING_DIM, hidden_layer_sizes + [1], 3, 0)
+        self.negative_fxn = MonoDense(3 + Calibration.VAR_TYPE_EMBEDDING_DIM, hidden_layer_sizes + [1], 1, 2)
 
-        self.var_type_embeddings_ve = Parameter(
-            torch.rand(len(Variation), Calibration.VAR_TYPE_EMBEDDING_DIM)
-        )
+        self.var_type_embeddings_ve = Parameter(torch.rand(len(Variation), Calibration.VAR_TYPE_EMBEDDING_DIM))
 
-    def calibrated_logits(
-        self, logits_b: Tensor, ref_counts_b: Tensor, alt_counts_b: Tensor, var_types_b: IntTensor
-    ):
+    def calibrated_logits(self, logits_b: Tensor, ref_counts_b: Tensor, alt_counts_b: Tensor, var_types_b: IntTensor):
         # indices: 'b' for batch, 3 for logit, ref, alt
         ref_b1 = ref_counts_b.view(-1, 1) / MAX_REF_COUNT
         alt_b1 = alt_counts_b.view(-1, 1) / MAX_ALT_COUNT
         var_type_embeddings_ve = self.var_type_embeddings_ve[var_types_b]
 
-        monotonic_inputs_be = torch.hstack(
-            (logits_b.view(-1, 1), ref_b1, alt_b1, var_type_embeddings_ve)
-        )
-        zero_inputs_be = torch.hstack(
-            (torch.zeros_like(logits_b).view(-1, 1), ref_b1, alt_b1, var_type_embeddings_ve)
-        )
-        positive_output_b1 = self.positive_fxn.forward(
-            monotonic_inputs_be
-        ) - self.positive_fxn.forward(zero_inputs_be)
-        negative_output_b1 = self.negative_fxn.forward(
-            monotonic_inputs_be
-        ) - self.negative_fxn.forward(zero_inputs_be)
+        monotonic_inputs_be = torch.hstack((logits_b.view(-1, 1), ref_b1, alt_b1, var_type_embeddings_ve))
+        zero_inputs_be = torch.hstack((torch.zeros_like(logits_b).view(-1, 1), ref_b1, alt_b1, var_type_embeddings_ve))
+        positive_output_b1 = self.positive_fxn.forward(monotonic_inputs_be) - self.positive_fxn.forward(zero_inputs_be)
+        negative_output_b1 = self.negative_fxn.forward(monotonic_inputs_be) - self.negative_fxn.forward(zero_inputs_be)
         return torch.where(logits_b > 0, positive_output_b1.view(-1), negative_output_b1.view(-1))
 
     def forward(self, logits_b, ref_counts_b: Tensor, alt_counts_b: Tensor, var_types_b: IntTensor):

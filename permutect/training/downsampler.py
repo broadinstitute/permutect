@@ -37,12 +37,8 @@ class Downsampler(Module):
         )
 
         # these are 3D -- with two dummy read count indices -- for broadcasting
-        alpha_k11 = torch.tensor([shape[0] for shape in Downsampler.BETA_BASIS_SHAPES]).view(
-            -1, 1, 1
-        )
-        beta_k11 = torch.tensor([shape[1] for shape in Downsampler.BETA_BASIS_SHAPES]).view(
-            -1, 1, 1
-        )
+        alpha_k11 = torch.tensor([shape[0] for shape in Downsampler.BETA_BASIS_SHAPES]).view(-1, 1, 1)
+        beta_k11 = torch.tensor([shape[1] for shape in Downsampler.BETA_BASIS_SHAPES]).view(-1, 1, 1)
 
         # these are 'raw' as opposed to binned
         raw_ref_counts_r = IntTensor(range(MAX_REF_COUNT + 1))
@@ -59,16 +55,12 @@ class Downsampler(Module):
 
         ref_trans_kry = torch.where(
             ref_kry >= downref_kry,
-            torch.exp(
-                beta_binomial_log_lk(n=ref_kry, k=downref_kry, alpha=alpha_k11, beta=beta_k11)
-            ),
+            torch.exp(beta_binomial_log_lk(n=ref_kry, k=downref_kry, alpha=alpha_k11, beta=beta_k11)),
             0,
         )
         alt_trans_haz = torch.where(
             alt_haz >= downalt_haz,
-            torch.exp(
-                beta_binomial_log_lk(n=alt_haz, k=downalt_haz, alpha=alpha_k11, beta=beta_k11)
-            ),
+            torch.exp(beta_binomial_log_lk(n=alt_haz, k=downalt_haz, alpha=alpha_k11, beta=beta_k11)),
             0,
         )
 
@@ -78,12 +70,8 @@ class Downsampler(Module):
         # we implement the average by summing over everything and dividing by the count bin skip, which is the number
         # of counts per bin
 
-        binned_ref_trans_kry = torch.zeros(
-            len(Downsampler.BETA_BASIS_SHAPES), NUM_REF_COUNT_BINS, NUM_REF_COUNT_BINS
-        )
-        binned_alt_trans_haz = torch.zeros(
-            len(Downsampler.BETA_BASIS_SHAPES), NUM_ALT_COUNT_BINS, NUM_ALT_COUNT_BINS
-        )
+        binned_ref_trans_kry = torch.zeros(len(Downsampler.BETA_BASIS_SHAPES), NUM_REF_COUNT_BINS, NUM_REF_COUNT_BINS)
+        binned_alt_trans_haz = torch.zeros(len(Downsampler.BETA_BASIS_SHAPES), NUM_ALT_COUNT_BINS, NUM_ALT_COUNT_BINS)
 
         for ref in range(MAX_REF_COUNT + 1):
             ref_bin = ref_count_bin_index(ref)
@@ -99,12 +87,8 @@ class Downsampler(Module):
                 downalt_bin = 0 if downalt < MIN_ALT_COUNT else alt_count_bin_index(downalt)
                 binned_alt_trans_haz[:, alt_bin, downalt_bin] += alt_trans_haz[:, alt, downalt]
 
-        self.binned_ref_trans_kry = Parameter(
-            binned_ref_trans_kry / COUNT_BIN_SKIP, requires_grad=False
-        )
-        self.binned_alt_trans_haz = Parameter(
-            binned_alt_trans_haz / COUNT_BIN_SKIP, requires_grad=False
-        )
+        self.binned_ref_trans_kry = Parameter(binned_ref_trans_kry / COUNT_BIN_SKIP, requires_grad=False)
+        self.binned_alt_trans_haz = Parameter(binned_alt_trans_haz / COUNT_BIN_SKIP, requires_grad=False)
 
         # for each source/label/var type/ ref/alt bin we have mixture component weights for both ref and alt downsampling
         # 'k' and 'h' are both indices to denote the mixture components
@@ -142,20 +126,14 @@ class Downsampler(Module):
     def calculate_downsampling_fractions(self, batch: Batch) -> Tensor:
         # we will flatten all the batch indices -- slvra, but not k -- to get a 2D tensor indexed by the batch's
         # flattened indices ('f') and the downsampler's mixture index k
-        ref_weights_fk = self.trained_ref_weights_slvrak.view(
-            -1, len(Downsampler.BETA_BASIS_SHAPES)
-        )
-        alt_weights_fk = self.trained_alt_weights_slvrah.view(
-            -1, len(Downsampler.BETA_BASIS_SHAPES)
-        )
+        ref_weights_fk = self.trained_ref_weights_slvrak.view(-1, len(Downsampler.BETA_BASIS_SHAPES))
+        alt_weights_fk = self.trained_alt_weights_slvrah.view(-1, len(Downsampler.BETA_BASIS_SHAPES))
 
         # use the weights for choosing from random samples
         ref_weights_bk = ref_weights_fk[batch.batch_indices().flattened_idx]
         alt_weights_bk = alt_weights_fk[batch.batch_indices().flattened_idx]
 
-        refk_b = torch.multinomial(
-            ref_weights_bk, num_samples=1
-        )  # one sample for each batch element
+        refk_b = torch.multinomial(ref_weights_bk, num_samples=1)  # one sample for each batch element
         altk_b = torch.multinomial(alt_weights_bk, num_samples=1)
 
         alpha_ref_b, beta_ref_b = self.alpha_k[refk_b], self.beta_k[refk_b]
@@ -187,9 +165,7 @@ class Downsampler(Module):
             expected_slvyz = self.calculate_expected_downsampled_counts(counts_slvra)
 
             # divide by the total over all counts for each slv bin to get a probability distribution over output r/a count bins
-            normalized_slvyz = expected_slvyz / torch.sum(
-                expected_slvyz, dim=(-2, -1), keepdim=True
-            )
+            normalized_slvyz = expected_slvyz / torch.sum(expected_slvyz, dim=(-2, -1), keepdim=True)
 
             # we want downsampled counts to be as even as possible among all ref and alt count bins.  This is equivalent
             # to minimizing the sum of squared downsampled counts.  Since the downsampling
@@ -199,9 +175,5 @@ class Downsampler(Module):
             loss = torch.sum(sums_of_squares_slv)
             backpropagate(optimizer, loss)
 
-        self.trained_ref_weights_slvrak.copy_(
-            torch.softmax(self.ref_weights_pre_softmax_slvrak, dim=-1)
-        )
-        self.trained_alt_weights_slvrah.copy_(
-            torch.softmax(self.alt_weights_pre_softmax_slvrah, dim=-1)
-        )
+        self.trained_ref_weights_slvrak.copy_(torch.softmax(self.ref_weights_pre_softmax_slvrak, dim=-1))
+        self.trained_alt_weights_slvrah.copy_(torch.softmax(self.alt_weights_pre_softmax_slvrah, dim=-1))

@@ -64,14 +64,8 @@ class MonoDenseLayer(nn.Module):
         flipped = x * self.mask
 
         # note that monotonicity is enforced by taking the absolute value of the monotonic weight matrix
-        monotonic_contribution = F.linear(
-            flipped[:, : self.num_constrained], torch.abs(self.monotonic_W)
-        )
-        free_contribution = (
-            F.linear(flipped[:, self.num_constrained :], self.free_W)
-            if self.free_W is not None
-            else 0
-        )
+        monotonic_contribution = F.linear(flipped[:, : self.num_constrained], torch.abs(self.monotonic_W))
+        free_contribution = F.linear(flipped[:, self.num_constrained :], self.free_W) if self.free_W is not None else 0
 
         before_activation = monotonic_contribution + free_contribution + self.b
 
@@ -90,8 +84,7 @@ class MonoDenseLayer(nn.Module):
         output1 = self.convex_activation(left)
         output2 = -self.convex_activation(-middle)
         output3 = torch.sgn(right) * (
-            self.convex_activation(torch.ones_like(right))
-            - self.convex_activation(1 - torch.abs(right))
+            self.convex_activation(torch.ones_like(right)) - self.convex_activation(1 - torch.abs(right))
         )
 
         return torch.hstack([output1, output2, output3])
@@ -164,9 +157,7 @@ class MonoDense(nn.Module):
                         "initial highway layer is only valid for purely increasing network"
                     )
                 num_hidden_layers = -output_dim
-                self.layers.append(
-                    MonotonicHighwayLayer(dim=last_layer_dim, num_layers=num_hidden_layers)
-                )
+                self.layers.append(MonotonicHighwayLayer(dim=last_layer_dim, num_layers=num_hidden_layers))
 
     def forward(self, x):
         return self.layers.forward(x)

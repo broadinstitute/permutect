@@ -44,9 +44,7 @@ class PosteriorModel(torch.nn.Module):
         self.het_beta = het_beta
 
         self.spectra = PosteriorModelSpectra(het_beta=het_beta)
-        self.priors = PosteriorModelPriors(
-            variant_log_prior, artifact_log_prior, no_germline_mode, device
-        )
+        self.priors = PosteriorModelPriors(variant_log_prior, artifact_log_prior, no_germline_mode, device)
 
         self.to(device=self._device, dtype=self._dtype)
 
@@ -63,14 +61,9 @@ class PosteriorModel(torch.nn.Module):
         :param batch:
         :return: non-log error probabilities as a 1D tensor with length batch size
         """
-        assert not (germline_mode and self.no_germline_mode), (
-            "germline mode and no-germline mode are incompatible"
-        )
+        assert not (germline_mode and self.no_germline_mode), "germline mode and no-germline mode are incompatible"
         return (
-            1
-            - self.posterior_probabilities_bc(batch)[
-                :, Call.GERMLINE if germline_mode else Call.SOMATIC
-            ]
+            1 - self.posterior_probabilities_bc(batch)[:, Call.GERMLINE if germline_mode else Call.SOMATIC]
         )  # 0th column is variant
 
     def log_posterior_and_ingredients(self, batch: Batch) -> tuple[Tensor, Tensor, Tensor, Tensor]:
@@ -138,17 +131,11 @@ class PosteriorModel(torch.nn.Module):
             # E-step totals indexed by variant type and call type
             # for somatic SNVs, totals indexed by 3-base context and substitution alt base
             posterior_totals_tc = torch.zeros((len(Variation), len(Call)), device=self._device)
-            somatic_snv_totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra(
-                device=self._device
-            )
-            snv_context_totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra(
-                device=self._device
-            )
+            somatic_snv_totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra(device=self._device)
+            snv_context_totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra(device=self._device)
 
             batch: Batch
-            for batch in tqdm(
-                prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)
-            ):
+            for batch in tqdm(prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)):
                 relative_posteriors = self.log_relative_posteriors_bc(batch)
                 log_evidence = torch.logsumexp(relative_posteriors, dim=1)
 
@@ -159,9 +146,7 @@ class PosteriorModel(torch.nn.Module):
                 PosteriorModelPriors.increment_somatic_snv_context_totals_rrra(
                     somatic_snv_totals_rrra, snv_context_totals_rrra, batch, posteriors_bc
                 )
-                posterior_totals_tc.index_add_(
-                    dim=0, index=batch.get(Data.VARIANT_TYPE), source=posteriors_bc
-                )
+                posterior_totals_tc.index_add_(dim=0, index=batch.get(Data.VARIANT_TYPE), source=posteriors_bc)
 
                 # confidence_mask = torch.logical_or(batch.get_artifact_logits() < 0, batch.get_artifact_logits() > 3)
                 loss = -torch.mean(log_evidence)
@@ -183,12 +168,8 @@ class PosteriorModel(torch.nn.Module):
                 summary_writer.add_scalar("spectrum negative log evidence", epoch_loss.get(), epoch)
 
                 for depth in [9, 19, 30, 50, 100]:
-                    art_spectra_fig, art_spectra_axs = (
-                        self.spectra.artifact_spectra.plot_artifact_spectra(depth)
-                    )
-                    summary_writer.add_figure(
-                        "Artifact AF Spectra at depth = " + str(depth), art_spectra_fig, epoch
-                    )
+                    art_spectra_fig, art_spectra_axs = self.spectra.artifact_spectra.plot_artifact_spectra(depth)
+                    summary_writer.add_figure("Artifact AF Spectra at depth = " + str(depth), art_spectra_fig, epoch)
 
                 # normal_artifact_spectra_fig, normal_artifact_spectra_axs = plot_artifact_spectra(self.normal_artifact_spectra)
                 # summary_writer.add_figure("Normal Artifact AF Spectra", normal_artifact_spectra_fig, epoch)
@@ -218,20 +199,14 @@ class PosteriorModel(torch.nn.Module):
         self, posterior_loader, summary_writer: SummaryWriter = None, germline_mode: bool = False
     ):
         self.train(False)
-        error_probs_by_type = {
-            var_type: [] for var_type in Variation
-        }  # includes both artifact and seq errors
+        error_probs_by_type = {var_type: [] for var_type in Variation}  # includes both artifact and seq errors
 
-        error_probs_by_type_by_cnt = {
-            var_type: [[] for _ in range(NUM_ALT_COUNT_BINS)] for var_type in Variation
-        }
+        error_probs_by_type_by_cnt = {var_type: [[] for _ in range(NUM_ALT_COUNT_BINS)] for var_type in Variation}
 
         # TODO: use the EvaluationMetrics class to generate the theoretical ROC curve
         # TODO: then delete plotting.plot_theoretical_roc_on_axis
         batch: Batch
-        for batch in tqdm(
-            prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)
-        ):
+        for batch in tqdm(prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)):
             # TODO: should this be the original alt counts instead?
             alt_counts_b = batch.get(Data.ALT_COUNT).cpu().tolist()
             # 0th column is true variant, subtract it from 1 to get error prob
@@ -241,22 +216,16 @@ class PosteriorModel(torch.nn.Module):
                 batch.get(Data.VARIANT_TYPE).cpu().tolist(), alt_counts_b, error_probs_b
             ):
                 error_probs_by_type[var_type].append(error_prob)
-                error_probs_by_type_by_cnt[var_type][alt_count_bin_index(alt_count)].append(
-                    error_prob
-                )
+                error_probs_by_type_by_cnt[var_type][alt_count_bin_index(alt_count)].append(error_prob)
 
         thresholds_by_type = {}
-        roc_fig, roc_axes = plt.subplots(
-            1, len(Variation), sharex="all", sharey="all", squeeze=False
-        )
+        roc_fig, roc_axes = plt.subplots(1, len(Variation), sharex="all", sharey="all", squeeze=False)
         roc_by_cnt_fig, roc_by_cnt_axes = plt.subplots(
             1, len(Variation), sharex="all", sharey="all", squeeze=False, figsize=(10, 6), dpi=100
         )
         for var_type in Variation:
             # plot all count ROC curves for this variant type
-            count_bin_labels = [
-                str(count_from_alt_bin_index(count_bin)) for count_bin in range(NUM_ALT_COUNT_BINS)
-            ]
+            count_bin_labels = [str(count_from_alt_bin_index(count_bin)) for count_bin in range(NUM_ALT_COUNT_BINS)]
             _ = plotting.plot_theoretical_roc_on_axis(
                 error_probs_by_type_by_cnt[var_type], count_bin_labels, roc_by_cnt_axes[0, var_type]
             )
@@ -286,8 +255,6 @@ class PosteriorModel(torch.nn.Module):
         )
         if summary_writer is not None:
             summary_writer.add_figure("theoretical ROC by variant type ", roc_fig)
-            summary_writer.add_figure(
-                "theoretical ROC by variant type and alt count ", roc_by_cnt_fig
-            )
+            summary_writer.add_figure("theoretical ROC by variant type and alt count ", roc_by_cnt_fig)
 
         return thresholds_by_type
