@@ -141,7 +141,7 @@ def train_one_epoch(balancer: Balancer, checkpoint: Checkpoint, device: device, 
     check_for_nan(model)
     if epoch_type == Epoch.TRAIN:
         mean_loss = torch.mean(
-            loss_recorder.semisupervised_loss_metrics.get_marginal(BatchProperty.LABEL)
+            loss_recorder.primary_metrics.get_marginal(BatchProperty.LABEL)
         ).item()
         train_scheduler.step(mean_loss)
 
@@ -179,7 +179,7 @@ def train_one_epoch(balancer: Balancer, checkpoint: Checkpoint, device: device, 
         )
 
     if not is_calibration_epoch and epoch_type == Epoch.TRAIN:
-        mean_loss = torch.mean(loss_recorder.semisupervised_loss_metrics.get_marginal(BatchProperty.LABEL))
+        mean_loss = torch.mean(loss_recorder.primary_metrics.get_marginal(BatchProperty.LABEL))
         checkpoint.save_checkpoint_if_needed(epoch, mean_loss)
         checkpoint.load_checkpoint_if_needed(mean_loss)
 
