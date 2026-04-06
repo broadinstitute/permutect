@@ -25,28 +25,16 @@ class LossRecorder:
         self.primary_metrics.put_on_cpu()
         self.count_metrics.put_on_cpu()
         self.source_metrics.put_on_cpu()
-        self.primary_metrics.write_to_summary_writer(
-            epoch_type, epoch, summary_writer, prefix="semisupervised-loss"
-        )
-        self.count_metrics.write_to_summary_writer(epoch_type, epoch, summary_writer, prefix="alt-count-loss")
-        self.source_metrics.write_to_summary_writer(
-            epoch_type, epoch, summary_writer, prefix="source-loss"
-        )
-        self.primary_metrics.report_marginals(f"Semisupervised loss, {epoch_type.name} epoch {epoch}.")
+        self.primary_metrics.write_marginals(epoch_type, epoch, summary_writer, prefix="semisupervised-loss")
+        self.count_metrics.write_marginals(epoch_type, epoch, summary_writer, prefix="alt-count-loss")
+        self.source_metrics.write_marginals(epoch_type, epoch, summary_writer, prefix="source-loss")
+        self.primary_metrics.print_marginals(f"Semisupervised loss, {epoch_type.name} epoch {epoch}.")
         if self.num_sources > 1:
-            self.source_metrics.report_marginals(f"Source loss, {epoch_type.name} epoch {epoch}.")
+            self.source_metrics.print_marginals(f"Source loss, {epoch_type.name} epoch {epoch}.")
 
         if generate_plots:
             self.primary_metrics.make_plots(summary_writer, "semisupervised loss", epoch_type, epoch)
-            self.primary_metrics.make_plots(
-                summary_writer,
-                "total weight of data vs alt and ref counts",
-                epoch_type,
-                epoch,
-                type_of_plot="counts",
-            )
+            self.primary_metrics.make_plots(summary_writer,"total weight", epoch_type, epoch, plot_type="counts")
             self.count_metrics.make_plots(summary_writer, "alt count prediction loss", epoch_type, epoch)
             if self.num_sources > 1:
-                self.source_metrics.make_plots(
-                    summary_writer, "source prediction loss", epoch_type, epoch
-                )
+                self.source_metrics.make_plots(summary_writer, "source prediction loss", epoch_type, epoch)
