@@ -2,9 +2,7 @@ import torch
 from torch import Tensor
 from torch.distributions.binomial import Binomial
 
-from permutect.architecture.spectra.overdispersed_binomial_mixture import (
-    OverdispersedBinomialMixture,
-)
+from permutect.architecture.spectra.overdispersed_binomial_mixture import OverdispersedBinomialMixture
 from permutect.utils.enums import Variation
 
 

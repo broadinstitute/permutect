@@ -132,9 +132,9 @@ class ArtifactModel(torch.nn.Module):
 
         self._device = device
         self._dtype = DEFAULT_GPU_FLOAT if device != torch.device("cpu") else DEFAULT_CPU_FLOAT
-        self._haplotypes_length = (
-            haplotypes_length  # this is the length of ref and alt concatenated horizontally ie twice the CNN length
-        )
+
+        # this is the length of ref and alt concatenated horizontally ie twice the CNN length
+        self._haplotypes_length = haplotypes_length
         self._params = params
 
         # embeddings of reads, info, and reference sequence prior to the transformer layers
