@@ -31,8 +31,8 @@ from permutect.utils.enums import Variation
 
 class LossMetrics:
     def __init__(self, num_sources: int, device=gpu_if_available()):
-        self.totals_slvra = BatchIndexedTensor.make_zeros(num_sources=num_sources, device=device)
-        self.counts_slvra = BatchIndexedTensor.make_zeros(num_sources=num_sources, device=device)
+        self.totals_slvra = BatchIndexedTensor.zeros(num_sources=num_sources, device=device)
+        self.counts_slvra = BatchIndexedTensor.zeros(num_sources=num_sources, device=device)
         self.num_sources = num_sources
         self.has_been_sent_to_cpu = False
 

@@ -56,7 +56,7 @@ class ReadsDataset(IterableDataset):
         :param num_folds:
         """
         super(ReadsDataset, self).__init__()
-        self.totals_slvra = BatchIndexedTensor.make_zeros(
+        self.totals_slvra = BatchIndexedTensor.zeros(
             num_sources=1, include_logits=False, device=torch.device("cpu")
         )
         # if no folds, no copying is done; otherwise this creates a new file on disk

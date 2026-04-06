@@ -29,11 +29,11 @@ class Balancer(Module):
         self.count_since_last_recomputation = 0
 
         # not weighted, just the actual counts of data seen
-        BatchIndexedTensor.make_zeros(num_sources=num_sources)
-        self.counts_slvra = Parameter(BatchIndexedTensor.make_zeros(num_sources=num_sources), requires_grad=False)
+        BatchIndexedTensor.zeros(num_sources=num_sources)
+        self.counts_slvra = Parameter(BatchIndexedTensor.zeros(num_sources=num_sources), requires_grad=False)
 
         # initialize weights to be flat
-        self.weights_slvra = Parameter(BatchIndexedTensor.make_ones(num_sources=num_sources), requires_grad=False)
+        self.weights_slvra = Parameter(BatchIndexedTensor.ones(num_sources=num_sources), requires_grad=False)
 
         # the overall weights for adversarial source prediction are the regular weights times the source weights
         self.source_weights_s = Parameter(torch.ones(num_sources), requires_grad=False)
@@ -43,16 +43,16 @@ class Balancer(Module):
         # Beta_alt = (alpha_alt[r,a], beta_alt[r,a]) from which we sample the downsampling ref and alt fractions (and then
         # in downsampling a binomial draw of reads to keep happens).
         self.alpha_ref_pre_exp_slvra = Parameter(
-            BatchIndexedTensor.make_zeros(num_sources=num_sources), requires_grad=False
+            BatchIndexedTensor.zeros(num_sources=num_sources), requires_grad=False
         )
         self.beta_ref_pre_exp_slvra = Parameter(
-            BatchIndexedTensor.make_zeros(num_sources=num_sources), requires_grad=False
+            BatchIndexedTensor.zeros(num_sources=num_sources), requires_grad=False
         )
         self.alpha_alt_pre_exp_slvra = Parameter(
-            BatchIndexedTensor.make_zeros(num_sources=num_sources), requires_grad=False
+            BatchIndexedTensor.zeros(num_sources=num_sources), requires_grad=False
         )
         self.beta_alt_pre_exp_slvra = Parameter(
-            BatchIndexedTensor.make_zeros(num_sources=num_sources), requires_grad=False
+            BatchIndexedTensor.zeros(num_sources=num_sources), requires_grad=False
         )
         self.to(device=device)
 
