@@ -29,9 +29,7 @@ NUM_DATA_FOR_TENSORBOARD_PROJECTION = 10000
 class EvaluationMetrics:
     def __init__(self, num_sources, device=gpu_if_available()):
         # we will have a map from epoch type to EvaluationMetricsForOneEpochType
-        self.accuracy_metrics_by_epoch_type = defaultdict(
-            lambda: AccuracyMetrics.create(num_sources, device)
-        )
+        self.accuracy_metrics_by_epoch_type = defaultdict(lambda: AccuracyMetrics.create(num_sources, device))
 
         # list of (PosteriorResult, Call) tuples
         self.mistakes = []
@@ -59,9 +57,7 @@ class EvaluationMetrics:
     ):
         assert not self.has_been_sent_to_cpu, "Can't record after already sending to CPU"
         is_labeled = batch.batch_indices(use_original_counts).labels != Label.UNLABELED
-        weights_with_labeled_mask = is_labeled * (
-            weights if weights is not None else torch.ones_like(logits)
-        )
+        weights_with_labeled_mask = is_labeled * (weights if weights is not None else torch.ones_like(logits))
         self.accuracy_metrics_by_epoch_type[epoch_type].record(
             batch,
             values=weights_with_labeled_mask,
@@ -78,31 +74,19 @@ class EvaluationMetrics:
         # indexed by call then var_type, inner is a list of posterior results with that call and var type
         posterior_result_mistakes_by_call_and_var_type = defaultdict(lambda: defaultdict(list))
         for posterior_result, call in self.mistakes:
-            posterior_result_mistakes_by_call_and_var_type[call][
-                posterior_result.variant_type
-            ].append(posterior_result)
+            posterior_result_mistakes_by_call_and_var_type[call][posterior_result.variant_type].append(posterior_result)
 
         mistake_calls = posterior_result_mistakes_by_call_and_var_type.keys()
         num_rows = len(mistake_calls)
 
-        af_fig, af_axes = plt.subplots(
-            num_rows, len(Variation), sharex="all", sharey="none", squeeze=False
-        )
-        logit_fig, logit_axes = plt.subplots(
-            num_rows, len(Variation), sharex="all", sharey="none", squeeze=False
-        )
-        ac_fig, ac_axes = plt.subplots(
-            num_rows, len(Variation), sharex="all", sharey="none", squeeze=False
-        )
-        prob_fig, prob_axes = plt.subplots(
-            num_rows, len(Variation), sharex="all", sharey="none", squeeze=False
-        )
+        af_fig, af_axes = plt.subplots(num_rows, len(Variation), sharex="all", sharey="none", squeeze=False)
+        logit_fig, logit_axes = plt.subplots(num_rows, len(Variation), sharex="all", sharey="none", squeeze=False)
+        ac_fig, ac_axes = plt.subplots(num_rows, len(Variation), sharex="all", sharey="none", squeeze=False)
+        prob_fig, prob_axes = plt.subplots(num_rows, len(Variation), sharex="all", sharey="none", squeeze=False)
 
         for row_idx, mistake_call in enumerate(mistake_calls):
             for var_type in Variation:
-                posterior_results = posterior_result_mistakes_by_call_and_var_type[mistake_call][
-                    var_type
-                ]
+                posterior_results = posterior_result_mistakes_by_call_and_var_type[mistake_call][var_type]
 
                 af_data = [pr.alt_count / pr.depth for pr in posterior_results]
                 plotting.simple_histograms_on_axis(af_axes[row_idx, var_type], [af_data], [""], 20)
@@ -111,15 +95,11 @@ class EvaluationMetrics:
                 plotting.simple_histograms_on_axis(ac_axes[row_idx, var_type], [ac_data], [""], 20)
 
                 logit_data = [pr.artifact_logit for pr in posterior_results]
-                plotting.simple_histograms_on_axis(
-                    logit_axes[row_idx, var_type], [logit_data], [""], 20
-                )
+                plotting.simple_histograms_on_axis(logit_axes[row_idx, var_type], [logit_data], [""], 20)
 
                 # posterior probability assigned to this incorrect call
                 prob_data = [pr.posterior_probabilities[mistake_call] for pr in posterior_results]
-                plotting.simple_histograms_on_axis(
-                    prob_axes[row_idx, var_type], [prob_data], [""], 20
-                )
+                plotting.simple_histograms_on_axis(prob_axes[row_idx, var_type], [prob_data], [""], 20)
 
         variation_types = [var_type.name for var_type in Variation]
         row_names = [mistake.name for mistake in mistake_calls]
@@ -174,12 +154,8 @@ class EvaluationMetrics:
         num_sources = next(iter(self.accuracy_metrics_by_epoch_type.values())).num_sources()
         ref_count_bins = list(range(NUM_REF_COUNT_BINS)) + [None]
         alt_count_bins = list(range(NUM_ALT_COUNT_BINS)) + [None]
-        ref_count_names = [ref_count_bin_name(bin_idx) for bin_idx in range(NUM_REF_COUNT_BINS)] + [
-            "ALL"
-        ]
-        alt_count_names = [alt_count_bin_name(bin_idx) for bin_idx in range(NUM_ALT_COUNT_BINS)] + [
-            "ALL"
-        ]
+        ref_count_names = [ref_count_bin_name(bin_idx) for bin_idx in range(NUM_REF_COUNT_BINS)] + ["ALL"]
+        alt_count_names = [alt_count_bin_name(bin_idx) for bin_idx in range(NUM_ALT_COUNT_BINS)] + ["ALL"]
 
         accuracy_metrics: AccuracyMetrics
         for epoch_type, accuracy_metrics in self.accuracy_metrics_by_epoch_type.items():
@@ -215,16 +191,12 @@ class EvaluationMetrics:
                 common_colormesh = None
                 for row, label in enumerate(accuracy_rows):
                     for col, var_type in enumerate(Variation):
-                        common_colormesh = accuracy_metrics.plot_accuracy(
-                            label, var_type, acc_axes[row, col], source
-                        )
+                        common_colormesh = accuracy_metrics.plot_accuracy(label, var_type, acc_axes[row, col], source)
                 acc_fig.colorbar(common_colormesh)
 
                 for row, ref_count_bin in enumerate(ref_count_bins):
                     for col, alt_count_bin in enumerate(alt_count_bins):
-                        accuracy_metrics.plot_calibration(
-                            cal_axes[row, col], ref_count_bin, alt_count_bin, source
-                        )
+                        accuracy_metrics.plot_calibration(cal_axes[row, col], ref_count_bin, alt_count_bin, source)
                         accuracy_metrics.plot_roc(
                             roc_axes[row, col],
                             ref_count_bin,
@@ -264,9 +236,7 @@ class EvaluationMetrics:
                 )
 
                 source_suffix = (
-                    ""
-                    if num_sources == 1
-                    else (", all sources" if source is None else f", source {source}")
+                    "" if num_sources == 1 else (", all sources" if source is None else f", source {source}")
                 )
 
                 summary_writer.add_figure(
@@ -279,21 +249,13 @@ class EvaluationMetrics:
                     cal_fig,
                     global_step=epoch,
                 )
-                sp_name = (
-                    "sensitivity vs precision"
-                    if sens_prec
-                    else "variant accuracy vs artifact accuracy"
-                )
-                summary_writer.add_figure(
-                    f"{sp_name} ({epoch_type.name})" + source_suffix, roc_fig, global_step=epoch
-                )
+                sp_name = "sensitivity vs precision" if sens_prec else "variant accuracy vs artifact accuracy"
+                summary_writer.add_figure(f"{sp_name} ({epoch_type.name})" + source_suffix, roc_fig, global_step=epoch)
 
             # One more plot.  In each figure the grid of subplots is by variant type and count.  Within each subplot we have
             # overlapping density plots of artifact logit predictions for all combinations of Label and source
             hist_fig, hist_ax = accuracy_metrics.make_logit_histograms()
-            summary_writer.add_figure(
-                f"logit histograms ({epoch_type.name})", hist_fig, global_step=epoch
-            )
+            summary_writer.add_figure(f"logit histograms ({epoch_type.name})", hist_fig, global_step=epoch)
 
 
 def sample_indices_for_tensorboard(indices: List[int]):
@@ -309,7 +271,9 @@ def sample_indices_for_tensorboard(indices: List[int]):
 class EmbeddingMetrics:
     TRUE_POSITIVE = "true-positive"
     FALSE_POSITIVE = "false-positive"
-    TRUE_NEGATIVE_ARTIFACT = "true-negative-artifact"  # distinguish these because artifact and eg germline should embed differently
+    TRUE_NEGATIVE_ARTIFACT = (
+        "true-negative-artifact"  # distinguish these because artifact and eg germline should embed differently
+    )
     TRUE_NEGATIVE_NONARTIFACT = "true-negative-nonartifact"
     TRUE_NEGATIVE = "true-negative"
     FALSE_NEGATIVE_ARTIFACT = "false-negative-artifact"
@@ -372,9 +336,7 @@ class EmbeddingMetrics:
         # read average embeddings stratified by variant type
         for variant_type in Variation:
             variant_name = variant_type.name
-            indices = set(
-                [n for n, type_name in enumerate(self.type_metadata) if type_name == variant_name]
-            )
+            indices = set([n for n, type_name in enumerate(self.type_metadata) if type_name == variant_name])
 
             interesting = interesting_indices & indices
             boring = boring_indices & indices
@@ -387,9 +349,7 @@ class EmbeddingMetrics:
             else:
                 boring_to_keep = np.array([], dtype=int)
 
-            idx = sample_indices_for_tensorboard(
-                np.hstack((boring_to_keep, np.array([int(n) for n in interesting])))
-            )
+            idx = sample_indices_for_tensorboard(np.hstack((boring_to_keep, np.array([int(n) for n in interesting]))))
 
             summary_writer.add_embedding(
                 stacked_features[idx],
@@ -410,13 +370,7 @@ class EmbeddingMetrics:
         # read average embeddings stratified by alt count
         for count_bin in range(NUM_ALT_COUNT_BINS):
             count = count_from_alt_bin_index(count_bin)
-            indices = set(
-                [
-                    n
-                    for n, alt_count in enumerate(self.truncated_count_metadata)
-                    if alt_count == str(count)
-                ]
-            )
+            indices = set([n for n, alt_count in enumerate(self.truncated_count_metadata) if alt_count == str(count)])
             interesting = interesting_indices & indices
             boring = boring_indices & indices
             boring_count = max(len(interesting) // 3, 100) if is_filter_variants else len(boring)
@@ -428,9 +382,7 @@ class EmbeddingMetrics:
             else:
                 boring_to_keep = np.array([], dtype=int)
 
-            idx = sample_indices_for_tensorboard(
-                np.hstack((boring_to_keep, np.array([int(n) for n in interesting])))
-            )
+            idx = sample_indices_for_tensorboard(np.hstack((boring_to_keep, np.array([int(n) for n in interesting]))))
 
             if len(idx) > 0:
                 summary_writer.add_embedding(

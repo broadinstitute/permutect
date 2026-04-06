@@ -12,9 +12,7 @@ MAKE_NEW_ARTIFACT_MODEL = False
 
 
 def test_train_artifact_model():
-    saved_model = (
-        tempfile.NamedTemporaryFile() if not MAKE_NEW_ARTIFACT_MODEL else SMALL_ARTIFACT_MODEL
-    )
+    saved_model = tempfile.NamedTemporaryFile() if not MAKE_NEW_ARTIFACT_MODEL else SMALL_ARTIFACT_MODEL
     training_tensorboard_dir = tempfile.TemporaryDirectory()
 
     train_model_args = Namespace()

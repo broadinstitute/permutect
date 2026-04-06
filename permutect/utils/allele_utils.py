@@ -131,18 +131,14 @@ def get_str_info_array(ref_sequence_string: str, ref_allele: str, alt_allele: st
             ref_sequence_string[: middle_idx + 1], unit
         )  # +1 accounts for the anchor base
     else:
-        unit, num_units = decompose_str_unit(
-            ref[1:]
-        )  # the deleted sequence is everything after the anchor base
+        unit, num_units = decompose_str_unit(ref[1:])  # the deleted sequence is everything after the anchor base
         # it's pretty arbitrary whether we include the deleted bases themselves as 'after' or not
         repeats_after = count_leading_repeats(ref_sequence_string[middle_idx + len(alt) :], unit)
         repeats_before = count_trailing_repeats(
             ref_sequence_string[: middle_idx + 1], unit
         )  # likewise, account for the anchor base
     # note that if indels are left-aligned (as they should be from the GATK) repeats_before really ought to be zero!!
-    return np.array(
-        [insertion_length, deletion_length, len(unit), num_units, repeats_before, repeats_after]
-    )
+    return np.array([insertion_length, deletion_length, len(unit), num_units, repeats_before, repeats_after])
 
 
 def make_1d_sequence_tensor(sequence_string: str) -> np.ndarray:
@@ -175,9 +171,7 @@ def get_ref_and_alt_sequences(ref_seq_1d, ref_allele: str, alt_allele: str):
         alt_allele_array = (
             make_1d_sequence_tensor(alt)
             if deletion_length == 0
-            else np.hstack(
-                (make_1d_sequence_tensor(alt), np.full(shape=deletion_length, fill_value=4))
-            )
+            else np.hstack((make_1d_sequence_tensor(alt), np.full(shape=deletion_length, fill_value=4)))
         )
         alt_array[middle_idx : middle_idx + len(alt_allele_array)] = alt_allele_array
     else:  # insertion
@@ -186,9 +180,7 @@ def get_ref_and_alt_sequences(ref_seq_1d, ref_allele: str, alt_allele: str):
         after = ref_seq_1d[middle_idx + len(ref) : -insertion_length]
 
         alt_allele_array = make_1d_sequence_tensor(alt)
-        ref_allele_array = np.hstack(
-            (make_1d_sequence_tensor(ref), np.full(shape=insertion_length, fill_value=4))
-        )
+        ref_allele_array = np.hstack((make_1d_sequence_tensor(ref), np.full(shape=insertion_length, fill_value=4)))
 
         ref_array = np.hstack((before, ref_allele_array, after))
         alt_array = np.hstack((before, alt_allele_array, after))
@@ -198,6 +190,4 @@ def get_ref_and_alt_sequences(ref_seq_1d, ref_allele: str, alt_allele: str):
         assert alt_array[middle_idx] != ref_array[middle_idx]
     else:  # indel -- ref and alt are the same at the anchor base, then are different
         assert alt_array[middle_idx + 1] != ref_array[middle_idx + 1]
-    return ref_array[: len(ref_seq_1d)], alt_array[
-        : len(ref_seq_1d)
-    ]  # this clipping may be redundant
+    return ref_array[: len(ref_seq_1d)], alt_array[: len(ref_seq_1d)]  # this clipping may be redundant

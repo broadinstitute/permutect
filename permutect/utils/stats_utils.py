@@ -54,9 +54,7 @@ def gamma_binomial_log_lk(n, k, alpha, beta):
         + alpha * torch.log(beta)
         - (alpha + alpha_tilde - 1) * torch.log(beta + beta_tilde)
     )
-    gamma_term = (
-        torch.lgamma(alpha + alpha_tilde - 1) - torch.lgamma(alpha) - torch.lgamma(alpha_tilde)
-    )
+    gamma_term = torch.lgamma(alpha + alpha_tilde - 1) - torch.lgamma(alpha) - torch.lgamma(alpha_tilde)
     return exponent_term + gamma_term - torch.log(n + 1)
 
 
@@ -99,9 +97,7 @@ def _log_incomplete_beta_cf_base(a: Tensor, b: Tensor, x: Tensor):
     "flipped" for small x for good convergence
     a, b, x should have the same or broadcast-compatible shape
     """
-    d1, d2, d3, d4, d5, d6, d7, d8 = (
-        _incomplete_beta_coeff(k, a, b, x) for k in (1, 2, 3, 4, 5, 6, 7, 8)
-    )
+    d1, d2, d3, d4, d5, d6, d7, d8 = (_incomplete_beta_coeff(k, a, b, x) for k in (1, 2, 3, 4, 5, 6, 7, 8))
     cf = 1 + d1 / (1 + d2 / (1 + d3 / (1 + d4 / (1 + d5 / (1 + d6 / (1 + d7 / (1 + d8)))))))
     return a * torch.log(x) + b * torch.log(1 - x) - torch.log(a) - torch.log(cf)
 
@@ -115,9 +111,7 @@ def incomplete_beta(a: Tensor, b: Tensor, x: Tensor):
     """
     small_x = x < (a + 1) / (a + b + 2)
     beta = torch.gamma(a) * torch.gamma(b) / torch.gamma(a + b)
-    return _incomplete_beta_cf_base(a, b, x) * small_x + (
-        beta - _incomplete_beta_cf_base(b, a, 1 - x)
-    ) * (1 - small_x)
+    return _incomplete_beta_cf_base(a, b, x) * small_x + (beta - _incomplete_beta_cf_base(b, a, 1 - x)) * (1 - small_x)
 
 
 def log_incomplete_beta(a: Tensor, b: Tensor, x: Tensor):
@@ -127,9 +121,7 @@ def log_incomplete_beta(a: Tensor, b: Tensor, x: Tensor):
     a, b, x should have the same or broadcast-compatible shape
     :return:
     """
-    small_x = x < (a + 1) / (
-        a + b + 2
-    )  # this is a mask, not a value, we it doesn't get logartihmed!!!
+    small_x = x < (a + 1) / (a + b + 2)  # this is a mask, not a value, we it doesn't get logartihmed!!!
     log_beta = torch.lgamma(a) + torch.lgamma(b) - torch.lgamma(a + b)
     small_result = _log_incomplete_beta_cf_base(a, b, x)
     large_result = subtract_in_log_space(log_beta, _log_incomplete_beta_cf_base(b, a, 1 - x))

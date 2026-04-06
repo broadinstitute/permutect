@@ -66,9 +66,7 @@ def make_random_data(
         # generate variant type
         indel = random.uniform(0, 1) < indel_fraction
         variant_type = (
-            (Variation.DELETION if random.uniform(0, 1) < 0.5 else Variation.INSERTION)
-            if indel
-            else Variation.SNV
+            (Variation.DELETION if random.uniform(0, 1) < 0.5 else Variation.INSERTION) if indel else Variation.SNV
         )
 
         ref_count = ref_downsampling
@@ -92,11 +90,7 @@ def make_random_data(
         alt_tensor = (art_read_gen if artifact else var_read_gen).generate(alt_count)
 
         # TODO: vary the reference sequence string?
-        data.append(
-            Datum.from_gatk(
-                "GTAAAGT", variant_type, ref_tensor, alt_tensor, gatk_info_tensor, label
-            )
-        )
+        data.append(Datum.from_gatk("GTAAAGT", variant_type, ref_tensor, alt_tensor, gatk_info_tensor, label))
 
     return data
 
@@ -125,11 +119,7 @@ def make_random_strand_bias_data(
         # we assume artifact used the original alts but variant was downsampled from a het
         depth = 100
         alt_count = random.randint(3, 10) if artifact else binomial(depth, vaf)
-        alt_tensor_size = (
-            random.randint(3, 10)
-            if (artifact or is_training_data)
-            else min(alt_downsampling, alt_count)
-        )
+        alt_tensor_size = random.randint(3, 10) if (artifact or is_training_data) else min(alt_downsampling, alt_count)
 
         if alt_count == 0:
             continue
@@ -145,11 +135,7 @@ def make_random_strand_bias_data(
             alt_tensor[:, 0] = sign * torch.abs(alt_tensor[:, 0])
 
         # TODO: vary the reference sequence string?
-        data.append(
-            Datum.from_gatk(
-                "TGGGAATG", Variation.SNV, ref_tensor, alt_tensor, gatk_info_tensor, label
-            )
-        )
+        data.append(Datum.from_gatk("TGGGAATG", Variation.SNV, ref_tensor, alt_tensor, gatk_info_tensor, label))
 
     return data
 

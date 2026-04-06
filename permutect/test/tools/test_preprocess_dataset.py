@@ -11,13 +11,9 @@ OVERWRITE_SAVED_TARFILE = False
 
 
 def test_on_10_megabases_singular():
-    training_data_tarfile = (
-        tempfile.NamedTemporaryFile() if not OVERWRITE_SAVED_TARFILE else PREPROCESSED_DATA
-    )
+    training_data_tarfile = tempfile.NamedTemporaryFile() if not OVERWRITE_SAVED_TARFILE else PREPROCESSED_DATA
 
-    tarfile_name = (
-        training_data_tarfile.name if not OVERWRITE_SAVED_TARFILE else training_data_tarfile
-    )
+    tarfile_name = training_data_tarfile.name if not OVERWRITE_SAVED_TARFILE else training_data_tarfile
 
     preprocess_args = Namespace()
     setattr(preprocess_args, constants.TRAINING_DATASETS_NAME, [SMALL_PLAIN_TEXT_DATA])

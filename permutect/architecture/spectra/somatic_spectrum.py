@@ -45,9 +45,7 @@ class SomaticSpectrum(nn.Module):
         self.K = num_components
 
         # initialize evenly spaced cell fractions pre-sigmoid from -3 to 3
-        self.cf_pre_sigmoid_k = Parameter(
-            (6 * ((torch.arange(num_components) / num_components) - 0.5))
-        )
+        self.cf_pre_sigmoid_k = Parameter((6 * ((torch.arange(num_components) / num_components) - 0.5)))
 
         # rough idea for initializing weights: the bigger the cell fraction 1) the more cells there are for mutations to arise
         # and 2) the longer the cluster has probably been around for mutations to arise
@@ -58,12 +56,8 @@ class SomaticSpectrum(nn.Module):
 
         # TODO: this is an arbitrary guess
         background_weight = 0.0001
-        self.log_background_weight = Parameter(
-            log(torch.tensor(background_weight)), requires_grad=False
-        )
-        self.log_non_background_weight = Parameter(
-            log(torch.tensor(1 - background_weight)), requires_grad=False
-        )
+        self.log_background_weight = Parameter(log(torch.tensor(background_weight)), requires_grad=False)
+        self.log_non_background_weight = Parameter(log(torch.tensor(1 - background_weight)), requires_grad=False)
 
         self.background_alpha = Parameter(torch.tensor([1]), requires_grad=False)
         self.background_beta = Parameter(torch.tensor([1]), requires_grad=False)
@@ -84,9 +78,7 @@ class SomaticSpectrum(nn.Module):
         cf_bk = cf_k.view(1, -1)  # dummy length-1 b index for broadcasting
 
         x1_bk, x2_bk = mafs_bk * cf_bk, (1 - mafs_bk) * cf_bk
-        uniform_binomial_log_lks_bk = uniform_binomial_log_lk(
-            n=depths_bk, k=alt_counts_bk, x1=x1_bk, x2=x2_bk
-        )
+        uniform_binomial_log_lks_bk = uniform_binomial_log_lk(n=depths_bk, k=alt_counts_bk, x1=x1_bk, x2=x2_bk)
 
         log_weights_k = log_softmax(self.weights_pre_softmax_k, dim=-1)
         log_weights_bk = log_weights_k.view(1, -1)
@@ -166,11 +158,7 @@ class SomaticSpectrum(nn.Module):
                 batch_start = batch * batch_size
                 batch_end = min(batch_start + batch_size, len(alt_counts_b))
                 batch_slice = slice(batch_start, batch_end)
-                loss = -torch.mean(
-                    self.forward(
-                        depths_b[batch_slice], alt_counts_b[batch_slice], mafs_b[batch_slice]
-                    )
-                )
+                loss = -torch.mean(self.forward(depths_b[batch_slice], alt_counts_b[batch_slice], mafs_b[batch_slice]))
                 backpropagate(optimizer, loss)
 
     """
@@ -186,9 +174,7 @@ class SomaticSpectrum(nn.Module):
         gauss_k = torch.distributions.normal.Normal(cf_k, 0.01 * torch.ones_like(cf_k))
         log_densities_fk = gauss_k.log_prob(fractions_f.unsqueeze(dim=1))
 
-        log_weights_k = log_softmax(
-            self.weights_pre_softmax_k, dim=-1
-        ).cpu()  # these weights are normalized
+        log_weights_k = log_softmax(self.weights_pre_softmax_k, dim=-1).cpu()  # these weights are normalized
         log_weights_fk = log_weights_k.view(1, -1)
 
         log_weighted_densities_fk = log_weights_fk + log_densities_fk

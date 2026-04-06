@@ -11,13 +11,9 @@ class DenseSkipBlock(nn.Module):
     to that of the input x.  As suggested in arxiv:1603.05027, Identity Maps in Deep Residual Networks, nonlinearities come before each linear transformation
     """
 
-    def __init__(
-        self, input_size: int, num_layers: int, batch_normalize: bool = False, dropout_p: float = 0
-    ):
+    def __init__(self, input_size: int, num_layers: int, batch_normalize: bool = False, dropout_p: float = 0):
         super(DenseSkipBlock, self).__init__()
-        self.mlp = MLP(
-            (num_layers + 1) * [input_size], batch_normalize, dropout_p, prepend_activation=True
-        )
+        self.mlp = MLP((num_layers + 1) * [input_size], batch_normalize, dropout_p, prepend_activation=True)
 
         # scale the MLP and initially set it to a small amount so that the block is close to an identity map early in learning
         self.alpha = nn.Parameter(torch.tensor(0.1))

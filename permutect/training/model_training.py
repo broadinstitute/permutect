@@ -49,12 +49,8 @@ def train_artifact_model(
     epochs_per_evaluation: int = None,
 ):
     device, dtype = model._device, model._dtype
-    balancer = Balancer(num_sources=train_dataset.num_sources(), device=device).to(
-        device=device, dtype=dtype
-    )
-    downsampler: Downsampler = Downsampler(num_sources=train_dataset.num_sources()).to(
-        device=device, dtype=dtype
-    )
+    balancer = Balancer(num_sources=train_dataset.num_sources(), device=device).to(device=device, dtype=dtype)
+    downsampler: Downsampler = Downsampler(num_sources=train_dataset.num_sources()).to(device=device, dtype=dtype)
     downsampler.optimize_downsampling_balance(train_dataset.totals_slvra.to(device=device))
 
     num_sources = train_dataset.validate_sources()
@@ -78,9 +74,7 @@ def train_artifact_model(
 
     checkpoint = Checkpoint(device, model, train_optimizer)
 
-    train_loader = train_dataset.make_data_loader(
-        training_params.batch_size, is_cuda, training_params.num_workers
-    )
+    train_loader = train_dataset.make_data_loader(training_params.batch_size, is_cuda, training_params.num_workers)
     valid_loader = valid_dataset.make_data_loader(
         training_params.inference_batch_size, is_cuda, training_params.num_workers
     )
@@ -91,27 +85,21 @@ def train_artifact_model(
         start_of_epoch = time.time()
         report_memory_usage(f"Epoch {epoch}.")
         is_calibration_epoch = epoch > training_params.num_epochs
-        model.source_predictor.set_adversarial_strength(
-            (2 / (1 + math.exp(-0.1 * (epoch - 1)))) - 1
-        )
+        model.source_predictor.set_adversarial_strength((2 / (1 + math.exp(-0.1 * (epoch - 1)))) - 1)
 
         for epoch_type in [Epoch.TRAIN, Epoch.VALID]:
             loss_recorder = LossRecorder(device, num_sources)
             model.set_epoch_type(epoch_type)
             if is_calibration_epoch and epoch_type == Epoch.TRAIN:
                 freeze(model.parameters())
-                unfreeze(
-                    model.calibration_parameters()
-                )  # unfreeze calibration but everything else stays frozen
+                unfreeze(model.calibration_parameters())  # unfreeze calibration but everything else stays frozen
             loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
 
             parent_batch: Batch
             for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
                 batch: DownsampledBatch
                 for downsampling_iteration in range(2):
-                    ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(
-                        parent_batch
-                    )
+                    ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
                     batch = DownsampledBatch(parent_batch, ref_fracs_b, alt_fracs_b)
                     output = model.compute_batch_output(batch, balancer)
                     losses = model.compute_batch_losses(output, batch)
@@ -122,9 +110,7 @@ def train_artifact_model(
                         if epoch > 1 and average_loss > 100.0:
                             print(f"Very large batch loss {average_loss:.2f}.")
 
-                        backpropagate(
-                            train_optimizer, losses.total_loss, params_to_clip=model.parameters()
-                        )
+                        backpropagate(train_optimizer, losses.total_loss, params_to_clip=model.parameters())
                 # done with this downsampled batch
             # done with this parent batch
             check_for_nan(model)
@@ -134,9 +120,9 @@ def train_artifact_model(
                 ).item()
                 train_scheduler.step(mean_loss)
 
-            generate_plots = (
-                epochs_per_evaluation is not None and epoch % epochs_per_evaluation == 0
-            ) or (epoch == last_epoch)
+            generate_plots = (epochs_per_evaluation is not None and epoch % epochs_per_evaluation == 0) or (
+                epoch == last_epoch
+            )
             loss_recorder.output_results(epoch_type, epoch, summary_writer, generate_plots)
 
             if generate_plots:
@@ -170,9 +156,7 @@ def train_artifact_model(
                 )
 
             if not is_calibration_epoch and epoch_type == Epoch.TRAIN:
-                mean_loss = torch.mean(
-                    loss_recorder.semisupervised_loss_metrics.get_marginal(BatchProperty.LABEL)
-                )
+                mean_loss = torch.mean(loss_recorder.semisupervised_loss_metrics.get_marginal(BatchProperty.LABEL))
                 checkpoint.save_checkpoint_if_needed(epoch, mean_loss)
                 checkpoint.load_checkpoint_if_needed(mean_loss)
 
@@ -198,9 +182,7 @@ def collect_evaluation_data(
     report_worst: bool,
 ):
     # the keys are tuples of (Label; rounded alt count)
-    worst_offenders_by_label_and_alt_count = defaultdict(
-        lambda: PriorityQueue(WORST_OFFENDERS_QUEUE_SIZE)
-    )
+    worst_offenders_by_label_and_alt_count = defaultdict(lambda: PriorityQueue(WORST_OFFENDERS_QUEUE_SIZE))
 
     evaluation_metrics = EvaluationMetrics(num_sources=num_sources, device=model._device)
     epoch_types = [Epoch.TRAIN, Epoch.VALID]
@@ -212,17 +194,11 @@ def collect_evaluation_data(
         for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
             # TODO: magic constant
             for _ in range(3):
-                ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(
-                    parent_batch
-                )
-                batch = DownsampledBatch(
-                    parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b
-                )
+                ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
+                batch = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
                 output = model.compute_batch_output(batch, balancer)
 
-                evaluation_metrics.record_batch(
-                    epoch_type, batch, logits=output.logits_b, weights=output.weights
-                )
+                evaluation_metrics.record_batch(epoch_type, batch, logits=output.logits_b, weights=output.weights)
 
                 if report_worst:
                     for int_array, float_array, predicted_logit in zip(
@@ -231,9 +207,9 @@ def collect_evaluation_data(
                         output.logits_b.detach().cpu().tolist(),
                     ):
                         datum = Datum(int_array, float_array)
-                        wrong_call = (
-                            datum.get(Data.LABEL) == Label.ARTIFACT and predicted_logit < 0
-                        ) or (datum.get(Data.LABEL) == Label.VARIANT and predicted_logit > 0)
+                        wrong_call = (datum.get(Data.LABEL) == Label.ARTIFACT and predicted_logit < 0) or (
+                            datum.get(Data.LABEL) == Label.VARIANT and predicted_logit > 0
+                        )
                         if wrong_call:
                             alt_count = datum.get(Data.ALT_COUNT)
                             rounded_count = round_alt_count_to_bin_center(alt_count)
@@ -248,9 +224,7 @@ def collect_evaluation_data(
                             if pqueue.full() and pqueue.queue[0][0] < confidence:
                                 pqueue.get()  # discards the least confident bad call
 
-                            if (
-                                not pqueue.full()
-                            ):  # if space was cleared or if it wasn't full already
+                            if not pqueue.full():  # if space was cleared or if it wasn't full already
                                 pqueue.put(
                                     (
                                         confidence,
@@ -304,9 +278,7 @@ def evaluate_model(
 
         # now go over just the validation data and generate feature vectors / metadata for tensorboard projectors
         batch: Batch
-        for batch in tqdm(
-            prefetch_generator(valid_loader), mininterval=60, total=len(valid_loader)
-        ):
+        for batch in tqdm(prefetch_generator(valid_loader), mininterval=60, total=len(valid_loader)):
             output = model.compute_batch_output(batch)
             pred_b = output.logits_b.detach().cpu()
             labels_b = batch.get_training_labels().cpu()

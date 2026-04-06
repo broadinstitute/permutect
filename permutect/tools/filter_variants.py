@@ -54,9 +54,7 @@ FILTER_NAMES = [call_type.name.lower() for call_type in Call]
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--" + constants.INPUT_NAME, required=True, help="unfiltered input Mutect2 VCF"
-    )
+    parser.add_argument("--" + constants.INPUT_NAME, required=True, help="unfiltered input Mutect2 VCF")
     parser.add_argument(
         "--" + constants.TEST_DATASET_NAME,
         required=True,
@@ -72,9 +70,7 @@ def parse_arguments():
         required=True,
         help="table of contig names vs integer indices",
     )
-    parser.add_argument(
-        "--" + constants.OUTPUT_NAME, required=True, help="path to output filtered VCF"
-    )
+    parser.add_argument("--" + constants.OUTPUT_NAME, required=True, help="path to output filtered VCF")
     parser.add_argument(
         "--" + constants.TENSORBOARD_DIR_NAME,
         type=str,
@@ -82,9 +78,7 @@ def parse_arguments():
         required=False,
         help="path to output tensorboard",
     )
-    parser.add_argument(
-        "--" + constants.BATCH_SIZE_NAME, type=int, default=64, required=False, help="batch size"
-    )
+    parser.add_argument("--" + constants.BATCH_SIZE_NAME, type=int, default=64, required=False, help="batch size")
     parser.add_argument(
         "--" + constants.NUM_WORKERS_NAME,
         type=int,
@@ -171,9 +165,7 @@ def get_segmentation(segments_file) -> defaultdict:
     print("reading segmentation file")
     with open(segments_file, "r") as file:
         for line in file:
-            if line.startswith("#") or (
-                line.startswith("contig") and "minor_allele_fraction" in line
-            ):
+            if line.startswith("#") or (line.startswith("contig") and "minor_allele_fraction" in line):
                 continue
             tokens = line.split()
             contig, start, stop, maf = tokens[0], int(tokens[1]), int(tokens[2]), float(tokens[3])
@@ -238,9 +230,7 @@ def make_filtered_vcf(
             contig_index_to_name_map[int(index)] = contig
 
     device = gpu_if_available()
-    model, artifact_log_priors, artifact_spectra_state_dict = load_model(
-        artifact_model_path, device=device
-    )
+    model, artifact_log_priors, artifact_spectra_state_dict = load_model(artifact_model_path, device=device)
 
     posterior_model = PosteriorModel(
         initial_log_variant_prior,
@@ -294,9 +284,7 @@ def make_filtered_vcf(
 def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_workers: int):
     # pass through the dataset, running the artifact model
     # to get artifact logits, which we record in a dict keyed by variant strings.  These will later be added to PosteriorDatum objects.
-    loader = dataset.make_data_loader(
-        batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers
-    )
+    loader = dataset.make_data_loader(batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
 
     print("creating posterior data...")
     batch: Batch
@@ -364,9 +352,7 @@ def make_posterior_data_loader(
 
     posterior_dataset = ReadsDataset(posterior_mmap)
     report_memory_usage("Finished creating posterior ReadsDataset.")
-    return posterior_dataset.make_data_loader(
-        batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers
-    )
+    return posterior_dataset.make_data_loader(batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
 
 
 # error probability thresholds is a dict from Variant type to error probability threshold (float)
@@ -390,9 +376,7 @@ def apply_filtering_to_vcf(
     encoding_to_posterior_results = {}
 
     batch: Batch
-    for batch in tqdm(
-        prefetch_generator(posterior_loader), mininterval=60, total=len(posterior_loader)
-    ):
+    for batch in tqdm(prefetch_generator(posterior_loader), mininterval=60, total=len(posterior_loader)):
         # posterior, along with intermediate tensors for debugging/interpretation
         log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, log_posteriors_bc = (
             posterior_model.log_posterior_and_ingredients(batch)
@@ -406,9 +390,7 @@ def apply_filtering_to_vcf(
         # TODO: maybe also have an option to record relative to the computed probability thresholds.
         # TODO: this code here treats posterior_prob = 1/2 as the threshold
         # TODO: we could perhaps subtract the threshold to re-center at zero
-        evaluation_metrics.record_batch(
-            Epoch.TEST, batch, logits=error_logits_b, use_original_counts=True
-        )
+        evaluation_metrics.record_batch(Epoch.TEST, batch, logits=error_logits_b, use_original_counts=True)
 
         most_confident_probs_b, most_confident_calls_b = torch.max(posterior_probs_bc, dim=-1)
         artifact_logit_metrics.record_with_sources_and_logits(
@@ -421,9 +403,7 @@ def apply_filtering_to_vcf(
         artifact_logits = batch.get(Data.CACHED_ARTIFACT_LOGIT).cpu().tolist()
         data = [
             Datum(int_array, float_array)
-            for (int_array, float_array) in zip(
-                batch.get_int_array_be(), batch.get_float_array_be()
-            )
+            for (int_array, float_array) in zip(batch.get_int_array_be(), batch.get_float_array_be())
         ]
         # NOTE: for posterior data, batch.get_info_be actually gets the embedding array!!!!!
         # TODO: perhaps make this safer
@@ -471,9 +451,7 @@ def apply_filtering_to_vcf(
             tumor_sample_index = n
 
     all_types = [call_type.name for call_type in Call]
-    unfiltered_vcf.add_format_to_header(
-        {"ID": "DP", "Description": "depth", "Type": "Integer", "Number": "1"}
-    )
+    unfiltered_vcf.add_format_to_header({"ID": "DP", "Description": "depth", "Type": "Integer", "Number": "1"})
     unfiltered_vcf.add_info_to_header(
         {
             "ID": POST_PROB_INFO_KEY,
@@ -533,12 +511,8 @@ def apply_filtering_to_vcf(
         if encoding in encoding_to_posterior_results:
             posterior_result = encoding_to_posterior_results[encoding]
             post_probs = posterior_result.posterior_probabilities
-            v.INFO[POST_PROB_INFO_KEY] = ",".join(
-                map(lambda prob: "{:.3f}".format(prob), post_probs)
-            )
-            v.INFO[LOG_PRIOR_INFO_KEY] = ",".join(
-                map(lambda pri: "{:.3f}".format(pri), posterior_result.log_priors)
-            )
+            v.INFO[POST_PROB_INFO_KEY] = ",".join(map(lambda prob: "{:.3f}".format(prob), post_probs))
+            v.INFO[LOG_PRIOR_INFO_KEY] = ",".join(map(lambda pri: "{:.3f}".format(pri), posterior_result.log_priors))
             v.INFO[SPECTRA_LOG_LIKELIHOOD_INFO_KEY] = ",".join(
                 map(lambda ll: "{:.3f}".format(ll), posterior_result.spectra_lls)
             )
@@ -558,9 +532,7 @@ def apply_filtering_to_vcf(
                 # get the error type with the largest posterior probability
                 highest_prob_indices = torch.topk(torch.tensor(post_probs), 2).indices.tolist()
                 highest_prob_index = (
-                    highest_prob_indices[1]
-                    if highest_prob_indices[0] == passing_call_type
-                    else highest_prob_indices[0]
+                    highest_prob_indices[1] if highest_prob_indices[0] == passing_call_type else highest_prob_indices[0]
                 )
                 error_call = list(Call)[highest_prob_index]
                 filters.add(FILTER_NAMES[highest_prob_index])
@@ -569,9 +541,7 @@ def apply_filtering_to_vcf(
             embedding_metrics.label_metadata.append(label.name)
             embedding_metrics.type_metadata.append(variant_type.name)
             embedding_metrics.truncated_count_metadata.append(
-                alt_count_bin_name(
-                    alt_count_bin_index(min(MAX_ALT_COUNT, posterior_result.alt_count))
-                )
+                alt_count_bin_name(alt_count_bin_index(min(MAX_ALT_COUNT, posterior_result.alt_count)))
             )
             embedding_metrics.features.append(posterior_result.embedding)
             # TODO: we don't yet record ref features but we could eventually. . .
@@ -629,15 +599,10 @@ def apply_filtering_to_vcf(
     metrics: AccuracyMetrics
     for call_type, metrics in zip(Call, artifact_logit_metrics.split_over_sources()):
         hist_fig, hist_ax = metrics.make_logit_histograms()
-        summary_writer.add_figure(
-            f"artifact logit histograms for call type {call_type.name}", hist_fig
-        )
+        summary_writer.add_figure(f"artifact logit histograms for call type {call_type.name}", hist_fig)
 
     if labeled_truth:
-        given_thresholds = {
-            var_type: prob_to_logit(error_probability_thresholds[var_type])
-            for var_type in Variation
-        }
+        given_thresholds = {var_type: prob_to_logit(error_probability_thresholds[var_type]) for var_type in Variation}
         evaluation_metrics.make_plots(summary_writer, given_thresholds, sens_prec=True)
         evaluation_metrics.make_mistake_histograms(summary_writer)
 

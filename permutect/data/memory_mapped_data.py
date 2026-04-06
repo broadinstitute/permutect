@@ -62,9 +62,7 @@ class MemoryMappedData:
 
     def size_in_bytes(self):
         return (
-            self.int_mmap.nbytes
-            + self.float_mmap.nbytes
-            + (0 if self.reads_mmap is None else self.reads_mmap.nbytes)
+            self.int_mmap.nbytes + self.float_mmap.nbytes + (0 if self.reads_mmap is None else self.reads_mmap.nbytes)
         )
 
     def generate_data(
@@ -80,11 +78,7 @@ class MemoryMappedData:
                 reads_array = (
                     np.zeros((0, 0), dtype=COMPRESSED_READS_ARRAY_DTYPE)
                     if self.reads_mmap is None
-                    else self.reads_mmap[
-                        0 if idx == 0 else self.read_end_indices[idx - 1] : self.read_end_indices[
-                            idx
-                        ]
-                    ]
+                    else self.reads_mmap[0 if idx == 0 else self.read_end_indices[idx - 1] : self.read_end_indices[idx]]
                 )
                 datum = Datum(
                     int_array=int_array,
@@ -92,10 +86,7 @@ class MemoryMappedData:
                     reads_re=reads_array,
                     compressed_reads=(reads_array.dtype == COMPRESSED_READS_ARRAY_DTYPE),
                 )
-                if (
-                    keep_probs_by_label_l is None
-                    or random.random() < keep_probs_by_label_l[datum.get(Data.LABEL)]
-                ):
+                if keep_probs_by_label_l is None or random.random() < keep_probs_by_label_l[datum.get(Data.LABEL)]:
                     yield datum
                     count += 1
         print(f"generated {count} objects.")
@@ -116,9 +107,7 @@ class MemoryMappedData:
                 folds_to_use=folds_to_use,
                 keep_probs_by_label_l=keep_probs_by_label_l,
             )
-            return MemoryMappedData.from_generator(
-                reads_datum_source, estimated_num_data, estimated_num_reads
-            )
+            return MemoryMappedData.from_generator(reads_datum_source, estimated_num_data, estimated_num_reads)
 
     def restrict_to_labeled_only(self) -> MemoryMappedData:
         print("Restricting dataset to labeled data only.")
@@ -136,9 +125,7 @@ class MemoryMappedData:
         estimated_num_data = int(self.num_data * labeled_proportion * fudge_factor)
 
         reads_datum_source = (datum for datum in self.generate_data() if datum.is_labeled())
-        return MemoryMappedData.from_generator(
-            reads_datum_source, estimated_num_data, estimated_num_reads
-        )
+        return MemoryMappedData.from_generator(reads_datum_source, estimated_num_data, estimated_num_reads)
 
     """
     Add allele frequency (AF), minor allele frequency (MAF), and normal minor allele frequency (normal MAF) to the
@@ -186,11 +173,7 @@ class MemoryMappedData:
                 segmentation_overlaps = segmentation[contig_name][position]
                 normal_segmentation_overlaps = normal_segmentation[contig_name][position]
                 maf = list(segmentation_overlaps)[0].data if segmentation_overlaps else 0.5
-                normal_maf = (
-                    list(normal_segmentation_overlaps)[0].data
-                    if normal_segmentation_overlaps
-                    else 0.5
-                )
+                normal_maf = list(normal_segmentation_overlaps)[0].data if normal_segmentation_overlaps else 0.5
 
                 new_datum.set(Data.ALLELE_FREQUENCY, allele_frequency)
                 new_datum.set(Data.MAF, maf)
@@ -308,12 +291,8 @@ class MemoryMappedData:
         assert len(reads_files) == (0 if num_reads == 0 else 1)
         # NOTE: the original file may have had excess space due to the O(N) amortized growing scheme
         # if we load the same file with the actual num_data, as opposed to the capacity, it DOES work correctly
-        int_mmap = np.lib.format.open_memmap(
-            int_array_files[0], mode="r", shape=(num_data, int_array_dim)
-        )
-        float_mmap = np.lib.format.open_memmap(
-            float_data_files[0], mode="r", shape=(num_data, float_array_dim)
-        )
+        int_mmap = np.lib.format.open_memmap(int_array_files[0], mode="r", shape=(num_data, int_array_dim))
+        float_mmap = np.lib.format.open_memmap(float_data_files[0], mode="r", shape=(num_data, float_array_dim))
         reads_mmap = (
             None
             if num_reads == 0
@@ -332,9 +311,7 @@ class MemoryMappedData:
         return result
 
     @classmethod
-    def from_generator(
-        cls, reads_datum_source, estimated_num_data, estimated_num_reads
-    ) -> MemoryMappedData:
+    def from_generator(cls, reads_datum_source, estimated_num_data, estimated_num_reads) -> MemoryMappedData:
         """
         Write Datum objects to memory maps.  We set the file sizes to initial guesses but if these are outgrown we copy
         data to larger files, just like the amortized O(N) append operation on lists.
@@ -408,16 +385,10 @@ class MemoryMappedData:
                 memmap.flush()
 
         # re-open new mmap objects in 'r' (read-only) mode for faster access
-        int_mmap = np.memmap(
-            int_mmap.filename, dtype=int_mmap.dtype, mode="r", shape=int_mmap.shape
-        )
-        float_mmap = np.memmap(
-            float_mmap.filename, dtype=float_mmap.dtype, mode="r", shape=float_mmap.shape
-        )
+        int_mmap = np.memmap(int_mmap.filename, dtype=int_mmap.dtype, mode="r", shape=int_mmap.shape)
+        float_mmap = np.memmap(float_mmap.filename, dtype=float_mmap.dtype, mode="r", shape=float_mmap.shape)
         if reads_mmap is not None:
-            reads_mmap = np.memmap(
-                reads_mmap.filename, dtype=reads_mmap.dtype, mode="r", shape=reads_mmap.shape
-            )
+            reads_mmap = np.memmap(reads_mmap.filename, dtype=reads_mmap.dtype, mode="r", shape=reads_mmap.shape)
 
         return cls(
             int_mmap=int_mmap,

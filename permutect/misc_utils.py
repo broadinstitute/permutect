@@ -76,9 +76,7 @@ def freeze(parameters):
 
 def unfreeze(parameters):
     for parameter in parameters:
-        if (
-            parameter.dtype.is_floating_point
-        ):  # an integer parameter isn't trainable by gradient descent
+        if parameter.dtype.is_floating_point:  # an integer parameter isn't trainable by gradient descent
             parameter.requires_grad = True
 
 
@@ -124,9 +122,7 @@ class Timer:
         print(f"{message}: {elapsed_time:0.4f} seconds")
 
 
-def backpropagate(
-    optimizer: torch.optim.Optimizer, loss: Tensor, params_to_clip: Iterator[Parameter] = []
-):
+def backpropagate(optimizer: torch.optim.Optimizer, loss: Tensor, params_to_clip: Iterator[Parameter] = []):
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     nn.utils.clip_grad_norm_(params_to_clip, max_norm=1.0)
@@ -146,9 +142,7 @@ def encode(contig: str, position: int, ref: str, alt: str):
 
 def encode_datum(datum: Datum, contig_index_to_name_map):
     contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
-    return encode(
-        contig_name, datum.get(Data.POSITION), datum.get_ref_allele(), datum.get_alt_allele()
-    )
+    return encode(contig_name, datum.get(Data.POSITION), datum.get_ref_allele(), datum.get_alt_allele())
 
 
 def encode_variant(v: cyvcf2.Variant, zero_based=False):

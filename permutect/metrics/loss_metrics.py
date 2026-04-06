@@ -57,9 +57,7 @@ class LossMetrics:
         return self.totals_slvra / (0.001 + self.counts_slvra)
 
     def get_marginal(self, *properties: BatchProperty) -> Tensor:
-        return self.totals_slvra.get_marginal(*properties) / self.counts_slvra.get_marginal(
-            *properties
-        )
+        return self.totals_slvra.get_marginal(*properties) / self.counts_slvra.get_marginal(*properties)
 
     def report_marginals(self, message: str):
         assert self.has_been_sent_to_cpu, "Can't report marginals before sending to CPU"
@@ -71,9 +69,7 @@ class LossMetrics:
             for n, ave in enumerate(values):
                 print(f"{batch_property.get_name(n)}: {ave:.3f}")
 
-    def write_to_summary_writer(
-        self, epoch_type: Epoch, epoch: int, summary_writer: SummaryWriter, prefix: str
-    ):
+    def write_to_summary_writer(self, epoch_type: Epoch, epoch: int, summary_writer: SummaryWriter, prefix: str):
         """
         write marginals for every batch property
         :return:
@@ -83,9 +79,7 @@ class LossMetrics:
         for batch_property in (b for b in BatchProperty if b != BatchProperty.LOGIT_BIN):
             marginals = self.get_marginal(batch_property)
             for n, average in enumerate(marginals.tolist()):
-                heading = (
-                    f"{prefix}/{epoch_type.name}/{batch_property.name}/{batch_property.get_name(n)}"
-                )
+                heading = f"{prefix}/{epoch_type.name}/{batch_property.name}/{batch_property.get_name(n)}"
                 summary_writer.add_scalar(heading, average, epoch)
 
     def plot_losses(self, label: Label, var_type: Variation, axis, source: int = None):
@@ -168,13 +162,9 @@ class LossMetrics:
             for label in Label:
                 for var_type in Variation:
                     if type_of_plot == "loss":
-                        common_colormesh = self.plot_losses(
-                            label, var_type, axes[label, var_type], source
-                        )
+                        common_colormesh = self.plot_losses(label, var_type, axes[label, var_type], source)
                     elif type_of_plot == "counts":
-                        common_colormesh = self.plot_counts(
-                            label, var_type, axes[label, var_type], source
-                        )
+                        common_colormesh = self.plot_counts(label, var_type, axes[label, var_type], source)
             fig.colorbar(common_colormesh)
             plotting.tidy_subplots(
                 fig,
@@ -185,13 +175,9 @@ class LossMetrics:
                 column_labels=variation_types,
             )
             source_suffix = (
-                ""
-                if self.num_sources == 1
-                else (", all sources" if source is None else f", source {source}")
+                "" if self.num_sources == 1 else (", all sources" if source is None else f", source {source}")
             )
-            summary_writer.add_figure(
-                f"{prefix} ({epoch_type.name})" + source_suffix, fig, global_step=epoch
-            )
+            summary_writer.add_figure(f"{prefix} ({epoch_type.name})" + source_suffix, fig, global_step=epoch)
 
 
 def make_true_and_false_masks_lg():
@@ -246,9 +232,7 @@ class AccuracyMetrics(BatchIndexedTensor):
         )
         return cls(torch.zeros(shape, device=device))
 
-    def record_with_sources_and_logits(
-        self, batch: Batch, values: Tensor, sources_override: IntTensor, logits: Tensor
-    ):
+    def record_with_sources_and_logits(self, batch: Batch, values: Tensor, sources_override: IntTensor, logits: Tensor):
         assert self.has_logits(), "Tensor lacks a logit dimension"
         batch.batch_indices().increment_tensor_with_sources_and_logits(
             self, values=values, sources_override=sources_override, logits=logits
@@ -329,8 +313,7 @@ class AccuracyMetrics(BatchIndexedTensor):
         sens_prec: bool = False,
     ):
         thresh_nonart_art_tuples = [
-            self.make_roc_data(ref_count_bin, alt_count_bin, source, var_type, sens_prec)
-            for var_type in Variation
+            self.make_roc_data(ref_count_bin, alt_count_bin, source, var_type, sens_prec) for var_type in Variation
         ]
         curve_labels = [var_type.name for var_type in Variation]
         thresholds = (
@@ -338,9 +321,7 @@ class AccuracyMetrics(BatchIndexedTensor):
             if given_thresholds is None
             else [given_thresholds[var_type] for var_type in Variation]
         )
-        plotting.plot_roc_on_axis(
-            thresh_nonart_art_tuples, curve_labels, axis, sens_prec, thresholds
-        )
+        plotting.plot_roc_on_axis(thresh_nonart_art_tuples, curve_labels, axis, sens_prec, thresholds)
 
     def plot_accuracy(self, label: Label, var_type: Variation, axis, source: int = None):
         """
@@ -348,9 +329,7 @@ class AccuracyMetrics(BatchIndexedTensor):
         :return:
         """
         sum_dims = (BatchProperty.SOURCE,) if source is None else ()
-        selection = ({} if source is None else {BatchProperty.SOURCE: source}) | {
-            BatchProperty.VARIANT_TYPE: var_type
-        }
+        selection = ({} if source is None else {BatchProperty.SOURCE: source}) | {BatchProperty.VARIANT_TYPE: var_type}
 
         # don't select label yet because we have to multiply by the truth mask
         totals_lrag = select_and_sum(self, select=selection, sum=sum_dims)
@@ -417,9 +396,7 @@ class AccuracyMetrics(BatchIndexedTensor):
                     BatchProperty.VARIANT_TYPE: variation_type,
                     BatchProperty.ALT_COUNT_BIN: count_bin,
                 }
-                totals_slg = select_and_sum(
-                    self, select=selection, sum=(BatchProperty.REF_COUNT_BIN,)
-                )
+                totals_slg = select_and_sum(self, select=selection, sum=(BatchProperty.REF_COUNT_BIN,))
 
                 # The normalizing factor for each source, label is the sum over all logits for that source and label
                 # This renders a histogram into a sort of probability density plot for each source, label
@@ -433,9 +410,7 @@ class AccuracyMetrics(BatchIndexedTensor):
                 for source in range(num_sources):
                     for label in Label:
                         if normalization_slg[source, label, 0].item() >= 1:
-                            line_label = (
-                                f"{label.name} ({source})" if multiple_sources else label.name
-                            )
+                            line_label = f"{label.name} ({source})" if multiple_sources else label.name
                             x_y_label_tuples.append(
                                 (
                                     x_axis_logits.cpu().numpy(),

@@ -26,9 +26,7 @@ class NormalArtifactSpectrum(nn.Module):
 
         # mean of tumor beta is type-dependent multiplier of normal AF.  Sigmoid will map it onto [0,1]
         self.mean_multiplier_pre_sigmoid_v = torch.nn.Parameter(torch.zeros(V))
-        self.concentration_pre_exp_v = torch.nn.Parameter(
-            torch.log(30 * torch.ones(V))
-        )  # alpha + beta parameters
+        self.concentration_pre_exp_v = torch.nn.Parameter(torch.log(30 * torch.ones(V)))  # alpha + beta parameters
 
     def forward(
         self,
@@ -38,9 +36,7 @@ class NormalArtifactSpectrum(nn.Module):
         normal_alt_counts_b: Tensor,
         normal_depths_b: Tensor,
     ):
-        normal_log_lks_b = self.normal_spectrum.forward(
-            var_types_b, normal_depths_b, normal_alt_counts_b
-        )
+        normal_log_lks_b = self.normal_spectrum.forward(var_types_b, normal_depths_b, normal_alt_counts_b)
 
         mean_multiplier_v = torch.sigmoid(self.mean_multiplier_pre_sigmoid_v)
         mean_multiplier_b = mean_multiplier_v[var_types_b]
@@ -53,9 +49,7 @@ class NormalArtifactSpectrum(nn.Module):
         # mean = alpha / (alpha + beta)
         alpha_b = 0.001 + tumor_mean_b * concentration_b
         beta_b = torch.clamp(concentration_b - alpha_b, min=0.001)
-        tumor_log_lks_b = beta_binomial_log_lk(
-            n=tumor_depths_b, k=tumor_alt_counts_b, alpha=alpha_b, beta=beta_b
-        )
+        tumor_log_lks_b = beta_binomial_log_lk(n=tumor_depths_b, k=tumor_alt_counts_b, alpha=alpha_b, beta=beta_b)
 
         return tumor_log_lks_b, normal_log_lks_b
 

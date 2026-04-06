@@ -39,25 +39,17 @@ def germline_log_likelihood(afs, mafs, alt_counts, depths, het_beta=None):
 
     ref_counts = depths - alt_counts
 
-    combinatorial_term = (
-        torch.lgamma(depths + 1) - torch.lgamma(alt_counts + 1) - torch.lgamma(ref_counts + 1)
-    )
+    combinatorial_term = torch.lgamma(depths + 1) - torch.lgamma(alt_counts + 1) - torch.lgamma(ref_counts + 1)
     # the following should both be 1D tensors of length batch size
     alt_minor_binomial = combinatorial_term + alt_counts * log_mafs + ref_counts * log_1m_mafs
     alt_major_binomial = combinatorial_term + ref_counts * log_mafs + alt_counts * log_1m_mafs
     alt_minor_ll = log_half_het_prop + (
-        alt_minor_binomial
-        if het_beta is None
-        else beta_binomial_log_lk(depths, alt_counts, het_alpha, het_beta_to_use)
+        alt_minor_binomial if het_beta is None else beta_binomial_log_lk(depths, alt_counts, het_alpha, het_beta_to_use)
     )
     alt_major_ll = log_half_het_prop + (
-        alt_major_binomial
-        if het_beta is None
-        else beta_binomial_log_lk(depths, alt_counts, het_alpha, het_beta_to_use)
+        alt_major_binomial if het_beta is None else beta_binomial_log_lk(depths, alt_counts, het_alpha, het_beta_to_use)
     )
-    hom_ll = torch.log(hom_proportion) + beta_binomial_log_lk(
-        depths, alt_counts, hom_alpha, hom_beta
-    )
+    hom_ll = torch.log(hom_proportion) + beta_binomial_log_lk(depths, alt_counts, hom_alpha, hom_beta)
 
     return torch.logsumexp(torch.vstack((alt_minor_ll, alt_major_ll, hom_ll)), dim=0)
 
@@ -107,15 +99,11 @@ class PosteriorModelSpectra(nn.Module):
             normal_depths_b=normal_depths_b,
         )
 
-        spectra_log_lks_bc = torch.zeros(
-            (batch.size(), len(Call)), device=self._device, dtype=self._dtype
-        )
+        spectra_log_lks_bc = torch.zeros((batch.size(), len(Call)), device=self._device, dtype=self._dtype)
         tumor_artifact_spectrum_log_lks_b = self.artifact_spectra.forward(
             batch.get(Data.VARIANT_TYPE), depths_b, alt_counts_b
         )
-        spectra_log_lks_bc[:, Call.SOMATIC] = self.somatic_spectrum.forward(
-            depths_b, alt_counts_b, mafs_b
-        )
+        spectra_log_lks_bc[:, Call.SOMATIC] = self.somatic_spectrum.forward(depths_b, alt_counts_b, mafs_b)
         spectra_log_lks_bc[:, Call.ARTIFACT] = tumor_artifact_spectrum_log_lks_b
         spectra_log_lks_bc[:, Call.NORMAL_ARTIFACT] = na_tumor_log_lks_b
         spectra_log_lks_bc[:, Call.SEQ_ERROR] = batch.get(Data.SEQ_ERROR_LOG_LK)
@@ -128,9 +116,7 @@ class PosteriorModelSpectra(nn.Module):
         normal_log_lks_bc[:, Call.SOMATIC] = normal_seq_error_log_lks
         normal_log_lks_bc[:, Call.ARTIFACT] = normal_seq_error_log_lks
         normal_log_lks_bc[:, Call.SEQ_ERROR] = normal_seq_error_log_lks
-        normal_log_lks_bc[:, Call.NORMAL_ARTIFACT] = torch.where(
-            normal_alt_counts_b < 1, -9999, na_normal_log_lks_b
-        )
+        normal_log_lks_bc[:, Call.NORMAL_ARTIFACT] = torch.where(normal_alt_counts_b < 1, -9999, na_normal_log_lks_b)
         normal_log_lks_bc[:, Call.GERMLINE] = germline_log_likelihood(
             afs_b, batch.get(Data.NORMAL_MAF), normal_alt_counts_b, normal_depths_b, self.het_beta
         )

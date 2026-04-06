@@ -21,9 +21,7 @@ SQRT2 = torch.sqrt(torch.tensor(2.0))
 MAX_LOGIT = 20
 
 
-def parallel_and_orthogonal_projections(
-    vectors_re: Tensor, direction_vectors_ke
-) -> Tuple[Tensor, Tensor]:
+def parallel_and_orthogonal_projections(vectors_re: Tensor, direction_vectors_ke) -> Tuple[Tensor, Tensor]:
     unit_vectors_ke = direction_vectors_ke / torch.norm(direction_vectors_ke, dim=-1, keepdim=True)
     dot_products_rk = vectors_re.matmul(unit_vectors_ke.t())
 
@@ -119,9 +117,7 @@ class FeatureClustering(nn.Module):
         # nonartifact reads are posited to have a Gaussian in F-dimensional space
         # we shift and rotate so that the Gaussian is zero-centered and has diagonal covariance
         self.read_translation_e = Parameter(torch.rand(self.feature_dim))
-        self.read_rotation_ee = orthogonal(
-            torch.nn.Linear(self.feature_dim, self.feature_dim, bias=False)
-        )
+        self.read_rotation_ee = orthogonal(torch.nn.Linear(self.feature_dim, self.feature_dim, bias=False))
 
         # anisotropic, diagonal stdev of nonartifact Gaussian.  Due to the rotation above the covariance is, WLOG, diagonal
         self.nonartifact_stdev_e = Parameter(torch.ones(self.feature_dim))
@@ -131,9 +127,7 @@ class FeatureClustering(nn.Module):
 
         # artifact clusters each have a characteristic direction vector of deviation away from the
         # nonartifact centroid.
-        self.artifact_directions_ke = Parameter(
-            torch.rand(self.num_artifact_clusters, self.feature_dim)
-        )
+        self.artifact_directions_ke = Parameter(torch.rand(self.num_artifact_clusters, self.feature_dim))
         parametrize.register_parametrization(self, "artifact_directions_ke", UnitVector())
 
         # the parallel projections of artifact reads onto the clusters' directions is posited to follow
@@ -144,14 +138,10 @@ class FeatureClustering(nn.Module):
         self.mu_k = Parameter(2 * torch.ones(self.num_artifact_clusters))
 
         self.sigma_k = Parameter(torch.ones(self.num_artifact_clusters))
-        parametrize.register_parametrization(
-            self, "sigma_k", BoundedNumber(min_val=MIN_STDEV, max_val=MAX_STDEV)
-        )
+        parametrize.register_parametrization(self, "sigma_k", BoundedNumber(min_val=MIN_STDEV, max_val=MAX_STDEV))
 
         self.lambda_k = Parameter(torch.ones(self.num_artifact_clusters))
-        parametrize.register_parametrization(
-            self, "lambda_k", BoundedNumber(min_val=MIN_LAMBDA, max_val=MAX_LAMBDA)
-        )
+        parametrize.register_parametrization(self, "lambda_k", BoundedNumber(min_val=MIN_LAMBDA, max_val=MAX_LAMBDA))
 
         # the orthogonal projections of artifact reads onto the clusters' directions is posited to follow an
         # (F-1)-dimensional isotropic Gaussian
@@ -219,17 +209,13 @@ class FeatureClustering(nn.Module):
         nonartifact_log_lks_bk = RaggedSets(
             flattened_tensor_nf=nonartifact_log_lks_rk, lengths_b=alt_counts_b
         ).sums_over_sets()
-        outlier_log_lks_bk = RaggedSets(
-            flattened_tensor_nf=outlier_log_lks_rk, lengths_b=alt_counts_b
-        ).sums_over_sets()
+        outlier_log_lks_bk = RaggedSets(flattened_tensor_nf=outlier_log_lks_rk, lengths_b=alt_counts_b).sums_over_sets()
         unweighted_artifact_log_lks_bk = RaggedSets(
             flattened_tensor_nf=artifact_log_lks_rk, lengths_b=alt_counts_b
         ).sums_over_sets()
 
         # these are the log of weights that sum to 1
-        log_artifact_cluster_weights_k = torch.log_softmax(
-            self.cluster_weights_pre_softmax_k, dim=-1
-        )
+        log_artifact_cluster_weights_k = torch.log_softmax(self.cluster_weights_pre_softmax_k, dim=-1)
         log_artifact_cluster_weights_bk = log_artifact_cluster_weights_k[None, :]
         artifact_log_lks_bk = unweighted_artifact_log_lks_bk + log_artifact_cluster_weights_bk
 

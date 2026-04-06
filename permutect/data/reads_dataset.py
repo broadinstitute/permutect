@@ -60,9 +60,7 @@ class ReadsDataset(IterableDataset):
             num_sources=1, include_logits=False, device=torch.device("cpu")
         )
         # if no folds, no copying is done; otherwise this creates a new file on disk
-        self.memory_mapped_data = memory_mapped_data.restrict_to_folds(
-            num_folds, folds_to_use, keep_probs_by_label_l
-        )
+        self.memory_mapped_data = memory_mapped_data.restrict_to_folds(num_folds, folds_to_use, keep_probs_by_label_l)
         self._size = self.memory_mapped_data.num_data
         self._read_end_indices = self.memory_mapped_data.read_end_indices
 
@@ -92,9 +90,7 @@ class ReadsDataset(IterableDataset):
             self._haplotypes_length.check(datum.get_haplotypes_array_size())
         data_recording_timer.report("Time to record data counts")
 
-        self.totals_by_label_l = self.totals_slvra.get_marginal(
-            BatchProperty.LABEL
-        )  # totals by label
+        self.totals_by_label_l = self.totals_slvra.get_marginal(BatchProperty.LABEL)  # totals by label
 
     def totals_by_label(self):
         return self.totals_by_label_l
@@ -129,12 +125,8 @@ class ReadsDataset(IterableDataset):
         # thus we multiply by a cautious fudge factor that accounts for: 1) maybe space in RAM is less efficient than space in disk,
         # 2) one chunk might still be in memory, not yet garbage-collected, when the next is loaded
         fudge_factor = 8
-        chunks_per_worker = 1 + (
-            (fudge_factor * num_bytes_per_worker) // available_memory_per_worker
-        )
-        print(
-            f"Worker {worker_id} will divide its portion of the data into {chunks_per_worker} chunks."
-        )
+        chunks_per_worker = 1 + ((fudge_factor * num_bytes_per_worker) // available_memory_per_worker)
+        print(f"Worker {worker_id} will divide its portion of the data into {chunks_per_worker} chunks.")
 
         # The way multiple DataLoader workers work in PyTorch is not so obvious.
         # 1) There is an original Dataset
@@ -149,9 +141,7 @@ class ReadsDataset(IterableDataset):
         # example of specific number: num_data = 21, num_workers = 4, then data_per_worker is 5 and the index ranges
         # are [0,5), [5,10), [10,15), [15,21)
         worker_start_idx = worker_id * num_data_per_worker
-        worker_end_idx = (
-            (worker_id + 1) * num_data_per_worker if worker_id < num_workers - 1 else self._size
-        )
+        worker_end_idx = (worker_id + 1) * num_data_per_worker if worker_id < num_workers - 1 else self._size
 
         num_data_for_this_worker = worker_end_idx - worker_start_idx
         data_per_chunk = num_data_for_this_worker // chunks_per_worker
@@ -162,34 +152,24 @@ class ReadsDataset(IterableDataset):
             print("Iterating over the whole dataset in a single process.")
         else:
             print(f"Iterating with worker {worker_id} out of {num_workers}.")
-            print(
-                f"This worker is responsible for data range [{worker_start_idx}, {worker_end_idx})."
-            )
+            print(f"This worker is responsible for data range [{worker_start_idx}, {worker_end_idx}).")
 
         for chunk in chunks:
             chunk_start_idx = worker_start_idx + chunk * data_per_chunk
             chunk_end_idx = (
-                (worker_start_idx + (chunk + 1) * data_per_chunk)
-                if (chunk < chunks_per_worker - 1)
-                else worker_end_idx
+                (worker_start_idx + (chunk + 1) * data_per_chunk) if (chunk < chunks_per_worker - 1) else worker_end_idx
             )
 
-            chunk_read_start_idx = (
-                0 if chunk_start_idx == 0 else self._read_end_indices[chunk_start_idx - 1]
-            )
+            chunk_read_start_idx = 0 if chunk_start_idx == 0 else self._read_end_indices[chunk_start_idx - 1]
             chunk_read_end_idx = self._read_end_indices[chunk_end_idx - 1]
 
-            ram_timer = Timer(
-                f"Worker {worker_id} loading chunk [{chunk_start_idx}, {chunk_end_idx}) into RAM."
-            )
+            ram_timer = Timer(f"Worker {worker_id} loading chunk [{chunk_start_idx}, {chunk_end_idx}) into RAM.")
             # TODO: I think the .copy() is necessary to copy the slice of the memory-map from disk into RAM
             # these operations should be really fast because it's all sequential access
             chunk_int_data_ve = self._int_array_ve[chunk_start_idx:chunk_end_idx].copy()
             chunk_float_data_ve = self._float_array_ve[chunk_start_idx:chunk_end_idx].copy()
             chunk_reads_re = self._stacked_reads_re[chunk_read_start_idx:chunk_read_end_idx].copy()
-            chunk_read_end_indices = (
-                self._read_end_indices[chunk_start_idx:chunk_end_idx] - chunk_read_start_idx
-            )
+            chunk_read_end_indices = self._read_end_indices[chunk_start_idx:chunk_end_idx] - chunk_read_start_idx
             ram_timer.report("Time to load chunk data into RAM")
             report_memory_usage("Chunk data loaded into RAM.")
 
@@ -239,9 +219,7 @@ class ReadsDataset(IterableDataset):
         else:
             for source in range(self.num_sources()):
                 assert totals_by_source_s[source].item() >= 1, f"No data for source {source}."
-            print(
-                f"Data come from multiple sources, with counts {totals_by_source_s.cpu().tolist()}."
-            )
+            print(f"Data come from multiple sources, with counts {totals_by_source_s.cpu().tolist()}.")
         return num_sources
 
     def make_data_loader(self, batch_size: int, pin_memory=False, num_workers: int = 0):

@@ -2,9 +2,7 @@ import torch
 from torch import Tensor
 from torch.distributions.binomial import Binomial
 
-from permutect.architecture.spectra.overdispersed_binomial_mixture import (
-    OverdispersedBinomialMixture,
-)
+from permutect.architecture.spectra.overdispersed_binomial_mixture import OverdispersedBinomialMixture
 from permutect.utils.enums import Variation
 
 
@@ -34,9 +32,7 @@ def check_discrete_af_distribution(
     )
 
     # moments E[x], E[ln(x)], E[x ln(x)] for SNV variant type (index 0)
-    model_mean, model_log_mean, model_log_linear_mean = model.moments_of_underlying_beta_mixture(
-        Variation.SNV
-    )
+    model_mean, model_log_mean, model_log_linear_mean = model.moments_of_underlying_beta_mixture(Variation.SNV)
 
     given_mean = torch.sum(weights_1d * fractions_1d)
     given_log_mean = torch.sum(weights_1d * torch.log(fractions_1d))
@@ -78,9 +74,7 @@ def test_three_components():
     fractions = (0.1, 0.4, 0.7)
     for unnormalized_weights in [(1, 1, 1), (1, 4, 1), (1, 5, 9)]:
         weights = Tensor(unnormalized_weights) / sum(unnormalized_weights)
-        check_discrete_af_distribution(
-            fractions_1d=Tensor(fractions), weights_1d=weights, training_depths_1d=depths
-        )
+        check_discrete_af_distribution(fractions_1d=Tensor(fractions), weights_1d=weights, training_depths_1d=depths)
 
 
 def test_peak_over_background():
@@ -90,6 +84,4 @@ def test_peak_over_background():
     fractions = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
     for unnormalized_weights in [(5, 1, 1, 1, 1, 1, 1, 1, 1), (1, 1, 1, 1, 5, 1, 1, 1, 1)]:
         weights = Tensor(unnormalized_weights) / sum(unnormalized_weights)
-        check_discrete_af_distribution(
-            fractions_1d=Tensor(fractions), weights_1d=weights, training_depths_1d=depths
-        )
+        check_discrete_af_distribution(fractions_1d=Tensor(fractions), weights_1d=weights, training_depths_1d=depths)

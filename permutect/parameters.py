@@ -211,9 +211,7 @@ def add_training_params_to_parser(parser):
         required=False,
         help="learning rate",
     )
-    parser.add_argument(
-        "--" + constants.BATCH_SIZE_NAME, type=int, default=64, required=False, help="batch size"
-    )
+    parser.add_argument("--" + constants.BATCH_SIZE_NAME, type=int, default=64, required=False, help="batch size")
     parser.add_argument(
         "--" + constants.NUM_WORKERS_NAME,
         type=int,

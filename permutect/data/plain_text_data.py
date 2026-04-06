@@ -87,9 +87,7 @@ def count_number_of_data_and_reads_in_text_file(dataset_file):
             )
 
             # skip the read tensors except for getting the array size from the very first read
-            for idx in range(
-                ref_tensor_size + alt_tensor_size + normal_ref_tensor_size + normal_alt_tensor_size
-            ):
+            for idx in range(ref_tensor_size + alt_tensor_size + normal_ref_tensor_size + normal_alt_tensor_size):
                 next(file)
 
             next(file)  # skip the original depths line
@@ -118,9 +116,7 @@ def read_raw_unnormalized_data(
             # contig:position,ref->alt
             variant_line = file.readline().strip()
             locus, mutation = variant_line.split(",")
-            contig, position = map(
-                int, locus.split(":")
-            )  # contig is an integer *index* from a sequence dictionary
+            contig, position = map(int, locus.split(":"))  # contig is an integer *index* from a sequence dictionary
             # TODO: replace with tqdm progress bar by counting file in initial pass.  It can't be that expensive.
             if n % 100000 == 0:
                 print(f"{contig}:{position}")
@@ -134,12 +130,8 @@ def read_raw_unnormalized_data(
 
             # the first column is read group index, which we currently discard
             # later we're going to want to use this
-            ref_tensor = (
-                read_2d_array(file, ref_tensor_size)[:, 1:] if ref_tensor_size > 0 else None
-            )
-            alt_tensor = (
-                read_2d_array(file, alt_tensor_size)[:, 1:] if alt_tensor_size > 0 else None
-            )
+            ref_tensor = read_2d_array(file, ref_tensor_size)[:, 1:] if ref_tensor_size > 0 else None
+            alt_tensor = read_2d_array(file, alt_tensor_size)[:, 1:] if alt_tensor_size > 0 else None
 
             # consume normal reads from the file even though we don't use them;
             # in the future if the model changes to use normal reads, not just
@@ -148,8 +140,8 @@ def read_raw_unnormalized_data(
             for _ in range(normal_ref_tensor_size + normal_alt_tensor_size):
                 next(file)
 
-            original_depth, original_alt_count, original_normal_depth, original_normal_alt_count = (
-                read_integers(file.readline())
+            original_depth, original_alt_count, original_normal_depth, original_normal_alt_count = read_integers(
+                file.readline()
             )
             # this is -log10ToLog(tlod) - log(tumorDepth + 1);
             seq_error_log_lk = read_float(file.readline())
@@ -182,9 +174,7 @@ def read_raw_unnormalized_data(
                 yield datum.copy_with_downsampled_reads(ref_count, alt_count)
 
 
-def generate_raw_data_from_text_files(
-    dataset_files, sources: List[int] = None
-) -> Generator[Datum, None, None]:
+def generate_raw_data_from_text_files(dataset_files, sources: List[int] = None) -> Generator[Datum, None, None]:
     data_dim, reads_dim = ConsistentValue(), ConsistentValue()
 
     for n, dataset_file in enumerate(dataset_files):
@@ -223,9 +213,7 @@ def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Datu
 
     for chunk in range(num_chunks):
         start_idx = chunk * data_per_chunk
-        end_idx = (
-            raw_mmap_data.num_data if (chunk == num_chunks - 1) else (start_idx + data_per_chunk)
-        )
+        end_idx = raw_mmap_data.num_data if (chunk == num_chunks - 1) else (start_idx + data_per_chunk)
 
         read_start_idx = 0 if start_idx == 0 else read_end_indices[start_idx - 1]
 
@@ -238,12 +226,8 @@ def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Datu
 
         raw_data_list = []
         for idx in range(start_idx, end_idx):
-            reads = reads_mmap_re[
-                0 if idx == 0 else read_end_indices[idx - 1] : read_end_indices[idx]
-            ]
-            raw_datum = Datum(
-                int_array=int_mmap_ve[idx], float_array=float_mmap_ve[idx], reads_re=reads
-            )
+            reads = reads_mmap_re[0 if idx == 0 else read_end_indices[idx - 1] : read_end_indices[idx]]
+            raw_datum = Datum(int_array=int_mmap_ve[idx], float_array=float_mmap_ve[idx], reads_re=reads)
             raw_data_list.append(raw_datum)
 
         normalized_data_list = normalize_raw_data_list(raw_data_list, read_quantile_transform)
@@ -265,17 +249,13 @@ def make_read_quantile_transform(read_end_indices, int_array_ve, float_array_ve,
         for idx in indices_for_normalization
     ]
     normalization_ref_end_indices = [
-        (start + ref_count)
-        for start, ref_count in zip(normalization_read_start_indices, normalization_ref_counts)
+        (start + ref_count) for start, ref_count in zip(normalization_read_start_indices, normalization_ref_counts)
     ]
 
     # for every index in the normalization set, get all the reads of the corresponding datum.  Stack all these reads to
     # obtain the reads normalization array
     reads_for_normalization_re = np.vstack(
-        [
-            reads_re[start:end]
-            for start, end in zip(normalization_read_start_indices, normalization_ref_end_indices)
-        ]
+        [reads_re[start:end] for start, end in zip(normalization_read_start_indices, normalization_ref_end_indices)]
     )
     reads_for_normalization_distance_columns_re = reads_for_normalization_re[:, 6:7]
     read_quantile_transform = QuantileTransformer(n_quantiles=100, output_distribution="normal")
@@ -391,8 +371,7 @@ def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> Lis
 
     natural_log_tlod = LOG10_TO_LN * tlod_over_nalt * orig_alt_counts
     a, b, c = (
-        torch.lgamma(torch.from_numpy(x)).numpy()
-        for x in (orig_depths + 1, orig_alt_counts + 1, orig_ref_counts + 1)
+        torch.lgamma(torch.from_numpy(x)).numpy() for x in (orig_depths + 1, orig_alt_counts + 1, orig_ref_counts + 1)
     )
     tlod_correction = a - b - c
     average_qual_feature = ((natural_log_tlod + tlod_correction) / orig_alt_counts) / 10
@@ -400,13 +379,9 @@ def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> Lis
     all_info_transformed_ve = np.hstack([binary_info_array_ve, average_qual_feature.reshape(-1, 1)])
 
     from_read_ends_columns_re = all_reads_re[:, 4:6]
-    from_read_ends_transformed_re = np.tanh(
-        from_read_ends_columns_re / DISTANCE_FROM_END_SATURATION
-    )
+    from_read_ends_transformed_re = np.tanh(from_read_ends_columns_re / DISTANCE_FROM_END_SATURATION)
     from_frag_ends_columns_re = all_reads_re[:, 7:9]
-    from_frag_ends_transformed_re = np.tanh(
-        from_frag_ends_columns_re / DISTANCE_FROM_END_SATURATION
-    )
+    from_frag_ends_transformed_re = np.tanh(from_frag_ends_columns_re / DISTANCE_FROM_END_SATURATION)
     distance_columns_re = all_reads_re[:, 6:7]
     distance_columns_transformed_re = read_quantile_transform.transform(distance_columns_re)
     float_read_columns_re = np.hstack(
@@ -480,20 +455,14 @@ def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> Lis
     normalized_result = []
     raw_datum: Datum
     for n, raw_datum in enumerate(buffer):
-        ref_start_index = (
-            0 if n == 0 else read_index_ranges[n - 1]
-        )  # first index of this datum's reads
+        ref_start_index = 0 if n == 0 else read_index_ranges[n - 1]  # first index of this datum's reads
         alt_end_index = read_index_ranges[n]
         alt_start_index = ref_start_index + raw_datum.get(Data.REF_COUNT)
 
         # TODO: maybe we could also have columnwise nonparametric test statistics, like for example we record the
         # TODO: quantiles over all ref reads
-        alt_distance_medians_e = np.median(
-            float_read_columns_re[alt_start_index:alt_end_index, :], axis=0
-        )
-        alt_boolean_means_e = np.mean(
-            boolean_output_array_re[alt_start_index:alt_end_index, :], axis=0
-        )
+        alt_distance_medians_e = np.median(float_read_columns_re[alt_start_index:alt_end_index, :], axis=0)
+        alt_boolean_means_e = np.mean(boolean_output_array_re[alt_start_index:alt_end_index, :], axis=0)
         extra_info_e = np.hstack((alt_distance_medians_e, alt_boolean_means_e))
 
         output_reads_re = output_uint8_reads_array[ref_start_index:alt_end_index]

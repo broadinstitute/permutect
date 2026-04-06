@@ -35,9 +35,7 @@ def test_monotonic_linear_data():
     x = torch.rand(num_samples, input_dim)
     y = torch.sum(x * a, dim=1)  # row-by-row dot product
 
-    model = MonoDense(
-        input_dimension=input_dim, output_dimensions=[1], num_increasing=input_dim, num_decreasing=0
-    )
+    model = MonoDense(input_dimension=input_dim, output_dimensions=[1], num_increasing=input_dim, num_decreasing=0)
     loss_func = torch.nn.MSELoss(reduction="mean")
     optimizer = torch.optim.Adam(model.parameters())
     loss_list = []

@@ -39,12 +39,8 @@ from permutect.utils.enums import Variation
 
 class Batch:
     def __init__(self, data: List[Datum]):
-        self.int_tensor = torch.from_numpy(np.vstack([d.get_int_array() for d in data])).to(
-            torch.long
-        )
-        self.float_tensor = torch.from_numpy(np.vstack([d.get_float_array() for d in data])).to(
-            torch.float
-        )
+        self.int_tensor = torch.from_numpy(np.vstack([d.get_int_array() for d in data])).to(torch.long)
+        self.float_tensor = torch.from_numpy(np.vstack([d.get_float_array() for d in data])).to(torch.float)
 
         ref_arrays = [datum.get_ref_reads_re() for datum in data]
         alt_arrays = [datum.get_alt_reads_re() for datum in data]
@@ -55,9 +51,7 @@ class Batch:
         if reads_are_compressed:
             packed_binary_columns_re = reads_re[:, :NUMBER_OF_BYTES_IN_PACKED_READ]
             compressed_float_columns_re = reads_re[:, NUMBER_OF_BYTES_IN_PACKED_READ:]
-            binary_columns_re = np.ndarray.astype(
-                np.unpackbits(packed_binary_columns_re, axis=1), FLOAT_DTYPE
-            )
+            binary_columns_re = np.ndarray.astype(np.unpackbits(packed_binary_columns_re, axis=1), FLOAT_DTYPE)
             float_columns_re = convert_uint8_to_quantile_normalized(compressed_float_columns_re)
             self.reads_re = torch.from_numpy(np.hstack((binary_columns_re, float_columns_re)))
         else:
@@ -80,9 +74,7 @@ class Batch:
                 if use_original_counts
                 else self.get(Data.REF_COUNT)
             )
-            alt_counts = self.get(
-                Data.ORIGINAL_ALT_COUNT if use_original_counts else Data.ALT_COUNT
-            )
+            alt_counts = self.get(Data.ORIGINAL_ALT_COUNT if use_original_counts else Data.ALT_COUNT)
             self.lazy_batch_indices = BatchIndices(
                 sources=self.get(Data.SOURCE),
                 labels=self.get(Data.LABEL),
@@ -107,9 +99,7 @@ class Batch:
     # the 0.5 for unlabeled data is reasonable but should never actually be used due to the is_labeled mask
     def get_training_labels(self) -> FloatTensor:
         int_enum_labels = self.get(Data.LABEL)
-        return 1.0 * (int_enum_labels == Label.ARTIFACT) + 0.5 * (
-            int_enum_labels == Label.UNLABELED
-        )
+        return 1.0 * (int_enum_labels == Label.ARTIFACT) + 0.5 * (int_enum_labels == Label.UNLABELED)
 
     def get_is_labeled_mask(self) -> IntTensor:
         int_enum_labels = self.get(Data.LABEL)
@@ -132,9 +122,7 @@ class Batch:
         seq_length = haplotypes_bh.shape[1] // 2  # ref and alt have equal length and are h-stacked
 
         # num_classes = 5 for A, C, G, T, and deletion / insertion
-        one_hot_haplotypes_bhc = torch.nn.functional.one_hot(
-            haplotypes_bh, num_classes=num_channels
-        )
+        one_hot_haplotypes_bhc = torch.nn.functional.one_hot(haplotypes_bh, num_classes=num_channels)
         one_hot_haplotypes_bch = torch.permute(one_hot_haplotypes_bhc, (0, 2, 1))
 
         # interleave the 5 channels of ref and 5 channels of alt with a reshape
@@ -272,9 +260,7 @@ class BatchIndices:
         if logits is None and not tens.has_logits():
             return tens.view(-1).index_add_(dim=0, index=self.flattened_idx, source=values)
         elif logits is not None and tens.has_logits():
-            return tens.view(-1).index_add_(
-                dim=0, index=self._flattened_idx_with_logits(logits), source=values
-            )
+            return tens.view(-1).index_add_(dim=0, index=self._flattened_idx_with_logits(logits), source=values)
         else:
             raise Exception(
                 "Logits are used if and only if batch-indexed tensor to be indexed includes a logit dimension."
@@ -316,9 +302,7 @@ class BatchIndexedTensor(Tensor):
 
     # I think this needs to have the same signature as __new__?
     def __init__(self, data: Tensor):
-        assert data.dim() == 5 or data.dim() == 6, (
-            "batch-indexed tensors have either 5 or 6 dimensions"
-        )
+        assert data.dim() == 5 or data.dim() == 6, "batch-indexed tensors have either 5 or 6 dimensions"
 
     def has_logits(self) -> bool:
         return self.dim() == 6
@@ -383,12 +367,8 @@ class BatchIndexedTensor(Tensor):
         self[source, datum.get(Data.LABEL), datum.get(Data.VARIANT_TYPE), ref_idx, alt_idx] += value
 
     # TODO: move to a metrics subclass -- this class should really only be for indexing, not recording
-    def record(
-        self, batch: Batch, values: Tensor, logits: Tensor = None, use_original_counts: bool = False
-    ):
-        batch.batch_indices(use_original_counts).increment_tensor(
-            self, values=values, logits=logits
-        )
+    def record(self, batch: Batch, values: Tensor, logits: Tensor = None, use_original_counts: bool = False):
+        batch.batch_indices(use_original_counts).increment_tensor(self, values=values, logits=logits)
 
     def get_marginal(self, *properties: BatchProperty) -> Tensor:
         """
@@ -440,23 +420,17 @@ class DownsampledBatch(Batch):
         alt_ends = torch.cumsum(old_alt_counts, dim=0)
         alt_override_idx = (
             alt_ends
-            - torch.remainder(
-                torch.tensor([random_int], device=self.device, dtype=torch.int64), old_alt_counts
-            )
+            - torch.remainder(torch.tensor([random_int], device=self.device, dtype=torch.int64), old_alt_counts)
             - 1
         )
         keep_alt_mask[alt_override_idx] = 1
 
         # the alt counts are the sums of the mask within the ranges of each datum
         self.ref_counts = (
-            torch.segment_reduce(keep_ref_mask.float(), reduce="sum", lengths=old_ref_counts)
-            .round()
-            .int()
+            torch.segment_reduce(keep_ref_mask.float(), reduce="sum", lengths=old_ref_counts).round().int()
         )
         self.alt_counts = (
-            torch.segment_reduce(keep_alt_mask.float(), reduce="sum", lengths=old_alt_counts)
-            .round()
-            .int()
+            torch.segment_reduce(keep_alt_mask.float(), reduce="sum", lengths=old_alt_counts).round().int()
         )
         # randomly assign ref reads to keep
 
@@ -476,9 +450,7 @@ class DownsampledBatch(Batch):
 
     # override
     def get_int_array_be(self) -> np.ndarray:
-        result = self.int_tensor.cpu().numpy(
-            force=True
-        )  # force it to make a copy because we modify it
+        result = self.int_tensor.cpu().numpy(force=True)  # force it to make a copy because we modify it
         result[:, Data.REF_COUNT.idx] = self.ref_counts.cpu().numpy()
         result[:, Data.ALT_COUNT.idx] = self.alt_counts.cpu().numpy()
         return result

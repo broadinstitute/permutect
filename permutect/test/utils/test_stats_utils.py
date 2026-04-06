@@ -12,9 +12,7 @@ def test_normalization():
             k = torch.tensor(range(0, n + 1))
 
             # binomial
-            binomial_log_sum = torch.logsumexp(
-                binomial_log_lk(n=torch.tensor([n]), k=k, p=torch.tensor([p])), dim=-1
-            )
+            binomial_log_sum = torch.logsumexp(binomial_log_lk(n=torch.tensor([n]), k=k, p=torch.tensor([p])), dim=-1)
             assert torch.abs(binomial_log_sum).item() < 10 ** (-5)
 
             # beta binomial
@@ -33,9 +31,7 @@ def test_normalization():
             # uniform binomial
             for x1, x2 in [(0.1, 0.2), (0.1, 0.5), (0.4, 0.5), (0.5, 0.9)]:
                 uniform_binomial_log_sum = torch.logsumexp(
-                    uniform_binomial_log_lk(
-                        n=torch.tensor([n]), k=k, x1=torch.tensor([x1]), x2=torch.tensor([x2])
-                    ),
+                    uniform_binomial_log_lk(n=torch.tensor([n]), k=k, x1=torch.tensor([x1]), x2=torch.tensor([x2])),
                     dim=-1,
                 )
                 assert torch.abs(uniform_binomial_log_sum).item() < 0.005
