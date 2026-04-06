@@ -255,11 +255,7 @@ class ArtifactModel(torch.nn.Module):
         reduced_ref_bre = transformed_ref_bre.apply_elementwise(self.reducer)
         reduced_alt_bre = transformed_alt_bre.apply_elementwise(self.reducer)
 
-        return (
-            reduced_ref_bre,
-            reduced_alt_bre,
-            ref_seq_embeddings_be,
-        )  # ref seq embeddings are useful later
+        return reduced_ref_bre, reduced_alt_bre, ref_seq_embeddings_be  # ref seq embeddings are useful later
 
     def compute_source_prediction_losses(self, features_be: Tensor, batch: Batch) -> Tensor:
         if self.num_sources > 1:
@@ -306,10 +302,8 @@ class ArtifactModel(torch.nn.Module):
         # We do this by penalizes the probability assigned to the outlier pseudo-cluster. Since
         # some genuine outlier data does exist, such as rare or unmodeled artifacts, we clip the outlier
         # logit to avert unduly strong influence.
-        outlier_losses_b = BCE(
-            torch.clip(output.outlier_binary_logits, max=MAX_OUTLIER_LOGIT),
-            torch.zeros_like(output.outlier_binary_logits),
-        )
+        clipped_logits = torch.clip(output.outlier_binary_logits, max=MAX_OUTLIER_LOGIT)
+        outlier_losses_b = BCE(clipped_logits, torch.zeros_like(output.outlier_binary_logits))
 
         unsupervised_losses_b = (1 - is_labeled_b) * outlier_losses_b
         alt_count_losses_b = self.compute_alt_count_losses(output.features_be, batch)
@@ -328,6 +322,7 @@ class ArtifactModel(torch.nn.Module):
         )
 
     def make_dict_for_saving(self, artifact_log_priors=None, artifact_spectra=None):
+        spectra_dict = artifact_spectra.state_dict() if artifact_spectra is not None else None
         return {
             constants.STATE_DICT_NAME: self.state_dict(),
             constants.HYPERPARAMS_NAME: self._params,
@@ -335,9 +330,7 @@ class ArtifactModel(torch.nn.Module):
             constants.NUM_INFO_FEATURES_NAME: self.info_embedding.input_dimension(),
             constants.REF_SEQUENCE_LENGTH_NAME: self.haplotypes_length(),
             constants.ARTIFACT_LOG_PRIORS_NAME: artifact_log_priors,
-            constants.ARTIFACT_SPECTRA_STATE_DICT_NAME: artifact_spectra.state_dict()
-            if artifact_spectra is not None
-            else None,
+            constants.ARTIFACT_SPECTRA_STATE_DICT_NAME: spectra_dict,
         }
 
     # save a model, optionally with artifact log priors and spectra
