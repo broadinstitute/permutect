@@ -143,9 +143,10 @@ def train_one_epoch(balancer: Balancer, checkpoint: Checkpoint, device: device, 
     loss_recorder.output_results(epoch_type, epoch, summary_writer, generate_plots)
 
     if generate_plots:
-        weight_prefix, count_prefix = "log(label-balancing weights)", "unweighted data counts after downsampling"
-        balancer.make_plots(summary_writer, weight_prefix, epoch_type, epoch, PlotType.WEIGHTS)
-        balancer.make_plots(summary_writer, count_prefix, epoch_type, epoch, PlotType.COUNTS)
+        weight_prefix,  = "log(label-balancing weights)" + f"({epoch_type.name})"
+        count_prefix = "unweighted data counts after downsampling" + f"({epoch_type.name})"
+        balancer.make_plots(summary_writer, weight_prefix, epoch, PlotType.WEIGHTS)
+        balancer.make_plots(summary_writer, count_prefix, epoch, PlotType.COUNTS)
 
     print(f"performing evaluation on epoch {epoch}")
     if epoch_type == Epoch.VALID:

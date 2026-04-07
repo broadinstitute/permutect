@@ -100,14 +100,7 @@ class Balancer(Module):
 
         return plotting.color_plot_2d_on_axis(axis, xbounds, ybounds, plot_data_ra, **kwargs)
 
-    def make_plots(
-        self,
-        summary_writer: SummaryWriter,
-        prefix: str,
-        epoch_type: Epoch,
-        epoch: int = None,
-        plot_type: PlotType = PlotType.WEIGHTS,
-    ):
+    def make_plots(self, summary_writer: SummaryWriter, prefix: str, epoch: int, plot_type: PlotType):
         for source in range(self.num_sources):
             figsize = (2.5 * len(Variation), 2.5 * len(Label))
             subplots_kwargs = {"sharex": "all", "sharey": "all", "squeeze": False, "figsize": figsize}
@@ -125,4 +118,4 @@ class Balancer(Module):
             plotting.tidy_subplots(fig, axes, **tidy_kwargs)
             multi_source_suffix = ", all sources" if source is None else f", source {source}"
             source_suffix = "" if self.num_sources == 1 else multi_source_suffix
-            summary_writer.add_figure(f"{prefix} ({epoch_type.name})" + source_suffix, fig, global_step=epoch)
+            summary_writer.add_figure(prefix + source_suffix, fig, global_step=epoch)
