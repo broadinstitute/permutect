@@ -1,3 +1,4 @@
+import enum
 import math
 
 import numpy as np
@@ -17,6 +18,9 @@ from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
 
+class PlotType(enum.Enum):
+    COUNTS = "counts"
+    WEIGHTS = "weights"
 
 class Balancer(Module):
     ATTENUATION_PER_DATUM = 0.99999
@@ -78,43 +82,23 @@ class Balancer(Module):
         return batch_weights, source_weights
 
     # TODO: lots of code duplication with the plotting in loss_metrics.py
-    def plot_weights(self, label: Label, var_type: Variation, axis, source: int):
-        """
-        for given Label and Variation, plot color map of (effective) data counts vs ref (x axis) and alt (y axis) counts
-        :return:
-        """
-        weights_ra = self.weights_slvra[source, label, var_type].cpu()
-        log_weights_ra = torch.clip(torch.log(weights_ra), -4, 4)
-        return plotting.color_plot_2d_on_axis(
-            axis,
-            np.array(ALT_COUNT_BIN_BOUNDS),
-            np.array(REF_COUNT_BIN_BOUNDS),
-            log_weights_ra,
-            None,
-            None,
-            vmin=-4,
-            vmax=4,
-        )
+    def make_plot(self, label: Label, var_type: Variation, axis, source: int, plot_type: PlotType):
+        if plot_type == PlotType.WEIGHTS:
+            vmin, vmax = -4, 4
+            weights_ra = self.weights_slvra[source, label, var_type].cpu()
+            plot_data_ra = torch.clip(torch.log(weights_ra), min=vmin, max=vmax)
+        elif plot_type == PlotType.COUNTS:
+            vmin, vmax = -10, 0
+            counts_lra = self.counts_slvra[source, :, var_type].cpu()
+            max_count = torch.max(counts_lra)
+            normalized_counts_ra = (counts_lra / max_count)[label] + 0.0001
+            plot_data_ra = torch.clip(torch.log(normalized_counts_ra), -10, 0)
+        else:
+            raise ValueError(f"Unknown type_of_plot: {plot_type.name}.")
+        xbounds, ybounds = np.array(ALT_COUNT_BIN_BOUNDS), np.array(REF_COUNT_BIN_BOUNDS)
+        kwargs = {"x_label": None, "y_label": None, "vmin": vmin, "vmax": vmax}
 
-    def plot_counts(self, label: Label, var_type: Variation, axis, source: int):
-        """
-        for given Label and Variation, plot color map of (effective) data counts vs ref (x axis) and alt (y axis) counts
-        :return:
-        """
-        counts_lra = self.counts_slvra[source, :, var_type].cpu()
-        max_count = torch.max(counts_lra)
-        normalized_counts_ra = (counts_lra / max_count)[label] + 0.0001
-        log_normalized_count_ra = torch.clip(torch.log(normalized_counts_ra), -10, 0)
-        return plotting.color_plot_2d_on_axis(
-            axis,
-            np.array(ALT_COUNT_BIN_BOUNDS),
-            np.array(REF_COUNT_BIN_BOUNDS),
-            log_normalized_count_ra,
-            None,
-            None,
-            vmin=-10,
-            vmax=0,
-        )
+        return plotting.color_plot_2d_on_axis(axis, xbounds, ybounds, plot_data_ra, **kwargs)
 
     def make_plots(
         self,
@@ -122,7 +106,7 @@ class Balancer(Module):
         prefix: str,
         epoch_type: Epoch,
         epoch: int = None,
-        type_of_plot: str = "weights",
+        plot_type: PlotType = PlotType.WEIGHTS,
     ):
         for source in range(self.num_sources):
             figsize = (2.5 * len(Variation), 2.5 * len(Label))
@@ -134,16 +118,11 @@ class Balancer(Module):
             common_colormesh = None
             for label in Label:
                 for var_type in Variation:
-                    if type_of_plot == "weights":
-                        common_colormesh = self.plot_weights(label, var_type, axes[label, var_type], source)
-                    elif type_of_plot == "counts":
-                        common_colormesh = self.plot_counts(label, var_type, axes[label, var_type], source)
-                    else:
-                        raise ValueError(f"Unknown type_of_plot: {type_of_plot}. Expected 'weights' or 'counts'.")
+                    common_colormesh = self.make_plot(label, var_type, axes[label, var_type], source, plot_type)
+
             fig.colorbar(common_colormesh)
             tidy_kwargs = {"x_label": "N_alt", "y_label": "N_ref", "row_labels": row_names, "col_labels": col_names}
             plotting.tidy_subplots(fig, axes, **tidy_kwargs)
-            source_suffix = (
-                "" if self.num_sources == 1 else (", all sources" if source is None else f", source {source}")
-            )
+            multi_source_suffix = ", all sources" if source is None else f", source {source}"
+            source_suffix = "" if self.num_sources == 1 else multi_source_suffix
             summary_writer.add_figure(f"{prefix} ({epoch_type.name})" + source_suffix, fig, global_step=epoch)

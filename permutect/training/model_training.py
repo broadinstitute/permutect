@@ -35,6 +35,7 @@ from permutect.misc_utils import report_memory_usage
 from permutect.misc_utils import unfreeze
 from permutect.parameters import TrainingParameters
 from permutect.training.balancer import Balancer
+from permutect.training.balancer import PlotType
 from permutect.training.checkpoint import Checkpoint
 from permutect.training.downsampler import Downsampler
 from permutect.training.loss_recorder import LossRecorder
@@ -149,20 +150,10 @@ def train_one_epoch(balancer: Balancer, checkpoint: Checkpoint, device: device, 
     loss_recorder.output_results(epoch_type, epoch, summary_writer, generate_plots)
 
     if generate_plots:
-        balancer.make_plots(
-            summary_writer,
-            "log(label-balancing weights)",
-            epoch_type,
-            epoch,
-            type_of_plot="weights",
-        )
-        balancer.make_plots(
-            summary_writer,
-            "unweighted data counts after downsampling",
-            epoch_type,
-            epoch,
-            type_of_plot="counts",
-        )
+        weight_prefix, count_prefix = "log(label-balancing weights)", "unweighted data counts after downsampling"
+        balancer.make_plots(summary_writer, weight_prefix, epoch_type, epoch, PlotType.WEIGHTS)
+        balancer.make_plots(summary_writer, count_prefix, epoch_type, epoch, PlotType.COUNTS)
+
     print(f"performing evaluation on epoch {epoch}")
     if epoch_type == Epoch.VALID:
         evaluate_model(
