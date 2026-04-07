@@ -239,12 +239,10 @@ class ArtifactModel(torch.nn.Module):
         info_embeddings_be = self.info_embedding.forward(batch.get_info_be().to(dtype=self._dtype))
         ref_seq_embeddings_be = self.haplotypes_cnn(batch.get_one_hot_haplotypes_bcs().to(dtype=self._dtype))
         info_and_seq_be = torch.hstack((info_embeddings_be, ref_seq_embeddings_be))
-        info_and_seq_re = torch.vstack(
-            (
-                torch.repeat_interleave(info_and_seq_be, repeats=ref_counts_b, dim=0),
-                torch.repeat_interleave(info_and_seq_be, repeats=alt_counts_b, dim=0),
-            )
-        )
+
+        ref_info_and_seq_re = torch.repeat_interleave(info_and_seq_be, repeats=ref_counts_b, dim=0)
+        alt_info_and_seq_re = torch.repeat_interleave(info_and_seq_be, repeats=alt_counts_b, dim=0)
+        info_and_seq_re = torch.vstack((ref_info_and_seq_re, alt_info_and_seq_re))
         reads_info_seq_re = torch.hstack((read_embeddings_re, info_and_seq_re))
 
         # TODO: might be a bug if every datum in batch has zero ref reads?
