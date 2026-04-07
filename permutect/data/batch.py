@@ -333,9 +333,6 @@ class BatchIndexedTensor(Tensor):
         self.resize_(shape)
         self[old_num_sources:] = 0
 
-    def index_by_batch(self, batch: Batch, logits: Tensor = None):
-        return batch.batch_indices().index_into_tensor(self, logits)
-
     # TODO: move to subclass as in comments below
     def record_datum(self, datum: Datum, value: float = 1.0, grow_source_if_necessary: bool = True):
         assert not self.has_logits(), "this only works when not including logits"

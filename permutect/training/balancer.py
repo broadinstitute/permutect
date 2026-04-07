@@ -29,7 +29,6 @@ class Balancer(Module):
         self.count_since_last_recomputation = 0
 
         # not weighted, just the actual counts of data seen
-        BatchIndexedTensor.zeros(num_sources=num_sources)
         self.counts_slvra = Parameter(BatchIndexedTensor.zeros(num_sources=num_sources), requires_grad=False)
 
         # initialize weights to be flat
@@ -38,35 +37,7 @@ class Balancer(Module):
         # the overall weights for adversarial source prediction are the regular weights times the source weights
         self.source_weights_s = Parameter(torch.ones(num_sources), requires_grad=False)
 
-        # Beta binomial shape parameters for ref and alt count balancing by downsampling
-        # for data with ref count r and alt count a we have distributions Beta_ref = (alpha_ref[r,a], beta_ref[r,a]) and
-        # Beta_alt = (alpha_alt[r,a], beta_alt[r,a]) from which we sample the downsampling ref and alt fractions (and then
-        # in downsampling a binomial draw of reads to keep happens).
-        self.alpha_ref_pre_exp_slvra = Parameter(
-            BatchIndexedTensor.zeros(num_sources=num_sources), requires_grad=False
-        )
-        self.beta_ref_pre_exp_slvra = Parameter(
-            BatchIndexedTensor.zeros(num_sources=num_sources), requires_grad=False
-        )
-        self.alpha_alt_pre_exp_slvra = Parameter(
-            BatchIndexedTensor.zeros(num_sources=num_sources), requires_grad=False
-        )
-        self.beta_alt_pre_exp_slvra = Parameter(
-            BatchIndexedTensor.zeros(num_sources=num_sources), requires_grad=False
-        )
         self.to(device=device)
-
-    # TODO: compute multiple sets of samplings
-    def compute_downsampling_fractions(self, batch: Batch):
-        alpha_ref_b = torch.exp(self.alpha_ref_pre_exp_slvra).index_by_batch(batch)
-        beta_ref_b = torch.exp(self.beta_ref_pre_exp_slvra).index_by_batch(batch)
-        alpha_alt_b = torch.exp(self.alpha_alt_pre_exp_slvra).index_by_batch(batch)
-        beta_alt_b = torch.exp(self.beta_alt_pre_exp_slvra).index_by_batch(batch)
-
-        ref_fractions_b = Beta(alpha_ref_b, beta_ref_b).sample()
-        alt_fractions_b = Beta(alpha_alt_b, beta_alt_b).sample()
-
-        return ref_fractions_b, alt_fractions_b
 
     def process_batch_and_compute_weights(self, batch: Batch):
         # this updates the counts that are used to compute weights, recomputes the weights, and returns the weights
