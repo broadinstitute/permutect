@@ -243,7 +243,7 @@ class PosteriorModel(torch.nn.Module):
             x_label="sensitivity",
             y_label="precision",
             row_labels=[""],
-            column_labels=variation_types,
+            col_labels=variation_types,
         )
         plotting.tidy_subplots(
             roc_fig,
@@ -251,7 +251,7 @@ class PosteriorModel(torch.nn.Module):
             x_label="sensitivity",
             y_label="precision",
             row_labels=[""],
-            column_labels=variation_types,
+            col_labels=variation_types,
         )
         if summary_writer is not None:
             summary_writer.add_figure("theoretical ROC by variant type ", roc_fig)

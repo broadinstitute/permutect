@@ -172,7 +172,7 @@ class LossMetrics:
                 x_label="alt count",
                 y_label="ref count",
                 row_labels=row_names,
-                column_labels=variation_types,
+                col_labels=variation_types,
             )
             source_suffix = (
                 "" if self.num_sources == 1 else (", all sources" if source is None else f", source {source}")
@@ -429,6 +429,6 @@ class AccuracyMetrics(BatchIndexedTensor):
             x_label="predicted logit",
             y_label="frequency",
             row_labels=row_names,
-            column_labels=column_names,
+            col_labels=column_names,
         )
         return fig, axes

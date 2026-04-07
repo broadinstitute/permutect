@@ -125,16 +125,12 @@ class Balancer(Module):
         type_of_plot: str = "weights",
     ):
         for source in range(self.num_sources):
-            fig, axes = plt.subplots(
-                len(Label),
-                len(Variation),
-                sharex="all",
-                sharey="all",
-                squeeze=False,
-                figsize=(2.5 * len(Variation), 2.5 * len(Label)),
-            )
+            figsize = (2.5 * len(Variation), 2.5 * len(Label))
+            subplots_kwargs = {"sharex": "all", "sharey": "all", "squeeze": False, "figsize": figsize}
+            fig, axes = plt.subplots(len(Label), len(Variation), **subplots_kwargs)
+
             row_names = [label.name for label in Label]
-            variation_types = [var_type.name for var_type in Variation]
+            col_names = [var_type.name for var_type in Variation]
             common_colormesh = None
             for label in Label:
                 for var_type in Variation:
@@ -145,14 +141,8 @@ class Balancer(Module):
                     else:
                         raise ValueError(f"Unknown type_of_plot: {type_of_plot}. Expected 'weights' or 'counts'.")
             fig.colorbar(common_colormesh)
-            plotting.tidy_subplots(
-                fig,
-                axes,
-                x_label="alt count",
-                y_label="ref count",
-                row_labels=row_names,
-                column_labels=variation_types,
-            )
+            tidy_kwargs = {"x_label": "N_alt", "y_label": "N_ref", "row_labels": row_names, "col_labels": col_names}
+            plotting.tidy_subplots(fig, axes, **tidy_kwargs)
             source_suffix = (
                 "" if self.num_sources == 1 else (", all sources" if source is None else f", source {source}")
             )
