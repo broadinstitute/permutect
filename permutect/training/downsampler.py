@@ -85,28 +85,10 @@ class Downsampler(Module):
 
         # for each source/label/var type/ ref/alt bin we have mixture component weights for both ref and alt downsampling
         # 'k' and 'h' are both indices to denote the mixture components
-        self.ref_weights_pre_softmax_slvrak = Parameter(
-            torch.zeros(
-                num_sources,
-                len(Label),
-                len(Variation),
-                NUM_REF_COUNT_BINS,
-                NUM_ALT_COUNT_BINS,
-                len(Downsampler.BETA_BASIS_SHAPES),
-            ),
-            requires_grad=True,
-        )
-        self.alt_weights_pre_softmax_slvrah = Parameter(
-            torch.zeros(
-                num_sources,
-                len(Label),
-                len(Variation),
-                NUM_REF_COUNT_BINS,
-                NUM_ALT_COUNT_BINS,
-                len(Downsampler.BETA_BASIS_SHAPES),
-            ),
-            requires_grad=True,
-        )
+        slvra_shape = BatchIndexedTensor.shape_without_logits(num_sources)
+        slvrak_shape = (slvra_shape + (len(Downsampler.BETA_BASIS_SHAPES),))
+        self.ref_weights_pre_softmax_slvrak = Parameter(torch.zeros(slvrak_shape), requires_grad=True)
+        self.alt_weights_pre_softmax_slvrah = Parameter(torch.zeros(slvrak_shape), requires_grad=True)
 
         # these will be learned and frozen!!
         self.trained_ref_weights_slvrak = Parameter(
