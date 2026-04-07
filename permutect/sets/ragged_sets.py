@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 from typing import Iterable
 
 # in Python 3.11 this would be from typing import Self
 from typing import TypeVar
 
 import torch
-from torch import LongTensor
+from torch import LongTensor, IntTensor
 from torch import Tensor
 
 ThisClass = TypeVar("ThisClass", bound="RaggedSets")
@@ -28,7 +30,7 @@ class RaggedSets:
     Example: sets of sizes 1,3,2; bounds = [0, 1, 4, 6]
     """
 
-    def __init__(self, flattened_tensor_nf: Tensor, lengths_b: LongTensor):
+    def __init__(self, flattened_tensor_nf: Tensor, lengths_b: IntTensor | LongTensor):
         self.flattened_tensor_nf = flattened_tensor_nf
         assert lengths_b.dim() == 1
         assert torch.sum(lengths_b) == len(flattened_tensor_nf)

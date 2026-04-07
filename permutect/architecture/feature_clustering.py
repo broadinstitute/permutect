@@ -78,7 +78,7 @@ Returns a tensor indexed by whatever dimensions 'b' represented i.e. the -1 dime
 """
 
 
-def diagonal_covariance_gaussian_log_likelihood(vectors_bf: Tensor, stdev_bf: Tensor) -> Tensor:
+def diagonal_gaussian_log_likelihood(vectors_bf: Tensor, stdev_bf: Tensor) -> Tensor:
     feature_dim = vectors_bf.shape[-1]
     normalization_part = -(feature_dim / 2) * LOG2PI - torch.sum(torch.log(stdev_bf), dim=-1)
     exponential_part = -torch.sum(torch.square(vectors_bf / stdev_bf), dim=-1) / 2
@@ -147,9 +147,7 @@ class FeatureClustering(nn.Module):
 
         # the orthogonal projections of artifact reads onto the clusters' directions is posited to follow an
         # (F-1)-dimensional isotropic Gaussian
-        self.artifact_stdev_k = Parameter(
-            torch.ones(self.num_artifact_clusters)
-        )  # in (F-1)-dim space for orthogonal projection
+        self.artifact_stdev_k = Parameter(torch.ones(self.num_artifact_clusters))
         parametrize.register_parametrization(
             self, "artifact_stdev_k", BoundedNumber(min_val=MIN_STDEV, max_val=MAX_STDEV)
         )
@@ -167,16 +165,12 @@ class FeatureClustering(nn.Module):
         alt_re = shifted_alt_bre.flattened_tensor_nf
 
         # nonartifact Gaussian in F dimensions
-        nonartifact_log_lks_r = diagonal_covariance_gaussian_log_likelihood(
-            vectors_bf=alt_re, stdev_bf=self.nonartifact_stdev_e[None, :]
-        )
+        nonartifact_log_lks_r = diagonal_gaussian_log_likelihood(alt_re, stdev_bf=self.nonartifact_stdev_e[None, :])
 
-        # outliers are modeled by a Gaussian with same shape and tice as dispersed as the nonartifact Gaussian.
+        # outliers are modeled by a Gaussian with same shape and twice as dispersed as the nonartifact Gaussian.
         # Unsupervised loss tries to minimize probability assigned to this "pseudocluster", which is akin to
         # assigning data to areas of high probability density.
-        outlier_log_lks_r = diagonal_covariance_gaussian_log_likelihood(
-            vectors_bf=alt_re, stdev_bf=2 * self.nonartifact_stdev_e[None, :]
-        )
+        outlier_log_lks_r = diagonal_gaussian_log_likelihood(alt_re, stdev_bf=2 * self.nonartifact_stdev_e[None, :])
 
         parallel_projections_rk, orthogonal_projections_rke = parallel_and_orthogonal_projections(
             vectors_re=alt_re, direction_vectors_ke=self.artifact_directions_ke
@@ -201,13 +195,9 @@ class FeatureClustering(nn.Module):
         outlier_log_lks_rk = outlier_log_lks_r[:, None]
         artifact_log_lks_rk = orthogonal_log_lks_rk + parallel_log_lks_rk
 
-        nonartifact_log_lks_bk = RaggedSets(
-            flattened_tensor_nf=nonartifact_log_lks_rk, lengths_b=alt_counts_b
-        ).sums_over_sets()
-        outlier_log_lks_bk = RaggedSets(flattened_tensor_nf=outlier_log_lks_rk, lengths_b=alt_counts_b).sums_over_sets()
-        unweighted_artifact_log_lks_bk = RaggedSets(
-            flattened_tensor_nf=artifact_log_lks_rk, lengths_b=alt_counts_b
-        ).sums_over_sets()
+        nonartifact_log_lks_bk = RaggedSets(nonartifact_log_lks_rk, lengths_b=alt_counts_b).sums_over_sets()
+        outlier_log_lks_bk = RaggedSets(outlier_log_lks_rk, lengths_b=alt_counts_b).sums_over_sets()
+        unweighted_artifact_log_lks_bk = RaggedSets(artifact_log_lks_rk, lengths_b=alt_counts_b).sums_over_sets()
 
         # these are the log of weights that sum to 1
         log_artifact_cluster_weights_k = torch.log_softmax(self.cluster_weights_pre_softmax_k, dim=-1)
