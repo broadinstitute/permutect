@@ -5,7 +5,6 @@ import math
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
-from torch.distributions import Beta
 from torch.nn import Module
 from torch.nn import Parameter
 from torch.utils.tensorboard import SummaryWriter
@@ -15,9 +14,9 @@ from permutect.data.batch import BatchIndexedTensor
 from permutect.data.count_binning import ALT_COUNT_BIN_BOUNDS
 from permutect.data.count_binning import REF_COUNT_BIN_BOUNDS
 from permutect.metrics import plotting
-from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
+
 
 class PlotType(enum.Enum):
     COUNTS = "counts"
