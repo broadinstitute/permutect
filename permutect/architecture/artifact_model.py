@@ -367,7 +367,6 @@ def load_model(path, device: torch.device = None):
 # after training for visualizing clustering etc of base model embeddings
 @torch.no_grad()
 def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWriter):
-    # base_model.freeze_all() whoops -- it doesn't have freeze_all
     embedding_metrics = EmbeddingMetrics()
     ref_alt_seq_metrics = EmbeddingMetrics()
 
