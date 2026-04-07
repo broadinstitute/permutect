@@ -23,22 +23,15 @@ from permutect.utils.stats_utils import beta_binomial_log_lk
 
 class Downsampler(Module):
     # downsampling is done as a mixture of beta binomials with a *fixed* set of basis beta distributions
-    BETA_BASIS_SHAPES = [(1.0, 1.0), (1.0, 5.0), (5.0, 1.0), (5.0, 5.0)]
+    BETA_BASIS_SHAPES = torch.tensor([[1.0, 1.0], [1.0, 5.0], [5.0, 1.0], [5.0, 5.0]], requires_grad=False)
 
     def __init__(self, num_sources: int):
         super(Downsampler, self).__init__()
         self.num_sources = num_sources
 
-        self.alpha_k = Parameter(
-            torch.tensor([shape[0] for shape in Downsampler.BETA_BASIS_SHAPES]), requires_grad=False
-        )
-        self.beta_k = Parameter(
-            torch.tensor([shape[1] for shape in Downsampler.BETA_BASIS_SHAPES]), requires_grad=False
-        )
-
         # these are 3D -- with two dummy read count indices -- for broadcasting
-        alpha_k11 = torch.tensor([shape[0] for shape in Downsampler.BETA_BASIS_SHAPES]).view(-1, 1, 1)
-        beta_k11 = torch.tensor([shape[1] for shape in Downsampler.BETA_BASIS_SHAPES]).view(-1, 1, 1)
+        alpha_k11 = Downsampler.BETA_BASIS_SHAPES[:, 0].view(-1, 1, 1)
+        beta_k11 = Downsampler.BETA_BASIS_SHAPES[:, 1].view(-1, 1, 1)
 
         # these are 'raw' as opposed to binned
         raw_ref_counts_r = IntTensor(range(MAX_REF_COUNT + 1))
@@ -123,7 +116,7 @@ class Downsampler(Module):
             torch.softmax(self.alt_weights_pre_softmax_slvrah, dim=-1), requires_grad=False
         )
 
-    def calculate_downsampling_fractions(self, batch: Batch) -> Tensor:
+    def calculate_downsampling_fractions(self, batch: Batch) -> tuple[Tensor, Tensor]:
         # we will flatten all the batch indices -- slvra, but not k -- to get a 2D tensor indexed by the batch's
         # flattened indices ('f') and the downsampler's mixture index k
         ref_weights_fk = self.trained_ref_weights_slvrak.view(-1, len(Downsampler.BETA_BASIS_SHAPES))
@@ -136,10 +129,11 @@ class Downsampler(Module):
         refk_b = torch.multinomial(ref_weights_bk, num_samples=1)  # one sample for each batch element
         altk_b = torch.multinomial(alt_weights_bk, num_samples=1)
 
-        alpha_ref_b, beta_ref_b = self.alpha_k[refk_b], self.beta_k[refk_b]
-        alpha_alt_b, beta_alt_b = self.alpha_k[altk_b], self.beta_k[altk_b]
-        ref_fracs_b = Beta(alpha_ref_b, beta_ref_b).sample().view(-1)
-        alt_fracs_b = Beta(alpha_alt_b, beta_alt_b).sample().view(-1)
+        # The '2' indicates that each beta shape has two elements, alpha and beta
+        ref_shapes_b2 = Downsampler.BETA_BASIS_SHAPES[refk_b]
+        alt_shapes_b2 = Downsampler.BETA_BASIS_SHAPES[altk_b]
+        ref_fracs_b = Beta(ref_shapes_b2[:, 0], ref_shapes_b2[:, 1]).sample().view(-1)
+        alt_fracs_b = Beta(alt_shapes_b2[:, 0], alt_shapes_b2[:, 1]).sample().view(-1)
         return ref_fracs_b, alt_fracs_b
 
     def calculate_expected_downsampled_counts(self, counts_slvra: BatchIndexedTensor):
