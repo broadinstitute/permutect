@@ -1,4 +1,5 @@
 import enum
+import itertools
 import math
 
 import numpy as np
@@ -109,9 +110,8 @@ class Balancer(Module):
             row_names = [label.name for label in Label]
             col_names = [var_type.name for var_type in Variation]
             common_colormesh = None
-            for label in Label:
-                for var_type in Variation:
-                    common_colormesh = self.make_plot(label, var_type, axes[label, var_type], source, plot_type)
+            for (label, var_type) in itertools.product(Label, Variation):
+                common_colormesh = self.make_plot(label, var_type, axes[label, var_type], source, plot_type)
 
             fig.colorbar(common_colormesh)
             tidy_kwargs = {"x_label": "N_alt", "y_label": "N_ref", "row_labels": row_names, "col_labels": col_names}
