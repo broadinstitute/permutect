@@ -70,20 +70,13 @@ def train_artifact_model(
         lr=training_params.learning_rate,
         weight_decay=training_params.weight_decay,
     )
-    train_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        train_optimizer,
-        factor=0.2,
-        patience=5,
-        threshold=0.001,
-        min_lr=(training_params.learning_rate / 100),
-    )
+    scheduler_kwargs = {"factor": 0.2, "patience": 5, "threshold": 0.001, "min_lr": (training_params.learning_rate / 100)}
+    train_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(train_optimizer, **scheduler_kwargs)
 
     checkpoint = Checkpoint(device, model, train_optimizer)
 
     train_loader = train_dataset.make_data_loader(training_params.batch_size, is_cuda, training_params.num_workers)
-    valid_loader = valid_dataset.make_data_loader(
-        training_params.inference_batch_size, is_cuda, training_params.num_workers
-    )
+    valid_loader = valid_dataset.make_data_loader(training_params.batch_size, is_cuda, training_params.num_workers)
     report_memory_usage("Loaders created, about to train.")
 
     first_epoch, last_epoch = 1, training_params.num_epochs + training_params.num_calibration_epochs
