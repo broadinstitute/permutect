@@ -470,7 +470,7 @@ def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> Lis
             int_array=raw_datum.int_array,
             float_array=raw_datum.float_array,
             reads_re=output_reads_re,
-            compressed_reads=True,
+            compressed=True,
         )
 
         output_datum.set_info_1d(np.hstack((all_info_transformed_ve[n], extra_info_e)))

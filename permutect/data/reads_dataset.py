@@ -48,7 +48,7 @@ class ReadsDataset(IterableDataset):
     def __init__(
         self,
         memory_mapped_data: MemoryMappedData,
-        num_folds: int = None,
+        num_folds: int = 1,
         folds_to_use: List[int] = None,
         keep_probs_by_label_l=None,
     ):
@@ -66,7 +66,7 @@ class ReadsDataset(IterableDataset):
 
         available_memory = psutil.virtual_memory().available
         print(
-            f"Data occupy {memory_mapped_data.size_in_bytes() // 1000000} Mb and the system has {available_memory // 1000000} Mb of RAM available."
+            f"Data occupy {memory_mapped_data.num_bytes() // 1000000} Mb and the system has {available_memory // 1000000} Mb of RAM available."
         )
 
         self._stacked_reads_re = (
@@ -83,7 +83,7 @@ class ReadsDataset(IterableDataset):
             ConsistentValue(),
         )
         data_recording_timer = Timer("Recording data counts. . .")
-        for datum in self.memory_mapped_data.generate_data():
+        for datum in self.memory_mapped_data.generate():
             self.totals_slvra.record_datum(datum)
             self._num_read_features.check(datum.num_read_features())
             self._num_info_features.check(len(datum.get_info_1d()))
@@ -115,7 +115,7 @@ class ReadsDataset(IterableDataset):
         num_workers = 1 if worker_info is None else worker_info.num_workers
 
         num_data_per_worker = self._size // num_workers
-        num_bytes_per_worker = self.memory_mapped_data.size_in_bytes() // num_workers
+        num_bytes_per_worker = self.memory_mapped_data.num_bytes() // num_workers
 
         # note: this is the total available system memory, not per process
         total_available_memory_in_bytes = psutil.virtual_memory().available
@@ -184,7 +184,7 @@ class ReadsDataset(IterableDataset):
                     int_array=chunk_int_data_ve[idx],
                     float_array=chunk_float_data_ve[idx],
                     reads_re=chunk_reads_re[read_start_idx:read_end_idx],
-                    compressed_reads=True,
+                    compressed=True,
                 )
                 # assert datum.get_ref_count() + datum.get_alt_count() == len(datum.get_reads_array_re())
                 yield datum

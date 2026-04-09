@@ -152,7 +152,7 @@ def generated_pruned_data_for_fold(
             batch.get_list_of_reads_re(),
             is_labeled_mask.tolist(),
         ):
-            datum = Datum(int_array, float_array, reads_re, compressed_reads=True)
+            datum = Datum(int_array, float_array, reads_re, compressed=True)
             if not is_labeled:
                 yield datum
             elif (labeled_as_art and art_prob < art_threshold) or (

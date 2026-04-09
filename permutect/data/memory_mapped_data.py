@@ -60,52 +60,46 @@ class MemoryMappedData:
     def __len__(self):
         return self.num_data
 
-    def size_in_bytes(self):
-        return (
-            self.int_mmap.nbytes + self.float_mmap.nbytes + (0 if self.reads_mmap is None else self.reads_mmap.nbytes)
-        )
+    def num_bytes(self):
+        required_array_nbytes = self.int_mmap.nbytes + self.float_mmap.nbytes
+        reads_nbytes = 0 if self.reads_mmap is None else self.reads_mmap.nbytes
+        return required_array_nbytes + reads_nbytes
 
-    def generate_data(
-        self, num_folds: int = None, folds_to_use: List[int] = None, keep_probs_by_label_l=None
+    def generate(
+        self, num_folds: int = 1, used_folds: List[int] = None, label_probs_l=None
     ) -> Generator[Datum, None, None]:
-        folds_set = None if folds_to_use is None else set(folds_to_use)
+        folds_set = None if used_folds is None else set(used_folds)
         print("Generating data from memory maps.")
         count = 0
         for idx in range(self.num_data):
-            if folds_to_use is None or (idx % num_folds in folds_set):
-                int_array = self.int_mmap[idx]
-                float_array = self.float_mmap[idx]
-                reads_array = (
+            if used_folds is None or (idx % num_folds in folds_set):
+                int_arr = self.int_mmap[idx]
+                float_arr = self.float_mmap[idx]
+                reads_arr = (
                     np.zeros((0, 0), dtype=COMPRESSED_READS_ARRAY_DTYPE)
                     if self.reads_mmap is None
                     else self.reads_mmap[0 if idx == 0 else self.read_end_indices[idx - 1] : self.read_end_indices[idx]]
                 )
-                datum = Datum(
-                    int_array=int_array,
-                    float_array=float_array,
-                    reads_re=reads_array,
-                    compressed_reads=(reads_array.dtype == COMPRESSED_READS_ARRAY_DTYPE),
-                )
-                if keep_probs_by_label_l is None or random.random() < keep_probs_by_label_l[datum.get(Data.LABEL)]:
+                is_compressed = reads_arr.dtype == COMPRESSED_READS_ARRAY_DTYPE
+                datum = Datum(int_array=int_arr, float_array=float_arr, reads_re=reads_arr, compressed=is_compressed)
+                if label_probs_l is None or random.random() < label_probs_l[datum.get(Data.LABEL)]:
                     yield datum
                     count += 1
         print(f"generated {count} objects.")
 
-    def restrict_to_folds(
-        self, num_folds: int = None, folds_to_use: List[int] = None, keep_probs_by_label_l=None
-    ) -> MemoryMappedData:
-        if folds_to_use is None:
+    def restrict_to_folds(self, num_folds: int, used_folds: List[int] = None, label_probs_l=None) -> MemoryMappedData:
+        if used_folds is None:
             return self
         else:
-            print(f"Restricting to folds {folds_to_use} out of {num_folds} total folds.")
-            proportion = len(folds_to_use) / num_folds
+            print(f"Restricting to folds {used_folds} out of {num_folds} total folds.")
+            proportion = len(used_folds) / num_folds
             fudge_factor = 1.1
             estimated_num_data = int(self.num_data * proportion * fudge_factor)
             estimated_num_reads = int(self.num_reads * proportion * fudge_factor)
-            reads_datum_source = self.generate_data(
+            reads_datum_source = self.generate(
                 num_folds=num_folds,
-                folds_to_use=folds_to_use,
-                keep_probs_by_label_l=keep_probs_by_label_l,
+                used_folds=used_folds,
+                label_probs_l=label_probs_l,
             )
             return MemoryMappedData.from_generator(reads_datum_source, estimated_num_data, estimated_num_reads)
 
@@ -113,7 +107,7 @@ class MemoryMappedData:
         print("Restricting dataset to labeled data only.")
         labeled_count, total = 0, 0
         # estimated the proportion of labeled data
-        for n, datum in enumerate(self.generate_data()):
+        for n, datum in enumerate(self.generate()):
             if n > 1000:
                 break
             total += 1
@@ -124,7 +118,7 @@ class MemoryMappedData:
         estimated_num_reads = int(self.num_reads * labeled_proportion * fudge_factor)
         estimated_num_data = int(self.num_data * labeled_proportion * fudge_factor)
 
-        reads_datum_source = (datum for datum in self.generate_data() if datum.is_labeled())
+        reads_datum_source = (datum for datum in self.generate() if datum.is_labeled())
         return MemoryMappedData.from_generator(reads_datum_source, estimated_num_data, estimated_num_reads)
 
     """
@@ -153,7 +147,7 @@ class MemoryMappedData:
             if overlapping_filters(v, filters_to_exclude):
                 encodings_to_exclude.add(encoding)
 
-        for datum in self.generate_data():
+        for datum in self.generate():
             contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
             position = datum.get(Data.POSITION)
             encoding = encode(contig_name, position, datum.get_ref_allele(), datum.get_alt_allele())
@@ -164,7 +158,7 @@ class MemoryMappedData:
                     int_array=datum.int_array,
                     float_array=datum.float_array.copy(),
                     reads_re=datum.reads_re,
-                    compressed_reads=datum.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE,
+                    compressed=datum.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE,
                 )
 
                 # these are default dicts, so if there's no segmentation for the contig we will get no overlaps but not an error
@@ -255,44 +249,24 @@ class MemoryMappedData:
                 if member.isfile():
                     tar.extract(member, path=temp_dir.name)
 
-        metadata_files = [
-            os.path.abspath(os.path.join(temp_dir.name, p))
-            for p in os.listdir(temp_dir.name)
-            if p.endswith(SUFFIX_FOR_METADATA)
-        ]
-        int_array_files = [
-            os.path.abspath(os.path.join(temp_dir.name, p))
-            for p in os.listdir(temp_dir.name)
-            if p.endswith(SUFFIX_FOR_INT_MMAP)
-        ]
-        float_data_files = [
-            os.path.abspath(os.path.join(temp_dir.name, p))
-            for p in os.listdir(temp_dir.name)
-            if p.endswith(SUFFIX_FOR_FLOAT_MMAP)
-        ]
-        reads_files = [
-            os.path.abspath(os.path.join(temp_dir.name, p))
-            for p in os.listdir(temp_dir.name)
-            if p.endswith(SUFFIX_FOR_READS_MMAP)
-        ]
+        all_files = [os.path.abspath(os.path.join(temp_dir.name, p)) for p in os.listdir(temp_dir.name)]
+        metadata_files = [f for f in all_files if f.endswith(SUFFIX_FOR_METADATA)]
+        int_array_files = [f for f in all_files if f.endswith(SUFFIX_FOR_INT_MMAP)]
+        float_array_files = [f for f in all_files if f.endswith(SUFFIX_FOR_FLOAT_MMAP)]
+        reads_files = [f for f in all_files if f.endswith(SUFFIX_FOR_READS_MMAP)]
+
         assert len(metadata_files) == 1
         assert len(int_array_files) == 1
-        assert len(float_data_files) == 1
+        assert len(float_array_files) == 1
 
         loaded_metadata = torch.load(metadata_files[0], weights_only=False)
-        num_data, int_array_dim, float_array_dim, num_reads, reads_dim = (
-            loaded_metadata[0],
-            loaded_metadata[1],
-            loaded_metadata[2],
-            loaded_metadata[3],
-            loaded_metadata[4],
-        )
+        num_data, int_array_dim, float_array_dim, num_reads, reads_dim = loaded_metadata[:5]
 
         assert len(reads_files) == (0 if num_reads == 0 else 1)
         # NOTE: the original file may have had excess space due to the O(N) amortized growing scheme
         # if we load the same file with the actual num_data, as opposed to the capacity, it DOES work correctly
         int_mmap = np.lib.format.open_memmap(int_array_files[0], mode="r", shape=(num_data, int_array_dim))
-        float_mmap = np.lib.format.open_memmap(float_data_files[0], mode="r", shape=(num_data, float_array_dim))
+        float_mmap = np.lib.format.open_memmap(float_array_files[0], mode="r", shape=(num_data, float_array_dim))
         reads_mmap = (
             None
             if num_reads == 0
@@ -329,9 +303,7 @@ class MemoryMappedData:
         for datum in reads_datum_source:
             int_array = datum.get_int_array()
             float_array = datum.get_float_array()
-            reads_array = (
-                datum.get_reads_array_re()
-            )  # this works both for raw unnormalized data and the compressed reads of Datum
+            reads_array = datum.get_reads_array_re() # this works both for raw data and compressed reads
 
             num_data += 1
             num_reads += len(reads_array)
@@ -344,18 +316,9 @@ class MemoryMappedData:
                     NamedTemporaryFile(suffix=SUFFIX_FOR_FLOAT_MMAP),
                 )
                 old_int_mmap, old_float_mmap = int_mmap, float_mmap
-                int_mmap = np.memmap(
-                    int_file.name,
-                    dtype=int_array.dtype,
-                    mode="w+",
-                    shape=(data_capacity, int_array.shape[-1]),
-                )
-                float_mmap = np.memmap(
-                    float_file.name,
-                    dtype=float_array.dtype,
-                    mode="w+",
-                    shape=(data_capacity, float_array.shape[-1]),
-                )
+                int_shape, float_shape = (data_capacity, int_array.shape[-1]), (data_capacity, float_array.shape[-1])
+                int_mmap = np.memmap(int_file.name, dtype=int_array.dtype, mode="w+",shape=int_shape)
+                float_mmap = np.memmap(float_file.name, dtype=float_array.dtype, mode="w+", shape=float_shape)
                 if old_int_mmap is not None:
                     int_mmap[: len(old_int_mmap)] = old_int_mmap
                     float_mmap[: len(old_float_mmap)] = old_float_mmap
@@ -365,12 +328,8 @@ class MemoryMappedData:
                 reads_capacity = estimated_num_reads if reads_capacity == 0 else reads_capacity * 2
                 reads_file = NamedTemporaryFile(suffix=SUFFIX_FOR_READS_MMAP)
                 old_reads_mmap = reads_mmap
-                reads_mmap = np.memmap(
-                    reads_file.name,
-                    dtype=reads_array.dtype,
-                    mode="w+",
-                    shape=(reads_capacity, reads_array.shape[-1]),
-                )
+                reads_shape = (reads_capacity, reads_array.shape[-1])
+                reads_mmap = np.memmap(reads_file.name, dtype=reads_array.dtype, mode="w+", shape=reads_shape)
                 if old_reads_mmap is not None:
                     reads_mmap[: len(old_reads_mmap)] = old_reads_mmap
 
