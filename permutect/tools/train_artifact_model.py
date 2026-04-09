@@ -7,7 +7,7 @@ from permutect.architecture.artifact_model import ArtifactModel
 from permutect.architecture.artifact_model import load_model
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.reads_dataset import ReadsDataset
-from permutect.data.reads_dataset import all_but_the_last_fold
+from permutect.data.reads_dataset import all_but_last_fold
 from permutect.data.reads_dataset import last_fold_only
 from permutect.misc_utils import Timer
 from permutect.misc_utils import gpu_if_available
@@ -22,9 +22,8 @@ from permutect.training.model_training import train_artifact_model
 def main_without_parsing(args):
     params = parse_model_params(args)
     training_params = parse_training_params(args)
-    pretrained_model_path = getattr(
-        args, constants.PRETRAINED_ARTIFACT_MODEL_NAME
-    )  # optional pretrained model to use as initialization
+    # optional pretrained model to use as initialization
+    pretrained_model_path = getattr(args, constants.PRETRAINED_ARTIFACT_MODEL_NAME)
 
     pretrained_model, _, _ = (None, None, None) if pretrained_model_path is None else load_model(pretrained_model_path)
 
@@ -34,16 +33,8 @@ def main_without_parsing(args):
     memory_mapped_data = MemoryMappedData.load_from_tarfile(getattr(args, constants.TRAIN_TAR_NAME))
     num_folds = 10
     subset_timer = Timer("Creating training and validation datasets")
-    train_dataset = ReadsDataset(
-        memory_mapped_data=memory_mapped_data,
-        num_folds=num_folds,
-        folds_to_use=all_but_the_last_fold(num_folds),
-    )
-    valid_dataset = ReadsDataset(
-        memory_mapped_data=memory_mapped_data,
-        num_folds=num_folds,
-        folds_to_use=last_fold_only(num_folds),
-    )
+    train_dataset = ReadsDataset(memory_mapped_data, num_folds=num_folds, folds_to_use=all_but_last_fold(num_folds))
+    valid_dataset = ReadsDataset(memory_mapped_data, num_folds=num_folds, folds_to_use=last_fold_only(num_folds))
     subset_timer.report("Time to create training and validation datasets")
 
     model = (
@@ -69,7 +60,6 @@ def main_without_parsing(args):
 
     summary_writer.close()
 
-    # TODO: this is currently wrong because we are using the separate artifact model, not the full model
     model.save_model(path=getattr(args, constants.OUTPUT_NAME))
 
 
@@ -78,20 +68,13 @@ def parse_arguments():
     add_model_params_to_parser(parser)
     add_training_params_to_parser(parser)
 
-    parser.add_argument(
-        "--" + constants.TRAIN_TAR_NAME,
-        type=str,
-        required=True,
-        help="training dataset .tar.gz file produced by preprocess_dataset.py",
-    )
+    tar_kwargs = {"type": str, "required": True, "help": "dataset .tar.gz file produced by preprocess_dataset.py"}
+    parser.add_argument("--" + constants.TRAIN_TAR_NAME, **tar_kwargs)
+
     parser.add_argument("--" + constants.OUTPUT_NAME, type=str, required=True, help="output artifact model file")
-    parser.add_argument(
-        "--" + constants.TENSORBOARD_DIR_NAME,
-        type=str,
-        default="tensorboard",
-        required=False,
-        help="output tensorboard directory",
-    )
+
+    tensorboard_kwargs = {"type": str, "default": "tensorboard", "required": False, "help": "tensorboard directory"}
+    parser.add_argument("--" + constants.TENSORBOARD_DIR_NAME, **tensorboard_kwargs)
 
     return parser.parse_args()
 

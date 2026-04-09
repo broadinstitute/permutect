@@ -28,7 +28,7 @@ def last_fold_only(num_folds: int):
     return [num_folds - 1]  # use the last fold for validation
 
 
-def all_but_the_last_fold(num_folds: int):
+def all_but_last_fold(num_folds: int):
     return list(range(num_folds - 1))
 
 

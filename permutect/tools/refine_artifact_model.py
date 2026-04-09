@@ -10,7 +10,7 @@ from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.reads_dataset import ReadsDataset
-from permutect.data.reads_dataset import all_but_the_last_fold
+from permutect.data.reads_dataset import all_but_last_fold
 from permutect.data.reads_dataset import last_fold_only
 from permutect.misc_utils import report_memory_usage
 from permutect.parameters import add_training_params_to_parser
@@ -120,7 +120,7 @@ def main_without_parsing(args):
     train_dataset = ReadsDataset(
         memory_mapped_data=memory_mapped_data,
         num_folds=num_folds,
-        folds_to_use=all_but_the_last_fold(num_folds),
+        folds_to_use=all_but_last_fold(num_folds),
     )
     valid_dataset = ReadsDataset(
         memory_mapped_data=memory_mapped_data,
