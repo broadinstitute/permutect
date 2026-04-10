@@ -16,7 +16,7 @@ class EuclideanTransformation(nn.Module):
         self.rotation_ee = orthogonal(torch.nn.Linear(dimension, dimension, bias=False))
 
     def transform(self, x_be: Tensor) -> Tensor:
-        return self.read_rotation_ee(x_be + self.read_translation_e[None, :])
+        return self.rotation_ee(x_be + self.translation_e[None, :])
 
     def forward(self, x):
         pass
