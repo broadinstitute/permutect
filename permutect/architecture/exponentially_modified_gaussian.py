@@ -61,7 +61,6 @@ class ExponentiallyModifiedGaussian(nn.Module):
 
     This module contains K independent EMG distributions and calculates their log likelihoods independently.
     """
-
     def __init__(self, num_distributions: int):
         super(ExponentiallyModifiedGaussian, self).__init__()
 

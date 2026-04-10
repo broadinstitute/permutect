@@ -10,6 +10,7 @@ from torch.nn import Parameter
 from torch.nn.utils import parametrize
 from torch.nn.utils.parametrizations import orthogonal
 
+from permutect.architecture.euclidean_transformation import EuclideanTransformation
 from permutect.architecture.exponentially_modified_gaussian import ExponentiallyModifiedGaussian
 from permutect.architecture.parameterizations import BoundedNumber
 from permutect.architecture.parameterizations import UnitVector
@@ -61,8 +62,7 @@ class FeatureClustering(nn.Module):
 
         # nonartifact reads are posited to have a Gaussian in F-dimensional space
         # we shift and rotate so that the Gaussian is zero-centered and has diagonal covariance
-        self.read_translation_e = Parameter(torch.rand(self.feature_dim))
-        self.read_rotation_ee = orthogonal(torch.nn.Linear(self.feature_dim, self.feature_dim, bias=False))
+        self.pre_clustering_read_transform = EuclideanTransformation(feature_dimension)
 
         # anisotropic, diagonal stdev of nonartifact Gaussian.  Due to the rotation above the covariance is, WLOG, diagonal
         self.nonartifact_stdev_e = Parameter(torch.ones(self.feature_dim))
