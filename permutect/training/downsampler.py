@@ -115,8 +115,8 @@ class Downsampler(Module):
         altk_b = torch.multinomial(alt_weights_bk, num_samples=1)
 
         # The '2' indicates that each beta shape has two elements, alpha and beta
-        ref_shapes_b2 = self.beta_basis[refk_b]
-        alt_shapes_b2 = self.beta_basis[altk_b]
+        ref_shapes_b2 = self.beta_basis[refk_b.flatten()]
+        alt_shapes_b2 = self.beta_basis[altk_b.flatten()]
         ref_fracs_b = Beta(ref_shapes_b2[:, 0], ref_shapes_b2[:, 1]).sample().view(-1)
         alt_fracs_b = Beta(alt_shapes_b2[:, 0], alt_shapes_b2[:, 1]).sample().view(-1)
         return ref_fracs_b, alt_fracs_b
