@@ -20,7 +20,9 @@ Here is [the training code](experiment.html) for a gMLP model based autoregressi
 
 import torch
 from torch import nn
+from torch.nn.utils import parametrize
 
+from permutect.architecture.parameterizations import PositiveNumber
 from permutect.sets.ragged_sets import RaggedSets
 
 
@@ -220,7 +222,9 @@ class SpatialGatingUnitRefAlt(nn.Module):
 
         # regularizer / sort of imputed value for when there are no ref counts
         self.ref_regularizer = nn.Parameter(0.1 * torch.ones(d_z // 2))
-        self.regularizer_weight_pre_exp = nn.Parameter(torch.log(torch.tensor(0.1)))
+        self.reg_weight = nn.Parameter(torch.tensor(0.1))
+        parametrize.register_parametrization(self, "reg_weight", PositiveNumber())
+
 
     def forward(self, zref_brd: RaggedSets, zalt_brd: RaggedSets) -> tuple[RaggedSets, RaggedSets]:
         # Split $Z$ into $Z_1$ and $Z_2$ over the hidden dimension and normalize $Z_2$ before $f_{W,b}(\cdot)$
@@ -229,10 +233,9 @@ class SpatialGatingUnitRefAlt(nn.Module):
         z2_ref_brd = z2_ref_brd.apply_elementwise(self.norm)
         z2_alt_brd = z2_alt_brd.apply_elementwise(self.norm)
 
-        reg_weight = torch.exp(self.regularizer_weight_pre_exp) + 0.25
         # means over reads for each variant (batch index)
         ref_mean_field_bd = z2_ref_brd.means_over_sets(
-            regularizer_f=self.ref_regularizer, regularizer_weight=reg_weight
+            regularizer_f=self.ref_regularizer, regularizer_weight=(self.reg_weight + 0.25)
         )
         alt_mean_field_bd = z2_alt_brd.means_over_sets()
 
