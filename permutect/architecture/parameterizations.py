@@ -43,7 +43,7 @@ parametrize.register_parametrization(self, "positive_values", PositiveNumber())
 
 
 class PositiveNumber(nn.Module):
-    def __init__(self, n):
+    def __init__(self):
         super().__init__()
 
     # Maps the unconstrained tensor X to a positive-valued tensor

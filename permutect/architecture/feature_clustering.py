@@ -1,5 +1,4 @@
 import math
-from typing import List
 from typing import Tuple
 
 import torch
@@ -8,9 +7,7 @@ from torch import Tensor
 from torch import nn
 from torch.nn import Parameter
 from torch.nn.utils import parametrize
-from torch.nn.utils.parametrizations import orthogonal
 
-from permutect.architecture.euclidean_transformation import EuclideanTransformation
 from permutect.architecture.exponentially_modified_gaussian import ExponentiallyModifiedGaussian
 from permutect.architecture.parameterizations import BoundedNumber
 from permutect.architecture.parameterizations import UnitVector
