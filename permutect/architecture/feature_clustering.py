@@ -10,16 +10,14 @@ from torch.nn import Parameter
 from torch.nn.utils import parametrize
 from torch.nn.utils.parametrizations import orthogonal
 
+from permutect.architecture.exponentially_modified_gaussian import ExponentiallyModifiedGaussian
 from permutect.architecture.parameterizations import BoundedNumber
 from permutect.architecture.parameterizations import UnitVector
 from permutect.data.batch import Batch
 from permutect.data.datum import Data
 from permutect.sets.ragged_sets import RaggedSets
 
-LOG2 = torch.log(torch.tensor(2.0))
 LOG2PI = torch.log(torch.tensor(2.0 * math.pi))
-SQRTPI = torch.sqrt(torch.tensor(math.pi))
-SQRT2 = torch.sqrt(torch.tensor(2.0))
 MAX_LOGIT = 20
 
 
@@ -31,42 +29,6 @@ def parallel_and_orthogonal_projections(vectors_re: Tensor, direction_vectors_ke
     orthogonal_projections_rke = vectors_re[:, None, :] - parallel_projections_rke
 
     return dot_products_rk, orthogonal_projections_rke
-
-
-"""
-Pytorch has no built-in logerfc, and erfc(z) decays so fast (faster than exp(-z^2)!) that it underflows to zero
-leading to NaNs when its log is taken.  Here for large arguments we use the asymptotic expansion:
-
-erfc(z) ~ [exp(-z^2)/(z sqrt(pi))] * [1 - 1/(2z^2) + 3/(4z^4) - 15/(8z^6) . . .]
-"""
-
-
-def logerfc(z: Tensor) -> Tensor:
-    use_asymptotic = z > 5
-
-    z_clip = torch.clip(z, min=2)
-    z_squared = z_clip * z_clip
-    z_fourth = z_squared * z_squared
-    z_sixth = z_squared * z_fourth
-
-    # asymptotic produces NaN when z is <= 2 or so.  Since only z > 5 is ever used, we can cap z at 2
-    asymptotic = (
-        -z_squared
-        - torch.log(z_clip * SQRTPI)
-        + torch.log1p(-1 / (2 * z_squared) + 3 / (4 * z_fourth) - 15 / (8 * z_sixth))
-    )
-
-    # when z = 5.0, torch.erfc(z) is 1.5375e-12.  since only z < 5 is ever used, we can cap erfc(z) at 1.0 e-12
-    built_in = torch.log(torch.clip(torch.erfc(z), min=1.0e-12))
-
-    # asymptotic_is_nan = asymptotic.isnan() | asymptotic.isinf()
-    # built_in_is_nan = built_in.isnan() | built_in.isinf()
-
-    # genuine_nan = ((asymptotic_is_nan & use_asymptotic) | (built_in_is_nan & torch.logical_not(use_asymptotic))).any().item()
-    # assert not genuine_nan, "Our logerfc implementation has a bug"
-
-    # If one branch of torch.where is a NaN, backpropagation yields a NaN regardless of whether that branch is used!!
-    return torch.where(use_asymptotic, asymptotic, built_in)
 
 
 """
@@ -85,23 +47,9 @@ def diagonal_gaussian_log_likelihood(vectors_bf: Tensor, stdev_bf: Tensor) -> Te
     return normalization_part + exponential_part
 
 
-# P(x) = (lambda / 2) * [1 - erf((mu + lambda*sigma^2 - x)/(sqrt(2)*sigma))] * \
-#   exp[(lambda/2) * (2*mu + lambda*sigma^2 - 2*x)]
-def emg_log_likelihood(x: Tensor, mu: Tensor, sigma: Tensor, lambd: Tensor) -> Tensor:
-    variance = torch.square(sigma)
-
-    return (
-        torch.log(lambd / 2)
-        + logerfc((mu + lambd * variance - x) / (SQRT2 * sigma))
-        + (lambd / 2) * (2 * mu + lambd * variance - 2 * x)
-    )
-
-
 MIN_STDEV = 0.01
 MAX_STDEV = 100
-
-MIN_LAMBDA = 0.01
-MAX_LAMBDA = 100
+STDEV_CONSTRAINT = BoundedNumber(min_val=MIN_STDEV, max_val=MAX_STDEV)
 
 
 class FeatureClustering(nn.Module):
@@ -118,34 +66,21 @@ class FeatureClustering(nn.Module):
 
         # anisotropic, diagonal stdev of nonartifact Gaussian.  Due to the rotation above the covariance is, WLOG, diagonal
         self.nonartifact_stdev_e = Parameter(torch.ones(self.feature_dim))
-        parametrize.register_parametrization(
-            self, "nonartifact_stdev_e", BoundedNumber(min_val=MIN_STDEV, max_val=MAX_STDEV)
-        )
+        parametrize.register_parametrization(self, "nonartifact_stdev_e", STDEV_CONSTRAINT)
 
         # artifact clusters each have a characteristic direction vector of deviation away from the
         # nonartifact centroid.
         self.artifact_directions_ke = Parameter(torch.rand(self.num_artifact_clusters, self.feature_dim))
         parametrize.register_parametrization(self, "artifact_directions_ke", UnitVector())
 
-        # the parallel projections of artifact reads onto the clusters' directions is posited to follow
-        # an EMG (exponentially-modified Gaussian) distribution (a Gaussian modulated to have an exp(-lambda*x)
-        # long tail in the positive-x direction
-        # P(x) = (lambda / 2) * [1 - erf((mu + lambda*sigma^2 - x)/(sqrt(2)*sigma))] * \
-        #   exp[(lambda/2) * (2*mu + lambda*sigma^2 - 2*x)]
-        self.mu_k = Parameter(2 * torch.ones(self.num_artifact_clusters))
-
-        self.sigma_k = Parameter(torch.ones(self.num_artifact_clusters))
-        parametrize.register_parametrization(self, "sigma_k", BoundedNumber(min_val=MIN_STDEV, max_val=MAX_STDEV))
-
-        self.lambda_k = Parameter(torch.ones(self.num_artifact_clusters))
-        parametrize.register_parametrization(self, "lambda_k", BoundedNumber(min_val=MIN_LAMBDA, max_val=MAX_LAMBDA))
+        # the (1D) parallel projections of artifact reads onto the clusters' directions are posited to follow
+        # exponentially-modified Gaussian distributions
+        self.artifact_emg = ExponentiallyModifiedGaussian(self.num_artifact_clusters)
 
         # the orthogonal projections of artifact reads onto the clusters' directions is posited to follow an
         # (F-1)-dimensional isotropic Gaussian
         self.artifact_stdev_k = Parameter(torch.ones(self.num_artifact_clusters))
-        parametrize.register_parametrization(
-            self, "artifact_stdev_k", BoundedNumber(min_val=MIN_STDEV, max_val=MAX_STDEV)
-        )
+        parametrize.register_parametrization(self, "artifact_stdev_k", STDEV_CONSTRAINT)
 
         self.cluster_weights_pre_softmax_k = Parameter(torch.ones(self.num_artifact_clusters))
 
@@ -179,12 +114,7 @@ class FeatureClustering(nn.Module):
             - torch.square(orthogonal_dist_rk) / (2 * torch.square(self.artifact_stdev_k[None, :]))
         )
 
-        parallel_log_lks_rk = emg_log_likelihood(
-            x=parallel_projections_rk,
-            mu=self.mu_k[None, :],
-            sigma=self.sigma_k[None, :],
-            lambd=self.lambda_k[None, :],
-        )
+        parallel_log_lks_rk = self.artifact_emg.log_likelihood(parallel_projections_rk)
 
         nonartifact_log_lks_rk = nonartifact_log_lks_r[:, None]
         outlier_log_lks_rk = outlier_log_lks_r[:, None]
