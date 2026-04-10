@@ -94,60 +94,6 @@ class SomaticSpectrum(nn.Module):
         )
         return result_b
 
-    """
-    here alt counts and depths are 1D (batch size, ) tensors
-    """
-    """
-    def weighted_likelihoods_by_cluster(self, depths_b, alt_counts_b):
-        batch_size = len(alt_counts_b)
-
-        f_k = torch.sigmoid(self.f_pre_sigmoid_k)
-        f_bk = f_k.expand(batch_size, -1)
-        alt_counts_bk = torch.unsqueeze(alt_counts_b, dim=1).expand(-1, self.K - 1)
-        depths_bk = torch.unsqueeze(depths_b, dim=1).expand(-1, self.K - 1)
-        binomial_likelihoods_bk = binomial_log_lk(depths_bk, alt_counts_bk, f_bk)
-
-        alpha = torch.exp(self.alpha_pre_exp)
-        beta = torch.exp(self.beta_pre_exp)
-        alpha_b = alpha.expand(batch_size)
-        beta_b = beta.expand(batch_size)
-
-        beta_binomial_likelihoods_b = beta_binomial_log_lk(depths_b, alt_counts_b, alpha_b, beta_b)
-        beta_binomial_likelihoods_bk = torch.unsqueeze(beta_binomial_likelihoods_b, dim=1)
-
-        likelihoods_bk = torch.hstack((binomial_likelihoods_bk, beta_binomial_likelihoods_bk))
-
-        log_weights_k = log_softmax(self.weights_pre_softmax_k, dim=-1)  # these weights are normalized
-        log_weights_bk = log_weights_k.expand(batch_size, -1)
-        weighted_likelihoods_bk = log_weights_bk + likelihoods_bk
-
-        return weighted_likelihoods_bk
-    """
-
-    """
-    # posteriors: responsibilities that each object is somatic
-    def update_m_step(self, posteriors_n, alt_counts_n, depths_n):
-        possible_somatic_indices = posteriors_n > MIN_POSTERIOR_FOR_M_STEP
-        somatic_posteriors_n = posteriors_n[possible_somatic_indices]
-        somatic_alt_counts_n = alt_counts_n[possible_somatic_indices]
-        somatic_depths_n = depths_n[possible_somatic_indices]
-
-        # TODO: make sure this all fits on GPU
-        # TODO: maybe split it up into batches?
-        weighted_likelihoods_nk = self.weighted_likelihoods_by_cluster(somatic_depths_n, somatic_alt_counts_n)
-        cluster_posteriors_nk = somatic_posteriors_n[:, None] * torch.softmax(weighted_likelihoods_nk, dim=-1)
-        cluster_totals_k = torch.sum(cluster_posteriors_nk, dim=0)
-
-        with torch.no_grad():
-            self.weights_pre_softmax_k.copy_(torch.log(cluster_totals_k + 0.00001))
-
-            # update the binomial clusters -- we exclude the last cluster, which is beta binomial
-            for k in range(self.K - 1):
-                weights = cluster_posteriors_nk[:, k]
-                f = torch.sum((weights * somatic_alt_counts_n)) / torch.sum((0.00001 + weights * somatic_depths_n))
-
-                self.f_pre_sigmoid_k[k] = torch.log(f / (1-f))
-    """
 
     def fit(self, num_epochs, depths_b, alt_counts_b, mafs_b, batch_size=64):
         optimizer = torch.optim.Adam(self.parameters())
