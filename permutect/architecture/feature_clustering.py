@@ -60,10 +60,6 @@ class FeatureClustering(nn.Module):
         self.feature_dim = feature_dimension
         self.num_artifact_clusters = num_artifact_clusters
 
-        # nonartifact reads are posited to have a Gaussian in F-dimensional space
-        # we shift and rotate so that the Gaussian is zero-centered and has diagonal covariance
-        self.pre_clustering_read_transform = EuclideanTransformation(feature_dimension)
-
         # anisotropic, diagonal stdev of nonartifact Gaussian.  Due to the rotation above the covariance is, WLOG, diagonal
         self.nonartifact_stdev_e = Parameter(torch.ones(self.feature_dim))
         parametrize.register_parametrization(self, "nonartifact_stdev_e", STDEV_CONSTRAINT)
@@ -84,15 +80,8 @@ class FeatureClustering(nn.Module):
 
         self.cluster_weights_pre_softmax_k = Parameter(torch.ones(self.num_artifact_clusters))
 
-    def transform_reads(self, reads_bre: RaggedSets) -> RaggedSets:
-        return reads_bre.apply_elementwise(
-            lambda reads_re: self.read_rotation_ee(reads_re + self.read_translation_e[None, :])
-        )
-
     def weighted_log_likelihoods_bk(self, alt_bre: RaggedSets, alt_counts_b: IntTensor):
-        # recenter reads so that Gaussian's centroid is the origin
-        shifted_alt_bre = self.transform_reads(alt_bre)
-        alt_re = shifted_alt_bre.flattened_tensor_nf
+        alt_re = alt_bre.flattened_tensor_nf
 
         # nonartifact Gaussian in F dimensions
         nonartifact_log_lks_r = diagonal_gaussian_log_likelihood(alt_re, stdev_bf=self.nonartifact_stdev_e[None, :])

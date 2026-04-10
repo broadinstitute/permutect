@@ -7,6 +7,7 @@ from tqdm.autonotebook import tqdm
 from permutect import constants
 from permutect.architecture.adversarial import Adversarial
 from permutect.architecture.dna_sequence_convolution import DNASequenceConvolution
+from permutect.architecture.euclidean_transformation import EuclideanTransformation
 from permutect.architecture.feature_clustering import FeatureClustering
 from permutect.architecture.gated_mlp import GatedRefAltMLP
 from permutect.architecture.mlp import MLP
@@ -166,6 +167,11 @@ class ArtifactModel(torch.nn.Module):
             dropout_p=params.dropout_p,
         )
 
+        # Feature clustering posits nonartifact reads have a zero-centered diagonal Gaussian.
+        # We shift and rotate so that the Gaussian is zero-centered and has diagonal covariance.
+        # This is also useful for domain adaptation.
+        self.pre_clustering_transform = EuclideanTransformation(self.reducer.output_dimension())
+
         self.feature_clustering = FeatureClustering(
             feature_dimension=self.reducer.output_dimension(),
             num_artifact_clusters=params.num_artifact_clusters,
@@ -252,7 +258,11 @@ class ArtifactModel(torch.nn.Module):
         reduced_ref_bre = transformed_ref_bre.apply_elementwise(self.reducer)
         reduced_alt_bre = transformed_alt_bre.apply_elementwise(self.reducer)
 
-        return reduced_ref_bre, reduced_alt_bre, ref_seq_embeddings_be  # ref seq embeddings are useful later
+        final_transform = lambda reads_re: self.pre_clustering_transform.transform(reads_re)
+        final_ref_bre = reduced_ref_bre.apply_elementwise(final_transform)
+        final_alt_bre = reduced_alt_bre.apply_elementwise(final_transform)
+
+        return final_ref_bre, final_alt_bre, ref_seq_embeddings_be  # ref seq embeddings are useful later
 
     def compute_source_prediction_losses(self, features_be: Tensor, batch: Batch) -> Tensor:
         if self.num_sources > 1:
@@ -272,18 +282,14 @@ class ArtifactModel(torch.nn.Module):
         ref_bre, alt_bre, _ = self.calculate_features(batch)  # ragged sets of reduced and transformed reads
         logits_b, logits_bk = self.feature_clustering.calculate_logits(alt_bre, batch)
 
-        # feature clustering shifts reads to be centered around the origin
-        recentered_alt_bre = self.feature_clustering.transform_reads(alt_bre)
-        recentered_ref_bre = self.feature_clustering.transform_reads(ref_bre)
-
         weights_b, source_weights_b = (
             (torch.ones_like(logits_b), torch.ones_like(logits_b))
             if balancer is None
             else balancer.process_batch_and_compute_weights(batch)
         )
         return BatchOutput(
-            features_be=recentered_alt_bre.means_over_sets(),
-            ref_features_be=recentered_ref_bre.means_over_sets(),
+            features_be=alt_bre.means_over_sets(),
+            ref_features_be=ref_bre.means_over_sets(),
             logits_b=logits_b,
             logits_bk=logits_bk,
             weights=weights_b,
@@ -375,12 +381,8 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
             batch, weight_range=model._params.reweighting_range
         )
 
-        recentered_alt_bre = model.feature_clustering.transform_reads(alt_bre)
-        recentered_ref_bre = model.feature_clustering.transform_reads(ref_bre)
-        # TODO: TRANSFORM or use logits or something
-
-        alt_means_be = recentered_alt_bre.means_over_sets().cpu()
-        ref_means_be = recentered_ref_bre.means_over_sets().cpu()
+        alt_means_be = alt_bre.means_over_sets().cpu()
+        ref_means_be = ref_bre.means_over_sets().cpu()
         ref_alt_seq_embeddings_be = ref_alt_seq_embeddings_be.cpu()
 
         labels = [
