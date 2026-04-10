@@ -1,7 +1,9 @@
 import torch
 from torch import Tensor
 from torch import nn
+from torch.nn.utils import parametrize
 
+from permutect.architecture.parameterizations import PositiveNumber
 from permutect.architecture.spectra.artifact_spectra import ArtifactSpectra
 from permutect.utils.enums import Variation
 from permutect.utils.stats_utils import beta_binomial_log_lk
@@ -26,7 +28,8 @@ class NormalArtifactSpectrum(nn.Module):
 
         # mean of tumor beta is type-dependent multiplier of normal AF.  Sigmoid will map it onto [0,1]
         self.mean_multiplier_pre_sigmoid_v = torch.nn.Parameter(torch.zeros(V))
-        self.concentration_pre_exp_v = torch.nn.Parameter(torch.log(30 * torch.ones(V)))  # alpha + beta parameters
+        self.concentration_v = torch.nn.Parameter(30 * torch.ones(V))  # alpha + beta parameters
+        parametrize.register_parametrization(self, "concentration_v", PositiveNumber())
 
     def forward(
         self,
@@ -40,8 +43,7 @@ class NormalArtifactSpectrum(nn.Module):
 
         mean_multiplier_v = torch.sigmoid(self.mean_multiplier_pre_sigmoid_v)
         mean_multiplier_b = mean_multiplier_v[var_types_b]
-        concentration_v = torch.exp(self.concentration_pre_exp_v)
-        concentration_b = concentration_v[var_types_b]
+        concentration_b = self.concentration_v[var_types_b]
 
         normal_af_b = normal_alt_counts_b / (normal_depths_b + 0.001)
         tumor_mean_b = normal_af_b * mean_multiplier_b
