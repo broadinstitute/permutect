@@ -169,7 +169,6 @@ class ArtifactModel(torch.nn.Module):
         self.feature_clustering = FeatureClustering(
             feature_dimension=self.reducer.output_dimension(),
             num_artifact_clusters=params.num_artifact_clusters,
-            calibration_hidden_layer_sizes=params.calibration_layers,
         )
 
         self.alt_count_predictor = Adversarial(

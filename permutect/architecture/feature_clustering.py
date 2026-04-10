@@ -105,12 +105,7 @@ MAX_LAMBDA = 100
 
 
 class FeatureClustering(nn.Module):
-    def __init__(
-        self,
-        feature_dimension: int,
-        num_artifact_clusters: int,
-        calibration_hidden_layer_sizes: List[int],
-    ):
+    def __init__(self, feature_dimension: int, num_artifact_clusters: int):
         super(FeatureClustering, self).__init__()
 
         self.feature_dim = feature_dimension
