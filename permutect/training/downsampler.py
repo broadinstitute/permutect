@@ -1,10 +1,15 @@
+from itertools import chain
+
 import torch
 from torch import IntTensor
 from torch import Tensor
 from torch.distributions import Beta
 from torch.nn import Module
 from torch.nn import Parameter
+from torch.nn.utils import parametrize
 
+from permutect import utils
+from permutect.architecture.parameterizations import LogWeights
 from permutect.data.batch import Batch
 from permutect.data.batch import BatchIndexedTensor
 from permutect.data.count_binning import COUNT_BIN_SKIP
@@ -90,22 +95,16 @@ class Downsampler(Module):
         # 'k' and 'h' are both indices to denote the mixture components
         slvra_shape = BatchIndexedTensor.shape_without_logits(num_sources)
         slvrak_shape = (slvra_shape + (len(self.beta_basis),))
-        self.ref_weights_pre_softmax_slvrak = Parameter(torch.zeros(slvrak_shape), requires_grad=True)
-        self.alt_weights_pre_softmax_slvrah = Parameter(torch.zeros(slvrak_shape), requires_grad=True)
-
-        # these will be learned and frozen!!
-        self.trained_ref_weights_slvrak = Parameter(
-            torch.softmax(self.ref_weights_pre_softmax_slvrak, dim=-1), requires_grad=False
-        )
-        self.trained_alt_weights_slvrah = Parameter(
-            torch.softmax(self.alt_weights_pre_softmax_slvrah, dim=-1), requires_grad=False
-        )
+        self.log_ref_weights_slvrak = Parameter(torch.zeros(slvrak_shape), requires_grad=False)
+        self.log_ref_wts = parametrize.register_parametrization(self, "log_ref_weights_slvrak", LogWeights())
+        self.log_alt_weights_slvrah = Parameter(torch.zeros(slvrak_shape), requires_grad=False)
+        self.log_alt_wts = parametrize.register_parametrization(self, "log_alt_weights_slvrah", LogWeights())
 
     def calculate_downsampling_fractions(self, batch: Batch) -> tuple[Tensor, Tensor]:
         # we will flatten all the batch indices -- slvra, but not k -- to get a 2D tensor indexed by the batch's
         # flattened indices ('f') and the downsampler's mixture index k
-        ref_weights_fk = self.trained_ref_weights_slvrak.view(-1, len(self.beta_basis))
-        alt_weights_fk = self.trained_alt_weights_slvrah.view(-1, len(self.beta_basis))
+        ref_weights_fk = torch.exp(self.log_ref_weights_slvrak).view(-1, len(self.beta_basis))
+        alt_weights_fk = torch.exp(self.log_alt_weights_slvrah).view(-1, len(self.beta_basis))
 
         # use the weights for choosing from random samples
         ref_weights_bk = ref_weights_fk[batch.batch_indices().flattened_idx]
@@ -122,8 +121,8 @@ class Downsampler(Module):
         return ref_fracs_b, alt_fracs_b
 
     def calculate_expected_downsampled_counts(self, counts_slvra: BatchIndexedTensor):
-        ref_weights_slvrak = torch.softmax(self.ref_weights_pre_softmax_slvrak, dim=-1)
-        alt_weights_slvrah = torch.softmax(self.alt_weights_pre_softmax_slvrah, dim=-1)
+        ref_weights_slvrak = torch.exp(self.log_ref_weights_slvrak)
+        alt_weights_slvrah = torch.exp(self.log_alt_weights_slvrah)
 
         # in words, we're calculating (recall that y, z are downsampled ref, alt count bins)
         # result_slvyz = sum_{rakh} counts_slvra * ref_weights_slvrak * alt_weights_slvrah * ref_trans_kry * alt_trans_haz
@@ -138,6 +137,7 @@ class Downsampler(Module):
         return result_slvyz
 
     def optimize_downsampling_balance(self, counts_slvra: BatchIndexedTensor):
+        utils.unfreeze(chain((self.log_ref_wts.parameters(), self.log_alt_wts.parameters())))
         optimizer = torch.optim.AdamW(self.parameters())
         # TODO: magic constant -- choose when to end optimization more intelligently
         for step in range(10000):
@@ -153,6 +153,4 @@ class Downsampler(Module):
             sums_of_squares_slv = torch.sum(torch.square(normalized_slvyz), dim=(-2, -1))
             loss = torch.sum(sums_of_squares_slv)
             backpropagate(optimizer, loss)
-
-        self.trained_ref_weights_slvrak.copy_(torch.softmax(self.ref_weights_pre_softmax_slvrak, dim=-1))
-        self.trained_alt_weights_slvrah.copy_(torch.softmax(self.alt_weights_pre_softmax_slvrah, dim=-1))
+        utils.freeze(chain((self.log_ref_wts.parameters(), self.log_alt_wts.parameters())))
