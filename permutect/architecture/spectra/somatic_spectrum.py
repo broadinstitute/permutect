@@ -6,7 +6,9 @@ from torch import logsumexp
 from torch import nn
 from torch.nn import Parameter
 from torch.nn.functional import log_softmax
+from torch.nn.utils import parametrize
 
+from permutect.architecture.parameterizations import LogWeights
 from permutect.metrics.plotting import simple_plot
 from permutect.misc_utils import backpropagate
 from permutect.utils.math_utils import add_in_log_space
@@ -52,7 +54,9 @@ class SomaticSpectrum(nn.Module):
         # thus we initialize weights proportional to the square of the cell fraction
         # TODO: maybe this should just be linear instead of quadratic
         squared_cfs = torch.log(torch.square(torch.sigmoid(self.cf_pre_sigmoid_k.detach())))
-        self.weights_pre_softmax_k = Parameter(squared_cfs)
+
+        self.log_weights_k = Parameter(squared_cfs)
+        parametrize.register_parametrization(self, "log_weights_k", LogWeights())
 
         # TODO: this is an arbitrary guess
         background_weight = 0.0001
@@ -80,8 +84,7 @@ class SomaticSpectrum(nn.Module):
         x1_bk, x2_bk = mafs_bk * cf_bk, (1 - mafs_bk) * cf_bk
         uniform_binomial_log_lks_bk = uniform_binomial_log_lk(n=depths_bk, k=alt_counts_bk, x1=x1_bk, x2=x2_bk)
 
-        log_weights_k = log_softmax(self.weights_pre_softmax_k, dim=-1)
-        log_weights_bk = log_weights_k.view(1, -1)
+        log_weights_bk = self.log_weights_k.view(1, -1)
 
         non_background_log_lks_b = logsumexp(log_weights_bk + uniform_binomial_log_lks_bk, dim=-1)
         background_log_lks_b = beta_binomial_log_lk(
@@ -120,9 +123,7 @@ class SomaticSpectrum(nn.Module):
         gauss_k = torch.distributions.normal.Normal(cf_k, 0.01 * torch.ones_like(cf_k))
         log_densities_fk = gauss_k.log_prob(fractions_f.unsqueeze(dim=1))
 
-        log_weights_k = log_softmax(self.weights_pre_softmax_k, dim=-1).cpu()  # these weights are normalized
-        log_weights_fk = log_weights_k.view(1, -1)
-
+        log_weights_fk = self.log_weights_k.view(1, -1).cpu()
         log_weighted_densities_fk = log_weights_fk + log_densities_fk
         densities_f = torch.exp(torch.logsumexp(log_weighted_densities_fk, dim=-1))
 
