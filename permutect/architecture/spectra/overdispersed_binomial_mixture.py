@@ -7,7 +7,9 @@ from torch import logsumexp
 from torch import nn
 from torch.nn.functional import log_softmax
 from torch.nn.functional import softmax
+from torch.nn.utils import parametrize
 
+from permutect.architecture.parameterizations import LogWeights
 from permutect.metrics.plotting import simple_plot
 from permutect.misc_utils import backpropagate
 from permutect.utils.enums import Variation
@@ -56,7 +58,9 @@ class OverdispersedBinomialMixture(nn.Module):
         self.max_mean = max_mean
 
         # parameters for each component and variant type:
-        self.weights_pre_softmax_vk = torch.nn.Parameter(torch.ones(self.V, self.K))
+        self.log_weights_vk = torch.nn.Parameter(torch.ones(self.V, self.K))
+        parametrize.register_parametrization(self, "log_weights_vk", LogWeights())
+
         self.mean_pre_sigmoid_vk = torch.nn.Parameter(torch.randn(self.V, self.K))
         self.concentration_pre_sigmoid_vk = torch.nn.Parameter(torch.randn(self.V, self.K))
         self.max_concentration = torch.nn.Parameter(torch.tensor(50.0))
@@ -68,7 +72,7 @@ class OverdispersedBinomialMixture(nn.Module):
 
     def forward(self, types_b, n_b, k_b):
         types_idx = types_b.long()
-        log_weights_bk = log_softmax(self.weights_pre_softmax_vk[types_idx, :], dim=-1)
+        log_weights_bk = self.log_weights_vk[types_idx, :]
 
         # we make them 2D, with 1st dim batch, to match alpha and beta.  A single column is OK because the single value of
         # n/k are broadcast over all mixture components
@@ -110,7 +114,7 @@ class OverdispersedBinomialMixture(nn.Module):
         return alphas_k, betas_k
 
     def component_weights(self, var_type: int):
-        return softmax(self.weights_pre_softmax_vk[var_type], dim=-1)
+        return torch.exp(self.log_weights_vk[var_type])
 
     # given variant type, return the moments E[x], E[ln(x)], and E[x ln(x)] of the underlying beta mixture
     def moments_of_underlying_beta_mixture(self, var_type: int):
@@ -141,7 +145,7 @@ class OverdispersedBinomialMixture(nn.Module):
 
     def sample(self, types_b, n):
         # compute weights and select one mixture component from the corresponding multinomial for each datum / row
-        weights = softmax(self.weights_pre_softmax_vk[types_b, :], dim=-1)
+        weights = torch.exp(self.log_weights_vk[types_b, :])
         component_indices = torch.multinomial(weights, num_samples=1, replacement=True)  # 2D tensor with one column
 
         # get 1D tensors of one selected alpha and beta shape parameter per datum / row, then sample a fraction from each
@@ -193,7 +197,7 @@ class OverdispersedBinomialMixture(nn.Module):
         # device = self.mean_pre_sigmoid_vk.device
         fractions = torch.arange(0.01, 0.99, 0.001)  # 1D tensor on CPU
 
-        log_weights_k = log_softmax(self.weights_pre_softmax_vk[variant_type].detach(), dim=-1).cpu()
+        log_weights_k = self.log_weights_vk[variant_type].detach().cpu()
         means_k = self.max_mean * torch.sigmoid(self.mean_pre_sigmoid_vk[variant_type].detach()).cpu()
 
         # now we're on CPU
