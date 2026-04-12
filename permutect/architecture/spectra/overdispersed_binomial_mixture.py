@@ -198,7 +198,6 @@ class OverdispersedBinomialMixture(nn.Module):
     """
 
     def spectrum_density_vs_fraction(self, variant_type: Variation, depth: int):
-        # device = self.mean_pre_sigmoid_vk.device
         fractions = torch.arange(0.01, 0.99, 0.001)  # 1D tensor on CPU
 
         log_weights_k = self.log_weights_vk[variant_type].detach().cpu()
