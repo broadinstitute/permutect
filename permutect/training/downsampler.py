@@ -8,7 +8,7 @@ from torch.nn import Module
 from torch.nn import Parameter
 from torch.nn.utils import parametrize
 
-from permutect import utils
+from permutect import utils, misc_utils
 from permutect.architecture.parameterizations import LogWeights
 from permutect.data.batch import Batch
 from permutect.data.batch import BatchIndexedTensor
@@ -96,9 +96,12 @@ class Downsampler(Module):
         slvra_shape = BatchIndexedTensor.shape_without_logits(num_sources)
         slvrak_shape = (slvra_shape + (len(self.beta_basis),))
         self.log_ref_weights_slvrak = Parameter(torch.zeros(slvrak_shape), requires_grad=False)
-        self.log_ref_wts = parametrize.register_parametrization(self, "log_ref_weights_slvrak", LogWeights())
+        parametrize.register_parametrization(self, "log_ref_weights_slvrak", LogWeights())
         self.log_alt_weights_slvrah = Parameter(torch.zeros(slvrak_shape), requires_grad=False)
-        self.log_alt_wts = parametrize.register_parametrization(self, "log_alt_weights_slvrah", LogWeights())
+        parametrize.register_parametrization(self, "log_alt_weights_slvrah", LogWeights())
+
+    def weights_parameters(self):
+        return [self.parametrizations.log_ref_weights_slvrak.original, self.parametrizations.log_alt_weights_slvrah.original]
 
     def calculate_downsampling_fractions(self, batch: Batch) -> tuple[Tensor, Tensor]:
         # we will flatten all the batch indices -- slvra, but not k -- to get a 2D tensor indexed by the batch's
@@ -137,7 +140,7 @@ class Downsampler(Module):
         return result_slvyz
 
     def optimize_downsampling_balance(self, counts_slvra: BatchIndexedTensor):
-        utils.unfreeze(chain((self.log_ref_wts.parameters(), self.log_alt_wts.parameters())))
+        misc_utils.unfreeze(self.weights_parameters())
         optimizer = torch.optim.AdamW(self.parameters())
         # TODO: magic constant -- choose when to end optimization more intelligently
         for step in range(10000):
@@ -153,4 +156,4 @@ class Downsampler(Module):
             sums_of_squares_slv = torch.sum(torch.square(normalized_slvyz), dim=(-2, -1))
             loss = torch.sum(sums_of_squares_slv)
             backpropagate(optimizer, loss)
-        utils.freeze(chain((self.log_ref_wts.parameters(), self.log_alt_wts.parameters())))
+        misc_utils.freeze(self.weights_parameters())
