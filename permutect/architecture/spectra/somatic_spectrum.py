@@ -8,7 +8,7 @@ from torch.nn import Parameter
 from torch.nn.functional import log_softmax
 from torch.nn.utils import parametrize
 
-from permutect.architecture.parameterizations import LogWeights
+from permutect.architecture.parameterizations import LogWeights, BoundedNumber
 from permutect.metrics.plotting import simple_plot
 from permutect.misc_utils import backpropagate
 from permutect.utils.math_utils import add_in_log_space
@@ -47,15 +47,14 @@ class SomaticSpectrum(nn.Module):
         self.K = num_components
 
         # initialize evenly spaced cell fractions pre-sigmoid from -3 to 3
-        self.cf_pre_sigmoid_k = Parameter((6 * ((torch.arange(num_components) / num_components) - 0.5)))
+        self.cf_k = Parameter(torch.sigmoid((6 * ((torch.arange(num_components) / num_components) - 0.5))))
+        parametrize.register_parametrization(self, "cf_k", BoundedNumber(0,1))
 
         # rough idea for initializing weights: the bigger the cell fraction 1) the more cells there are for mutations to arise
         # and 2) the longer the cluster has probably been around for mutations to arise
         # thus we initialize weights proportional to the square of the cell fraction
         # TODO: maybe this should just be linear instead of quadratic
-        squared_cfs = torch.log(torch.square(torch.sigmoid(self.cf_pre_sigmoid_k.detach())))
-
-        self.log_weights_k = Parameter(squared_cfs)
+        self.log_weights_k = Parameter(torch.log(torch.square(self.cf_k.detach())))
         parametrize.register_parametrization(self, "log_weights_k", LogWeights())
 
         # TODO: this is an arbitrary guess
@@ -78,8 +77,7 @@ class SomaticSpectrum(nn.Module):
         mafs_bk = torch.clamp(mafs_b, max=0.49).view(-1, 1)
 
         # lower and upper uniform distribution bounds
-        cf_k = torch.sigmoid(self.cf_pre_sigmoid_k)
-        cf_bk = cf_k.view(1, -1)  # dummy length-1 b index for broadcasting
+        cf_bk = self.cf_k.view(1, -1)  # dummy length-1 b index for broadcasting
 
         x1_bk, x2_bk = mafs_bk * cf_bk, (1 - mafs_bk) * cf_bk
         uniform_binomial_log_lks_bk = uniform_binomial_log_lk(n=depths_bk, k=alt_counts_bk, x1=x1_bk, x2=x2_bk)
@@ -117,10 +115,9 @@ class SomaticSpectrum(nn.Module):
     def spectrum_density_vs_fraction(self):
         fractions_f = torch.arange(0.01, 0.99, 0.001)  # 1D tensor
 
-        cf_k = torch.sigmoid(self.cf_pre_sigmoid_k).cpu()
-
         # smear each binomial f into a narrow Gaussian for plotting
-        gauss_k = torch.distributions.normal.Normal(cf_k, 0.01 * torch.ones_like(cf_k))
+        cf_k_cpu = self.cf_k.cpu()
+        gauss_k = torch.distributions.normal.Normal(cf_k_cpu, 0.01 * torch.ones_like(cf_k_cpu))
         log_densities_fk = gauss_k.log_prob(fractions_f.unsqueeze(dim=1))
 
         log_weights_fk = self.log_weights_k.view(1, -1).cpu()
