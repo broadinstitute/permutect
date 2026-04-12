@@ -10,6 +10,7 @@ from torch.nn.utils import parametrize
 
 from permutect.architecture.exponentially_modified_gaussian import ExponentiallyModifiedGaussian
 from permutect.architecture.parameterizations import BoundedNumber
+from permutect.architecture.parameterizations import LogWeights
 from permutect.architecture.parameterizations import UnitVector
 from permutect.data.batch import Batch
 from permutect.data.datum import Data
@@ -75,7 +76,8 @@ class FeatureClustering(nn.Module):
         self.artifact_stdev_k = Parameter(torch.ones(self.num_artifact_clusters))
         parametrize.register_parametrization(self, "artifact_stdev_k", STDEV_CONSTRAINT)
 
-        self.cluster_weights_pre_softmax_k = Parameter(torch.ones(self.num_artifact_clusters))
+        self.log_cluster_weights_k = Parameter(torch.ones(self.num_artifact_clusters))
+        parametrize.register_parametrization(self, "log_cluster_weights_k", LogWeights())
 
     def weighted_log_likelihoods_bk(self, alt_bre: RaggedSets, alt_counts_b: IntTensor):
         alt_re = alt_bre.flattened_tensor_nf
@@ -110,9 +112,7 @@ class FeatureClustering(nn.Module):
         outlier_log_lks_bk = RaggedSets(outlier_log_lks_rk, lengths_b=alt_counts_b).sums_over_sets()
         unweighted_artifact_log_lks_bk = RaggedSets(artifact_log_lks_rk, lengths_b=alt_counts_b).sums_over_sets()
 
-        # these are the log of weights that sum to 1
-        log_artifact_cluster_weights_k = torch.log_softmax(self.cluster_weights_pre_softmax_k, dim=-1)
-        log_artifact_cluster_weights_bk = log_artifact_cluster_weights_k[None, :]
+        log_artifact_cluster_weights_bk = self.log_cluster_weights_k[None, :]
         artifact_log_lks_bk = unweighted_artifact_log_lks_bk + log_artifact_cluster_weights_bk
 
         # the first column is nonartifact; next is outlier; other columns are different artifact clusters
