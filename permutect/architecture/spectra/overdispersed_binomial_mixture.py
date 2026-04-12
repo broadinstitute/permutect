@@ -9,7 +9,7 @@ from torch.nn.functional import log_softmax
 from torch.nn.functional import softmax
 from torch.nn.utils import parametrize
 
-from permutect.architecture.parameterizations import LogWeights
+from permutect.architecture.parameterizations import LogWeights, BoundedNumber
 from permutect.metrics.plotting import simple_plot
 from permutect.misc_utils import backpropagate
 from permutect.utils.enums import Variation
@@ -61,8 +61,12 @@ class OverdispersedBinomialMixture(nn.Module):
         self.log_weights_vk = torch.nn.Parameter(torch.ones(self.V, self.K))
         parametrize.register_parametrization(self, "log_weights_vk", LogWeights())
 
-        self.mean_pre_sigmoid_vk = torch.nn.Parameter(torch.randn(self.V, self.K))
-        self.concentration_pre_sigmoid_vk = torch.nn.Parameter(torch.randn(self.V, self.K))
+        self.mean_vk = torch.nn.Parameter(torch.sigmoid(torch.randn(self.V, self.K)))
+        parametrize.register_parametrization(self, "mean_vk", BoundedNumber(0, 1))
+
+        self.concentration_vk = torch.nn.Parameter(torch.sigmoid(torch.randn(self.V, self.K)))
+        parametrize.register_parametrization(self, "concentration_vk", BoundedNumber(0, 1))
+
         self.max_concentration = torch.nn.Parameter(torch.tensor(50.0))
 
     """
@@ -80,7 +84,7 @@ class OverdispersedBinomialMixture(nn.Module):
         k_bk = k_b[:, None]
 
         # 2D tensors -- 1st dim batch, 2nd dim mixture component
-        mean_bk = self.max_mean * torch.sigmoid(self.mean_pre_sigmoid_vk[types_idx, :])
+        mean_bk = self.max_mean * self.mean_vk[types_idx, :]
         concentration_bk = self.get_concentration(types_b)
 
         if self.mode == "beta":
@@ -103,12 +107,12 @@ class OverdispersedBinomialMixture(nn.Module):
         return logsumexp(log_weighted_likelihoods_bk, dim=-1, keepdim=False)
 
     def get_concentration(self, types_b):
-        return self.max_concentration * torch.sigmoid(self.concentration_pre_sigmoid_vk[types_b.long(), :])
+        return self.max_concentration * self.concentration_vk[types_b.long(), :]
 
     # given 1D input tensor, return 1D tensors of component alphas and betas
     def component_shapes(self, var_type: int):
-        means_k = self.max_mean * torch.sigmoid(self.mean_pre_sigmoid_vk[var_type])
-        concentrations_k = self.max_concentration * torch.sigmoid(self.concentration_pre_sigmoid_vk[var_type])
+        means_k = self.max_mean * self.mean_vk[var_type]
+        concentrations_k = self.max_concentration * self.concentration_vk[var_type]
         alphas_k = means_k * concentrations_k
         betas_k = (1 - means_k) * concentrations_k if self.mode == "beta" else concentrations_k
         return alphas_k, betas_k
@@ -152,7 +156,7 @@ class OverdispersedBinomialMixture(nn.Module):
         # It may be very wasteful computing everything and only using one component, but this is just for unit testing
         means = (
             self.max_mean
-            * torch.sigmoid(self.mean_pre_sigmoid_vk[types_b, :].detach())
+            * self.mean_vk[types_b, :].detach()
             .gather(dim=1, index=component_indices)
             .squeeze()
         )
@@ -198,7 +202,7 @@ class OverdispersedBinomialMixture(nn.Module):
         fractions = torch.arange(0.01, 0.99, 0.001)  # 1D tensor on CPU
 
         log_weights_k = self.log_weights_vk[variant_type].detach().cpu()
-        means_k = self.max_mean * torch.sigmoid(self.mean_pre_sigmoid_vk[variant_type].detach()).cpu()
+        means_k = self.max_mean * self.mean_vk[variant_type].detach().cpu()
 
         # now we're on CPU
         if self.mode == "none":
@@ -212,7 +216,7 @@ class OverdispersedBinomialMixture(nn.Module):
         else:
             concentrations_k = (
                 self.max_concentration.cpu()
-                * torch.sigmoid(self.concentration_pre_sigmoid_vk[variant_type]).detach().cpu()
+                * self.concentration_vk[variant_type].detach().cpu()
             )
             alphas_k = means_k * concentrations_k
             betas_k = (1 - means_k) * concentrations_k if self.mode == "beta" else concentrations_k
