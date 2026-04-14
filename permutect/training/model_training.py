@@ -2,8 +2,13 @@ import math
 import time
 from collections import defaultdict
 from queue import PriorityQueue
+from typing import Any
 
 import torch
+from torch import device
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from tqdm import trange
@@ -30,6 +35,7 @@ from permutect.misc_utils import report_memory_usage
 from permutect.misc_utils import unfreeze
 from permutect.parameters import TrainingParameters
 from permutect.training.balancer import Balancer
+from permutect.training.balancer import PlotType
 from permutect.training.checkpoint import Checkpoint
 from permutect.training.downsampler import Downsampler
 from permutect.training.loss_recorder import LossRecorder
@@ -46,7 +52,7 @@ def train_artifact_model(
     valid_dataset: ReadsDataset,
     training_params: TrainingParameters,
     summary_writer: SummaryWriter,
-    epochs_per_evaluation: int = None,
+    epochs_per_evaluation: int = 5,
 ):
     device, dtype = model._device, model._dtype
     balancer = Balancer(num_sources=train_dataset.num_sources(), device=device).to(device=device, dtype=dtype)
@@ -64,20 +70,18 @@ def train_artifact_model(
         lr=training_params.learning_rate,
         weight_decay=training_params.weight_decay,
     )
-    train_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        train_optimizer,
-        factor=0.2,
-        patience=5,
-        threshold=0.001,
-        min_lr=(training_params.learning_rate / 100),
-    )
+    scheduler_kwargs = {
+        "factor": 0.2,
+        "patience": 5,
+        "threshold": 0.001,
+        "min_lr": (training_params.learning_rate / 100),
+    }
+    train_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(train_optimizer, **scheduler_kwargs)
 
     checkpoint = Checkpoint(device, model, train_optimizer)
 
     train_loader = train_dataset.make_data_loader(training_params.batch_size, is_cuda, training_params.num_workers)
-    valid_loader = valid_dataset.make_data_loader(
-        training_params.inference_batch_size, is_cuda, training_params.num_workers
-    )
+    valid_loader = valid_dataset.make_data_loader(training_params.batch_size, is_cuda, training_params.num_workers)
     report_memory_usage("Loaders created, about to train.")
 
     first_epoch, last_epoch = 1, training_params.num_epochs + training_params.num_calibration_epochs
@@ -88,77 +92,24 @@ def train_artifact_model(
         model.source_predictor.set_adversarial_strength((2 / (1 + math.exp(-0.1 * (epoch - 1)))) - 1)
 
         for epoch_type in [Epoch.TRAIN, Epoch.VALID]:
-            loss_recorder = LossRecorder(device, num_sources)
-            model.set_epoch_type(epoch_type)
-            if is_calibration_epoch and epoch_type == Epoch.TRAIN:
-                freeze(model.parameters())
-                unfreeze(model.calibration_parameters())  # unfreeze calibration but everything else stays frozen
-            loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
-
-            parent_batch: Batch
-            for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
-                batch: DownsampledBatch
-                for downsampling_iteration in range(2):
-                    ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
-                    batch = DownsampledBatch(parent_batch, ref_fracs_b, alt_fracs_b)
-                    output = model.compute_batch_output(batch, balancer)
-                    losses = model.compute_batch_losses(output, batch)
-                    loss_recorder.record(output, losses, batch)
-
-                    if epoch_type == Epoch.TRAIN:
-                        average_loss = losses.total_loss.item() / batch.size()
-                        if epoch > 1 and average_loss > 100.0:
-                            print(f"Very large batch loss {average_loss:.2f}.")
-
-                        backpropagate(train_optimizer, losses.total_loss, params_to_clip=model.parameters())
-                # done with this downsampled batch
-            # done with this parent batch
-            check_for_nan(model)
-            if epoch_type == Epoch.TRAIN:
-                mean_loss = torch.mean(
-                    loss_recorder.semisupervised_loss_metrics.get_marginal(BatchProperty.LABEL)
-                ).item()
-                train_scheduler.step(mean_loss)
-
-            generate_plots = (epochs_per_evaluation is not None and epoch % epochs_per_evaluation == 0) or (
-                epoch == last_epoch
+            train_one_epoch(
+                balancer,
+                checkpoint,
+                device,
+                downsampler,
+                epoch,
+                epoch_type,
+                epochs_per_evaluation,
+                is_calibration_epoch,
+                last_epoch,
+                model,
+                num_sources,
+                summary_writer,
+                train_loader,
+                train_optimizer,
+                train_scheduler,
+                valid_loader,
             )
-            loss_recorder.output_results(epoch_type, epoch, summary_writer, generate_plots)
-
-            if generate_plots:
-                balancer.make_plots(
-                    summary_writer,
-                    "log(label-balancing weights)",
-                    epoch_type,
-                    epoch,
-                    type_of_plot="weights",
-                )
-                balancer.make_plots(
-                    summary_writer,
-                    "unweighted data counts after downsampling",
-                    epoch_type,
-                    epoch,
-                    type_of_plot="counts",
-                )
-            print(f"performing evaluation on epoch {epoch}")
-            if epoch_type == Epoch.VALID:
-                evaluate_model(
-                    model,
-                    epoch,
-                    num_sources,
-                    balancer,
-                    downsampler,
-                    train_loader,
-                    valid_loader,
-                    summary_writer,
-                    collect_embeddings=False,
-                    report_worst=False,
-                )
-
-            if not is_calibration_epoch and epoch_type == Epoch.TRAIN:
-                mean_loss = torch.mean(loss_recorder.semisupervised_loss_metrics.get_marginal(BatchProperty.LABEL))
-                checkpoint.save_checkpoint_if_needed(epoch, mean_loss)
-                checkpoint.load_checkpoint_if_needed(mean_loss)
 
         # done with training and validation for this epoch
         report_memory_usage(f"End of epoch {epoch}.")
@@ -169,6 +120,84 @@ def train_artifact_model(
     embeddings_timer = Timer("Creating training and validation datasets")
     record_embeddings(model, train_loader, summary_writer)
     embeddings_timer.report("Time to record embeddings for tensorboard.")
+
+
+def train_one_epoch(
+    balancer: Balancer,
+    checkpoint: Checkpoint,
+    device: device,
+    downsampler: Downsampler,
+    epoch: int,
+    epoch_type: Epoch,
+    epochs_per_evaluation: int,
+    is_calibration_epoch: bool,
+    last_epoch: int,
+    model: ArtifactModel,
+    num_sources: int,
+    summary_writer: SummaryWriter,
+    train_loader: DataLoader[Any],
+    train_optimizer: AdamW,
+    train_scheduler: ReduceLROnPlateau,
+    valid_loader: DataLoader[Any],
+):
+    loss_recorder = LossRecorder(device, num_sources)
+    model.set_epoch_type(epoch_type)
+    if is_calibration_epoch and epoch_type == Epoch.TRAIN:
+        freeze(model.parameters())
+        unfreeze(model.calibration_parameters())  # unfreeze calibration but everything else stays frozen
+    loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
+
+    parent_batch: Batch
+    for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
+        batch: DownsampledBatch
+        for downsampling_iteration in range(2):
+            ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
+            batch = DownsampledBatch(parent_batch, ref_fracs_b, alt_fracs_b)
+            output = model.compute_batch_output(batch, balancer)
+            losses = model.compute_batch_losses(output, batch)
+            loss_recorder.record(output, losses, batch)
+
+            if epoch_type == Epoch.TRAIN:
+                average_loss = losses.total_loss.item() / batch.size()
+                if epoch > 1 and average_loss > 100.0:
+                    print(f"Very large batch loss {average_loss:.2f}.")
+
+                backpropagate(train_optimizer, losses.total_loss, params_to_clip=model.parameters())
+        # done with this downsampled batch
+    # done with this parent batch
+    check_for_nan(model)
+    if epoch_type == Epoch.TRAIN:
+        mean_loss = torch.mean(loss_recorder.primary_metrics.get_marginal(BatchProperty.LABEL)).item()
+        train_scheduler.step(mean_loss)
+
+    generate_plots = epoch % epochs_per_evaluation == 0 or epoch == last_epoch
+    loss_recorder.output_results(epoch_type, epoch, summary_writer, generate_plots)
+
+    if generate_plots:
+        weight_prefix = "log(label-balancing weights)" + f"({epoch_type.name})"
+        count_prefix = "unweighted data counts after downsampling" + f"({epoch_type.name})"
+        balancer.make_plots(summary_writer, weight_prefix, epoch, PlotType.WEIGHTS)
+        balancer.make_plots(summary_writer, count_prefix, epoch, PlotType.COUNTS)
+
+    print(f"performing evaluation on epoch {epoch}")
+    if epoch_type == Epoch.VALID:
+        evaluate_model(
+            model,
+            epoch,
+            num_sources,
+            balancer,
+            downsampler,
+            train_loader,
+            valid_loader,
+            summary_writer,
+            collect_embeddings=False,
+            report_worst=False,
+        )
+
+    if not is_calibration_epoch and epoch_type == Epoch.TRAIN:
+        mean_loss = torch.mean(loss_recorder.primary_metrics.get_marginal(BatchProperty.LABEL))
+        checkpoint.save_checkpoint_if_needed(epoch, mean_loss)
+        checkpoint.load_checkpoint_if_needed(mean_loss)
 
 
 @torch.inference_mode()

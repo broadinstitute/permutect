@@ -5,9 +5,10 @@ from torch import IntTensor
 from torch import exp
 from torch import logsumexp
 from torch import nn
-from torch.nn.functional import log_softmax
-from torch.nn.functional import softmax
+from torch.nn.utils import parametrize
 
+from permutect.architecture.parameterizations import BoundedNumber
+from permutect.architecture.parameterizations import LogWeights
 from permutect.metrics.plotting import simple_plot
 from permutect.misc_utils import backpropagate
 from permutect.utils.enums import Variation
@@ -56,9 +57,15 @@ class OverdispersedBinomialMixture(nn.Module):
         self.max_mean = max_mean
 
         # parameters for each component and variant type:
-        self.weights_pre_softmax_vk = torch.nn.Parameter(torch.ones(self.V, self.K))
-        self.mean_pre_sigmoid_vk = torch.nn.Parameter(torch.randn(self.V, self.K))
-        self.concentration_pre_sigmoid_vk = torch.nn.Parameter(torch.randn(self.V, self.K))
+        self.log_weights_vk = torch.nn.Parameter(torch.ones(self.V, self.K))
+        parametrize.register_parametrization(self, "log_weights_vk", LogWeights())
+
+        self.mean_vk = torch.nn.Parameter(torch.sigmoid(torch.randn(self.V, self.K)))
+        parametrize.register_parametrization(self, "mean_vk", BoundedNumber(0, 1))
+
+        self.concentration_vk = torch.nn.Parameter(torch.sigmoid(torch.randn(self.V, self.K)))
+        parametrize.register_parametrization(self, "concentration_vk", BoundedNumber(0, 1))
+
         self.max_concentration = torch.nn.Parameter(torch.tensor(50.0))
 
     """
@@ -68,7 +75,7 @@ class OverdispersedBinomialMixture(nn.Module):
 
     def forward(self, types_b, n_b, k_b):
         types_idx = types_b.long()
-        log_weights_bk = log_softmax(self.weights_pre_softmax_vk[types_idx, :], dim=-1)
+        log_weights_bk = self.log_weights_vk[types_idx, :]
 
         # we make them 2D, with 1st dim batch, to match alpha and beta.  A single column is OK because the single value of
         # n/k are broadcast over all mixture components
@@ -76,7 +83,7 @@ class OverdispersedBinomialMixture(nn.Module):
         k_bk = k_b[:, None]
 
         # 2D tensors -- 1st dim batch, 2nd dim mixture component
-        mean_bk = self.max_mean * torch.sigmoid(self.mean_pre_sigmoid_vk[types_idx, :])
+        mean_bk = self.max_mean * self.mean_vk[types_idx, :]
         concentration_bk = self.get_concentration(types_b)
 
         if self.mode == "beta":
@@ -99,18 +106,18 @@ class OverdispersedBinomialMixture(nn.Module):
         return logsumexp(log_weighted_likelihoods_bk, dim=-1, keepdim=False)
 
     def get_concentration(self, types_b):
-        return self.max_concentration * torch.sigmoid(self.concentration_pre_sigmoid_vk[types_b.long(), :])
+        return self.max_concentration * self.concentration_vk[types_b.long(), :]
 
     # given 1D input tensor, return 1D tensors of component alphas and betas
     def component_shapes(self, var_type: int):
-        means_k = self.max_mean * torch.sigmoid(self.mean_pre_sigmoid_vk[var_type])
-        concentrations_k = self.max_concentration * torch.sigmoid(self.concentration_pre_sigmoid_vk[var_type])
+        means_k = self.max_mean * self.mean_vk[var_type]
+        concentrations_k = self.max_concentration * self.concentration_vk[var_type]
         alphas_k = means_k * concentrations_k
         betas_k = (1 - means_k) * concentrations_k if self.mode == "beta" else concentrations_k
         return alphas_k, betas_k
 
     def component_weights(self, var_type: int):
-        return softmax(self.weights_pre_softmax_vk[var_type], dim=-1)
+        return torch.exp(self.log_weights_vk[var_type])
 
     # given variant type, return the moments E[x], E[ln(x)], and E[x ln(x)] of the underlying beta mixture
     def moments_of_underlying_beta_mixture(self, var_type: int):
@@ -141,17 +148,12 @@ class OverdispersedBinomialMixture(nn.Module):
 
     def sample(self, types_b, n):
         # compute weights and select one mixture component from the corresponding multinomial for each datum / row
-        weights = softmax(self.weights_pre_softmax_vk[types_b, :], dim=-1)
+        weights = torch.exp(self.log_weights_vk[types_b, :])
         component_indices = torch.multinomial(weights, num_samples=1, replacement=True)  # 2D tensor with one column
 
         # get 1D tensors of one selected alpha and beta shape parameter per datum / row, then sample a fraction from each
         # It may be very wasteful computing everything and only using one component, but this is just for unit testing
-        means = (
-            self.max_mean
-            * torch.sigmoid(self.mean_pre_sigmoid_vk[types_b, :].detach())
-            .gather(dim=1, index=component_indices)
-            .squeeze()
-        )
+        means = self.max_mean * self.mean_vk[types_b, :].detach().gather(dim=1, index=component_indices).squeeze()
         concentrations = self.get_concentration(types_b).detach().gather(dim=1, index=component_indices).squeeze()
         alphas = means * concentrations
         betas = (1 - means) * concentrations if self.mode == "beta" else concentrations
@@ -190,11 +192,10 @@ class OverdispersedBinomialMixture(nn.Module):
     """
 
     def spectrum_density_vs_fraction(self, variant_type: Variation, depth: int):
-        # device = self.mean_pre_sigmoid_vk.device
         fractions = torch.arange(0.01, 0.99, 0.001)  # 1D tensor on CPU
 
-        log_weights_k = log_softmax(self.weights_pre_softmax_vk[variant_type].detach(), dim=-1).cpu()
-        means_k = self.max_mean * torch.sigmoid(self.mean_pre_sigmoid_vk[variant_type].detach()).cpu()
+        log_weights_k = self.log_weights_vk[variant_type].detach().cpu()
+        means_k = self.max_mean * self.mean_vk[variant_type].detach().cpu()
 
         # now we're on CPU
         if self.mode == "none":
@@ -206,10 +207,7 @@ class OverdispersedBinomialMixture(nn.Module):
             )  # 1D tensor
             return fractions, densities
         else:
-            concentrations_k = (
-                self.max_concentration.cpu()
-                * torch.sigmoid(self.concentration_pre_sigmoid_vk[variant_type]).detach().cpu()
-            )
+            concentrations_k = self.max_concentration.cpu() * self.concentration_vk[variant_type].detach().cpu()
             alphas_k = means_k * concentrations_k
             betas_k = (1 - means_k) * concentrations_k if self.mode == "beta" else concentrations_k
 

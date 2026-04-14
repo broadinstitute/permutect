@@ -4,6 +4,9 @@ from typing import List
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.nn.utils import parametrize
+
+from permutect.architecture.parameterizations import BoundedNumber
 
 
 class MonoDenseLayer(nn.Module):
@@ -110,12 +113,11 @@ class MonotonicHighwayLayer(nn.Module):
         )
 
         # initialize with negative bias so behavior starts near identity with gates almost closed
-        self.gate_pre_sigmoid = nn.Parameter(torch.tensor(-2.0))
+        self.gate = nn.Parameter(torch.sigmoid(torch.tensor(-2.0)))
+        parametrize.register_parametrization(self, "gate", BoundedNumber(0, 1))
 
     def forward(self, x):
-        gate = torch.sigmoid(self.gate_pre_sigmoid)
-
-        return (1 - gate) * x + gate * self.nonlinear(x)
+        return (1 - self.gate) * x + self.gate * self.nonlinear(x)
 
 
 class MonoDense(nn.Module):

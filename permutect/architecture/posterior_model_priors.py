@@ -265,6 +265,6 @@ class PosteriorModelPriors(nn.Module):
             x_label="alt base",
             y_label="ref base",
             row_labels=row_names,
-            column_labels=col_names,
+            col_labels=col_names,
         )
         return prior_fig, prior_ax

@@ -110,7 +110,7 @@ class EvaluationMetrics:
             x_label="alt allele fraction",
             y_label="",
             row_labels=row_names,
-            column_labels=variation_types,
+            col_labels=variation_types,
         )
         plotting.tidy_subplots(
             ac_fig,
@@ -118,7 +118,7 @@ class EvaluationMetrics:
             x_label="alt count",
             y_label="",
             row_labels=row_names,
-            column_labels=variation_types,
+            col_labels=variation_types,
         )
         plotting.tidy_subplots(
             logit_fig,
@@ -126,7 +126,7 @@ class EvaluationMetrics:
             x_label="artifact logit",
             y_label="",
             row_labels=row_names,
-            column_labels=variation_types,
+            col_labels=variation_types,
         )
         plotting.tidy_subplots(
             prob_fig,
@@ -134,7 +134,7 @@ class EvaluationMetrics:
             x_label="mistake call probability",
             y_label="",
             row_labels=row_names,
-            column_labels=variation_types,
+            col_labels=variation_types,
         )
 
         summary_writer.add_figure("mistake allele fractions", af_fig)
@@ -216,7 +216,7 @@ class EvaluationMetrics:
                     x_label="alt count",
                     y_label="ref count",
                     row_labels=accuracy_row_names,
-                    column_labels=variation_types,
+                    col_labels=variation_types,
                 )
                 plotting.tidy_subplots(
                     roc_fig,
@@ -224,7 +224,7 @@ class EvaluationMetrics:
                     x_label=nonart_label,
                     y_label=art_label,
                     row_labels=ref_count_names,
-                    column_labels=alt_count_names,
+                    col_labels=alt_count_names,
                 )
                 plotting.tidy_subplots(
                     cal_fig,
@@ -232,7 +232,7 @@ class EvaluationMetrics:
                     x_label="logit",
                     y_label="accuracy",
                     row_labels=ref_count_names,
-                    column_labels=alt_count_names,
+                    col_labels=alt_count_names,
                 )
 
                 source_suffix = (

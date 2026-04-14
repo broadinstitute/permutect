@@ -31,8 +31,8 @@ from permutect.utils.enums import Variation
 
 class LossMetrics:
     def __init__(self, num_sources: int, device=gpu_if_available()):
-        self.totals_slvra = BatchIndexedTensor.make_zeros(num_sources=num_sources, device=device)
-        self.counts_slvra = BatchIndexedTensor.make_zeros(num_sources=num_sources, device=device)
+        self.totals_slvra = BatchIndexedTensor.zeros(num_sources=num_sources, device=device)
+        self.counts_slvra = BatchIndexedTensor.zeros(num_sources=num_sources, device=device)
         self.num_sources = num_sources
         self.has_been_sent_to_cpu = False
 
@@ -59,7 +59,7 @@ class LossMetrics:
     def get_marginal(self, *properties: BatchProperty) -> Tensor:
         return self.totals_slvra.get_marginal(*properties) / self.counts_slvra.get_marginal(*properties)
 
-    def report_marginals(self, message: str):
+    def print_marginals(self, message: str):
         assert self.has_been_sent_to_cpu, "Can't report marginals before sending to CPU"
         print(message)
         batch_property: BatchProperty
@@ -69,12 +69,12 @@ class LossMetrics:
             for n, ave in enumerate(values):
                 print(f"{batch_property.get_name(n)}: {ave:.3f}")
 
-    def write_to_summary_writer(self, epoch_type: Epoch, epoch: int, summary_writer: SummaryWriter, prefix: str):
+    def write_marginals(self, epoch_type: Epoch, epoch: int, summary_writer: SummaryWriter, prefix: str):
         """
         write marginals for every batch property
         :return:
         """
-        assert self.has_been_sent_to_cpu, "Can't write to sumamry writer before sending to CPU"
+        assert self.has_been_sent_to_cpu, "Can't write to summary writer before sending to CPU"
         batch_property: BatchProperty
         for batch_property in (b for b in BatchProperty if b != BatchProperty.LOGIT_BIN):
             marginals = self.get_marginal(batch_property)
@@ -143,7 +143,7 @@ class LossMetrics:
         prefix: str,
         epoch_type: Epoch,
         epoch: int = None,
-        type_of_plot: str = "loss",
+        plot_type: str = "loss",
     ):
         assert self.has_been_sent_to_cpu, "Can't make plots before sending to CPU"
 
@@ -161,9 +161,9 @@ class LossMetrics:
             common_colormesh = None
             for label in Label:
                 for var_type in Variation:
-                    if type_of_plot == "loss":
+                    if plot_type == "loss":
                         common_colormesh = self.plot_losses(label, var_type, axes[label, var_type], source)
-                    elif type_of_plot == "counts":
+                    elif plot_type == "counts":
                         common_colormesh = self.plot_counts(label, var_type, axes[label, var_type], source)
             fig.colorbar(common_colormesh)
             plotting.tidy_subplots(
@@ -172,7 +172,7 @@ class LossMetrics:
                 x_label="alt count",
                 y_label="ref count",
                 row_labels=row_names,
-                column_labels=variation_types,
+                col_labels=variation_types,
             )
             source_suffix = (
                 "" if self.num_sources == 1 else (", all sources" if source is None else f", source {source}")
@@ -429,6 +429,6 @@ class AccuracyMetrics(BatchIndexedTensor):
             x_label="predicted logit",
             y_label="frequency",
             row_labels=row_names,
-            column_labels=column_names,
+            col_labels=column_names,
         )
         return fig, axes

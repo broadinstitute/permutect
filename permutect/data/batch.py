@@ -311,44 +311,27 @@ class BatchIndexedTensor(Tensor):
         return self.shape[0]
 
     @classmethod
-    def make_zeros(cls, num_sources: int, include_logits: bool = False, device=gpu_if_available()):
-        base_shape = (
-            num_sources,
-            len(Label),
-            len(Variation),
-            NUM_REF_COUNT_BINS,
-            NUM_ALT_COUNT_BINS,
-        )
-        shape = (base_shape + (NUM_LOGIT_BINS,)) if include_logits else base_shape
-        return cls(torch.zeros(shape, device=device))
+    def shape_without_logits(cls, num_sources: int):
+        return (num_sources, len(Label), len(Variation), NUM_REF_COUNT_BINS, NUM_ALT_COUNT_BINS)
 
     @classmethod
-    def make_ones(cls, num_sources: int, include_logits: bool = False, device=gpu_if_available()):
-        base_shape = (
-            num_sources,
-            len(Label),
-            len(Variation),
-            NUM_REF_COUNT_BINS,
-            NUM_ALT_COUNT_BINS,
-        )
+    def zeros(cls, num_sources: int, include_logits: bool = False, device=None):
+        base_shape = BatchIndexedTensor.shape_without_logits(num_sources)
+        shape = (base_shape + (NUM_LOGIT_BINS,)) if include_logits else base_shape
+        return cls(torch.zeros(shape, device=(gpu_if_available() if device is None else device)))
+
+    @classmethod
+    def ones(cls, num_sources: int, include_logits: bool = False, device=gpu_if_available()):
+        base_shape = BatchIndexedTensor.shape_without_logits(num_sources)
         shape = (base_shape + (NUM_LOGIT_BINS,)) if include_logits else base_shape
         return cls(torch.ones(shape, device=device))
 
     def resize_sources(self, new_num_sources):
         old_num_sources = self.num_sources()
-        base_shape = (
-            new_num_sources,
-            len(Label),
-            len(Variation),
-            NUM_REF_COUNT_BINS,
-            NUM_ALT_COUNT_BINS,
-        )
+        base_shape = BatchIndexedTensor.shape_without_logits(new_num_sources)
         shape = (base_shape + (NUM_LOGIT_BINS,)) if self.has_logits() else base_shape
         self.resize_(shape)
         self[old_num_sources:] = 0
-
-    def index_by_batch(self, batch: Batch, logits: Tensor = None):
-        return batch.batch_indices().index_into_tensor(self, logits)
 
     # TODO: move to subclass as in comments below
     def record_datum(self, datum: Datum, value: float = 1.0, grow_source_if_necessary: bool = True):
@@ -360,10 +343,9 @@ class BatchIndexedTensor(Tensor):
             else:
                 raise Exception("Datum source doesn't fit.")
         # no logits here
-        ref_idx, alt_idx = (
-            ref_count_bin_index(datum.get(Data.REF_COUNT)),
-            alt_count_bin_index(datum.get(Data.ALT_COUNT)),
-        )
+        ref_idx = ref_count_bin_index(datum.get(Data.REF_COUNT))
+        alt_idx = alt_count_bin_index(datum.get(Data.ALT_COUNT))
+
         self[source, datum.get(Data.LABEL), datum.get(Data.VARIANT_TYPE), ref_idx, alt_idx] += value
 
     # TODO: move to a metrics subclass -- this class should really only be for indexing, not recording

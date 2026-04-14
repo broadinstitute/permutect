@@ -193,7 +193,7 @@ def tidy_subplots(
     axes,
     x_label: str = None,
     y_label: str = None,
-    column_labels: List[str] = None,
+    col_labels: List[str] = None,
     row_labels: List[str] = None,
     keep_axes_tick_labels=False,
 ):
@@ -237,9 +237,9 @@ def tidy_subplots(
         for row_idx, label in enumerate(row_labels):
             axes[row_idx][0].set_ylabel(label)  # note that we use row 0 and set_title to make this a column heading
 
-    if column_labels is not None:
-        assert len(column_labels) == len(axes[0])
-        for col_idx, label in enumerate(column_labels):
+    if col_labels is not None:
+        assert len(col_labels) == len(axes[0])
+        for col_idx, label in enumerate(col_labels):
             axes[0][col_idx].set_title(label)
 
     figure.tight_layout()

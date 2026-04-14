@@ -5,7 +5,9 @@ from matplotlib import pyplot as plt
 from torch import IntTensor
 from torch import nn
 from torch.distributions import Beta
+from torch.nn.utils import parametrize
 
+from permutect.architecture.parameterizations import PositiveNumber
 from permutect.metrics.plotting import simple_plot
 from permutect.misc_utils import backpropagate
 from permutect.utils.array_utils import index_tensor
@@ -32,8 +34,11 @@ class ArtifactSpectra(nn.Module):
         self.V = len(Variation)
         self.D = NUM_DEPTH_BINS
 
-        self.alpha_pre_exp_dv = torch.nn.Parameter(torch.log(2 * torch.ones(self.D, self.V)))
-        self.beta_pre_exp_dv = torch.nn.Parameter(torch.log(30 * torch.ones(self.D, self.V)))
+        self.alpha_dv = torch.nn.Parameter(2 * torch.ones(self.D, self.V))
+        parametrize.register_parametrization(self, "alpha_dv", PositiveNumber())
+
+        self.beta_dv = torch.nn.Parameter(30 * torch.ones(self.D, self.V))
+        parametrize.register_parametrization(self, "beta_dv", PositiveNumber())
 
     """
     here x is a 2D tensor, 1st dimension batch, 2nd dimension being features that determine which Beta mixture to use
@@ -44,9 +49,8 @@ class ArtifactSpectra(nn.Module):
         var_types_b = variant_types_b.long()
         depth_bins_b = depths_to_depth_bins(depths_b)
 
-        alpha_dv, beta_dv = torch.exp(self.alpha_pre_exp_dv), torch.exp(self.beta_pre_exp_dv)
-        alpha_b = index_tensor(alpha_dv, (depth_bins_b, var_types_b))
-        beta_b = index_tensor(beta_dv, (depth_bins_b, var_types_b))
+        alpha_b = index_tensor(self.alpha_dv, (depth_bins_b, var_types_b))
+        beta_b = index_tensor(self.beta_dv, (depth_bins_b, var_types_b))
         result_b = beta_binomial_log_lk(n=depths_b, k=alt_counts_b, alpha=alpha_b, beta=beta_b)
         return result_b
 
@@ -79,10 +83,8 @@ class ArtifactSpectra(nn.Module):
         fractions_f = torch.arange(0.01, 0.99, 0.001)  # 1D tensor
 
         # scalar tensors
-        alpha, beta = (
-            torch.exp(self.alpha_pre_exp_dv[depth_bin, variant_type]),
-            torch.exp(self.beta_pre_exp_dv[depth_bin, variant_type]),
-        )
+        alpha, beta = self.alpha_dv[depth_bin, variant_type], self.beta_dv[depth_bin, variant_type]
+
         alpha_1, beta_1 = (
             alpha.view(1).to(device=fractions_f.device),
             beta.view(1).to(device=fractions_f.device),

@@ -1,9 +1,10 @@
+import enum
+import itertools
 import math
 
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
-from torch.distributions import Beta
 from torch.nn import Module
 from torch.nn import Parameter
 from torch.utils.tensorboard import SummaryWriter
@@ -13,9 +14,13 @@ from permutect.data.batch import BatchIndexedTensor
 from permutect.data.count_binning import ALT_COUNT_BIN_BOUNDS
 from permutect.data.count_binning import REF_COUNT_BIN_BOUNDS
 from permutect.metrics import plotting
-from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
+
+
+class PlotType(enum.Enum):
+    COUNTS = "counts"
+    WEIGHTS = "weights"
 
 
 class Balancer(Module):
@@ -29,44 +34,15 @@ class Balancer(Module):
         self.count_since_last_recomputation = 0
 
         # not weighted, just the actual counts of data seen
-        BatchIndexedTensor.make_zeros(num_sources=num_sources)
-        self.counts_slvra = Parameter(BatchIndexedTensor.make_zeros(num_sources=num_sources), requires_grad=False)
+        self.counts_slvra = Parameter(BatchIndexedTensor.zeros(num_sources=num_sources), requires_grad=False)
 
         # initialize weights to be flat
-        self.weights_slvra = Parameter(BatchIndexedTensor.make_ones(num_sources=num_sources), requires_grad=False)
+        self.weights_slvra = Parameter(BatchIndexedTensor.ones(num_sources=num_sources), requires_grad=False)
 
         # the overall weights for adversarial source prediction are the regular weights times the source weights
         self.source_weights_s = Parameter(torch.ones(num_sources), requires_grad=False)
 
-        # Beta binomial shape parameters for ref and alt count balancing by downsampling
-        # for data with ref count r and alt count a we have distributions Beta_ref = (alpha_ref[r,a], beta_ref[r,a]) and
-        # Beta_alt = (alpha_alt[r,a], beta_alt[r,a]) from which we sample the downsampling ref and alt fractions (and then
-        # in downsampling a binomial draw of reads to keep happens).
-        self.alpha_ref_pre_exp_slvra = Parameter(
-            BatchIndexedTensor.make_zeros(num_sources=num_sources), requires_grad=False
-        )
-        self.beta_ref_pre_exp_slvra = Parameter(
-            BatchIndexedTensor.make_zeros(num_sources=num_sources), requires_grad=False
-        )
-        self.alpha_alt_pre_exp_slvra = Parameter(
-            BatchIndexedTensor.make_zeros(num_sources=num_sources), requires_grad=False
-        )
-        self.beta_alt_pre_exp_slvra = Parameter(
-            BatchIndexedTensor.make_zeros(num_sources=num_sources), requires_grad=False
-        )
         self.to(device=device)
-
-    # TODO: compute multiple sets of samplings
-    def compute_downsampling_fractions(self, batch: Batch):
-        alpha_ref_b = torch.exp(self.alpha_ref_pre_exp_slvra).index_by_batch(batch)
-        beta_ref_b = torch.exp(self.beta_ref_pre_exp_slvra).index_by_batch(batch)
-        alpha_alt_b = torch.exp(self.alpha_alt_pre_exp_slvra).index_by_batch(batch)
-        beta_alt_b = torch.exp(self.beta_alt_pre_exp_slvra).index_by_batch(batch)
-
-        ref_fractions_b = Beta(alpha_ref_b, beta_ref_b).sample()
-        alt_fractions_b = Beta(alpha_alt_b, beta_alt_b).sample()
-
-        return ref_fractions_b, alt_fractions_b
 
     def process_batch_and_compute_weights(self, batch: Batch):
         # this updates the counts that are used to compute weights, recomputes the weights, and returns the weights
@@ -86,11 +62,8 @@ class Balancer(Module):
             new_weights_slvra[:, Label.VARIANT] = torch.clip((1 + art_to_nonart_ratios_svra) / 2, min=0.01, max=100)
 
             counts_slv = torch.sum(self.counts_slvra, dim=(-2, -1))
-            unlabeled_weight_sv = torch.clip(
-                (counts_slv[:, Label.ARTIFACT] + counts_slv[:, Label.VARIANT]) / counts_slv[:, Label.UNLABELED],
-                0,
-                1,
-            )
+            total_labeled_sv = counts_slv[:, Label.ARTIFACT] + counts_slv[:, Label.VARIANT]
+            unlabeled_weight_sv = torch.clip(total_labeled_sv / counts_slv[:, Label.UNLABELED], 0, 1)
             new_weights_slvra[:, Label.UNLABELED] = unlabeled_weight_sv.view(self.num_sources, len(Variation), 1, 1)
 
             attenuation = math.pow(Balancer.ATTENUATION_PER_DATUM, self.count_since_last_recomputation)
@@ -107,82 +80,39 @@ class Balancer(Module):
         return batch_weights, source_weights
 
     # TODO: lots of code duplication with the plotting in loss_metrics.py
-    def plot_weights(self, label: Label, var_type: Variation, axis, source: int):
-        """
-        for given Label and Variation, plot color map of (effective) data counts vs ref (x axis) and alt (y axis) counts
-        :return:
-        """
-        weights_ra = self.weights_slvra[source, label, var_type].cpu()
-        log_weights_ra = torch.clip(torch.log(weights_ra), -4, 4)
-        return plotting.color_plot_2d_on_axis(
-            axis,
-            np.array(ALT_COUNT_BIN_BOUNDS),
-            np.array(REF_COUNT_BIN_BOUNDS),
-            log_weights_ra,
-            None,
-            None,
-            vmin=-4,
-            vmax=4,
-        )
+    def make_plot(self, label: Label, var_type: Variation, axis, source: int, plot_type: PlotType):
+        if plot_type == PlotType.WEIGHTS:
+            vmin, vmax = -4, 4
+            weights_ra = self.weights_slvra[source, label, var_type].cpu()
+            plot_data_ra = torch.clip(torch.log(weights_ra), min=vmin, max=vmax)
+        elif plot_type == PlotType.COUNTS:
+            vmin, vmax = -10, 0
+            counts_lra = self.counts_slvra[source, :, var_type].cpu()
+            max_count = torch.max(counts_lra)
+            normalized_counts_ra = (counts_lra / max_count)[label] + 0.0001
+            plot_data_ra = torch.clip(torch.log(normalized_counts_ra), -10, 0)
+        else:
+            raise ValueError(f"Unknown type_of_plot: {plot_type.name}.")
+        xbounds, ybounds = np.array(ALT_COUNT_BIN_BOUNDS), np.array(REF_COUNT_BIN_BOUNDS)
+        kwargs = {"x_label": None, "y_label": None, "vmin": vmin, "vmax": vmax}
 
-    def plot_counts(self, label: Label, var_type: Variation, axis, source: int):
-        """
-        for given Label and Variation, plot color map of (effective) data counts vs ref (x axis) and alt (y axis) counts
-        :return:
-        """
-        counts_lra = self.counts_slvra[source, :, var_type].cpu()
-        max_count = torch.max(counts_lra)
-        normalized_counts_ra = (counts_lra / max_count)[label] + 0.0001
-        log_normalized_count_ra = torch.clip(torch.log(normalized_counts_ra), -10, 0)
-        return plotting.color_plot_2d_on_axis(
-            axis,
-            np.array(ALT_COUNT_BIN_BOUNDS),
-            np.array(REF_COUNT_BIN_BOUNDS),
-            log_normalized_count_ra,
-            None,
-            None,
-            vmin=-10,
-            vmax=0,
-        )
+        return plotting.color_plot_2d_on_axis(axis, xbounds, ybounds, plot_data_ra, **kwargs)
 
-    def make_plots(
-        self,
-        summary_writer: SummaryWriter,
-        prefix: str,
-        epoch_type: Epoch,
-        epoch: int = None,
-        type_of_plot: str = "weights",
-    ):
+    def make_plots(self, summary_writer: SummaryWriter, prefix: str, epoch: int, plot_type: PlotType):
         for source in range(self.num_sources):
-            fig, axes = plt.subplots(
-                len(Label),
-                len(Variation),
-                sharex="all",
-                sharey="all",
-                squeeze=False,
-                figsize=(2.5 * len(Variation), 2.5 * len(Label)),
-            )
+            figsize = (2.5 * len(Variation), 2.5 * len(Label))
+            subplots_kwargs = {"sharex": "all", "sharey": "all", "squeeze": False, "figsize": figsize}
+            fig, axes = plt.subplots(len(Label), len(Variation), **subplots_kwargs)
+
             row_names = [label.name for label in Label]
-            variation_types = [var_type.name for var_type in Variation]
+            col_names = [var_type.name for var_type in Variation]
             common_colormesh = None
-            for label in Label:
-                for var_type in Variation:
-                    if type_of_plot == "weights":
-                        common_colormesh = self.plot_weights(label, var_type, axes[label, var_type], source)
-                    elif type_of_plot == "counts":
-                        common_colormesh = self.plot_counts(label, var_type, axes[label, var_type], source)
-                    else:
-                        raise ValueError(f"Unknown type_of_plot: {type_of_plot}. Expected 'weights' or 'counts'.")
+            for label, var_type in itertools.product(Label, Variation):
+                common_colormesh = self.make_plot(label, var_type, axes[label, var_type], source, plot_type)
+
             fig.colorbar(common_colormesh)
-            plotting.tidy_subplots(
-                fig,
-                axes,
-                x_label="alt count",
-                y_label="ref count",
-                row_labels=row_names,
-                column_labels=variation_types,
-            )
-            source_suffix = (
-                "" if self.num_sources == 1 else (", all sources" if source is None else f", source {source}")
-            )
-            summary_writer.add_figure(f"{prefix} ({epoch_type.name})" + source_suffix, fig, global_step=epoch)
+            tidy_kwargs = {"x_label": "N_alt", "y_label": "N_ref", "row_labels": row_names, "col_labels": col_names}
+            plotting.tidy_subplots(fig, axes, **tidy_kwargs)
+            multi_source_suffix = ", all sources" if source is None else f", source {source}"
+            source_suffix = "" if self.num_sources == 1 else multi_source_suffix
+            summary_writer.add_figure(prefix + source_suffix, fig, global_step=epoch)

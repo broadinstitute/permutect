@@ -43,7 +43,7 @@ parametrize.register_parametrization(self, "positive_values", PositiveNumber())
 
 
 class PositiveNumber(nn.Module):
-    def __init__(self, n):
+    def __init__(self):
         super().__init__()
 
     # Maps the unconstrained tensor X to a positive-valued tensor
@@ -81,3 +81,32 @@ class BoundedNumber(nn.Module):
     def right_inverse(self, P: Tensor):
         # torch.logit is the inverse of torch.sigmoid
         return torch.logit((P - self.min_val) / self.size)
+
+
+"""
+Constrain a vector so that the exp of its values sum to one.  That is, the vector represents the
+log of a set of positive weights i.e. a categorical distribution.
+
+The vector can have an arbitrary number of dimensions.  We assume that the exp of values are normalized
+to sum to one along the last dimension.
+
+That is torch.sum(exp(values), dim=-1) is a tensor full of ones.
+
+We do not give this a right inverse because for vector (x_1, x_2. . .) the effect of log softmax is
+x_i -> log(exo(x_i) / sum_j (exp(x_j)) = x_i - constant; the the right inverse is just the identity up to an
+additive constant
+
+
+self.log_weights = nn.Parameter(torch.ones(dim1, dim2))
+
+parametrize.register_parametrization(self, "log_weights", LogWeights())
+"""
+
+
+class LogWeights(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    # Maps the unconstrained tensor X to a constrained tensor s.t. sumexp(output, dim=-1) == 1
+    def forward(self, X: Tensor):
+        return torch.log_softmax(X, dim=-1)

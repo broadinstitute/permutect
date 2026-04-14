@@ -302,7 +302,7 @@ def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_
                 int_array=int_array,
                 float_array=float_array,
                 reads_re=empty_reads,
-                compressed_reads=True,
+                compressed=True,
             )
             output_datum.set(Data.REF_COUNT, 0)
             output_datum.set(Data.ALT_COUNT, 0)

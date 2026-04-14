@@ -7,6 +7,7 @@ from tqdm.autonotebook import tqdm
 from permutect import constants
 from permutect.architecture.adversarial import Adversarial
 from permutect.architecture.dna_sequence_convolution import DNASequenceConvolution
+from permutect.architecture.euclidean_transformation import EuclideanTransformation
 from permutect.architecture.feature_clustering import FeatureClustering
 from permutect.architecture.gated_mlp import GatedRefAltMLP
 from permutect.architecture.mlp import MLP
@@ -166,10 +167,14 @@ class ArtifactModel(torch.nn.Module):
             dropout_p=params.dropout_p,
         )
 
+        # Feature clustering posits nonartifact reads have a zero-centered diagonal Gaussian.
+        # We shift and rotate so that the Gaussian is zero-centered and has diagonal covariance.
+        # This is also useful for domain adaptation.
+        self.pre_clustering_transform = EuclideanTransformation(self.reducer.output_dimension())
+
         self.feature_clustering = FeatureClustering(
             feature_dimension=self.reducer.output_dimension(),
             num_artifact_clusters=params.num_artifact_clusters,
-            calibration_hidden_layer_sizes=params.calibration_layers,
         )
 
         self.alt_count_predictor = Adversarial(
@@ -239,12 +244,10 @@ class ArtifactModel(torch.nn.Module):
         info_embeddings_be = self.info_embedding.forward(batch.get_info_be().to(dtype=self._dtype))
         ref_seq_embeddings_be = self.haplotypes_cnn(batch.get_one_hot_haplotypes_bcs().to(dtype=self._dtype))
         info_and_seq_be = torch.hstack((info_embeddings_be, ref_seq_embeddings_be))
-        info_and_seq_re = torch.vstack(
-            (
-                torch.repeat_interleave(info_and_seq_be, repeats=ref_counts_b, dim=0),
-                torch.repeat_interleave(info_and_seq_be, repeats=alt_counts_b, dim=0),
-            )
-        )
+
+        ref_info_and_seq_re = torch.repeat_interleave(info_and_seq_be, repeats=ref_counts_b, dim=0)
+        alt_info_and_seq_re = torch.repeat_interleave(info_and_seq_be, repeats=alt_counts_b, dim=0)
+        info_and_seq_re = torch.vstack((ref_info_and_seq_re, alt_info_and_seq_re))
         reads_info_seq_re = torch.hstack((read_embeddings_re, info_and_seq_re))
 
         # TODO: might be a bug if every datum in batch has zero ref reads?
@@ -255,11 +258,11 @@ class ArtifactModel(torch.nn.Module):
         reduced_ref_bre = transformed_ref_bre.apply_elementwise(self.reducer)
         reduced_alt_bre = transformed_alt_bre.apply_elementwise(self.reducer)
 
-        return (
-            reduced_ref_bre,
-            reduced_alt_bre,
-            ref_seq_embeddings_be,
-        )  # ref seq embeddings are useful later
+        final_transform = lambda reads_re: self.pre_clustering_transform.transform(reads_re)
+        final_ref_bre = reduced_ref_bre.apply_elementwise(final_transform)
+        final_alt_bre = reduced_alt_bre.apply_elementwise(final_transform)
+
+        return final_ref_bre, final_alt_bre, ref_seq_embeddings_be  # ref seq embeddings are useful later
 
     def compute_source_prediction_losses(self, features_be: Tensor, batch: Batch) -> Tensor:
         if self.num_sources > 1:
@@ -277,34 +280,18 @@ class ArtifactModel(torch.nn.Module):
 
     def compute_batch_output(self, batch: Batch, balancer: Balancer = None):
         ref_bre, alt_bre, _ = self.calculate_features(batch)  # ragged sets of reduced and transformed reads
-        logits_b, logits_bk = self.feature_clustering.calculate_logits(
-            ref_bre,
-            alt_bre,
-            ref_counts_b=batch.get(Data.REF_COUNT),
-            alt_counts_b=batch.get(Data.ALT_COUNT),
-            var_types_b=batch.get(Data.VARIANT_TYPE),
-        )
+        logits_b, logits_bk = self.feature_clustering.calculate_logits(alt_bre, batch)
 
-        # feature clustering shifts reads to be centered around the origin
-        recentered_alt_bre = self.feature_clustering.transform_reads(alt_bre)
-        recentered_ref_bre = self.feature_clustering.transform_reads(ref_bre)
-        result = (
-            logits_b,
-            logits_bk,
-            recentered_alt_bre.means_over_sets(),
-            recentered_ref_bre.means_over_sets(),
-        )
-        calibrated_logits_b, calibrated_logits_bk, alt_means_be, ref_means_be = result
         weights_b, source_weights_b = (
-            (torch.ones_like(calibrated_logits_b), torch.ones_like(calibrated_logits_b))
+            (torch.ones_like(logits_b), torch.ones_like(logits_b))
             if balancer is None
             else balancer.process_batch_and_compute_weights(batch)
         )
         return BatchOutput(
-            features_be=alt_means_be,
-            ref_features_be=ref_means_be,
-            logits_b=calibrated_logits_b,
-            logits_bk=calibrated_logits_bk,
+            features_be=alt_bre.means_over_sets(),
+            ref_features_be=ref_bre.means_over_sets(),
+            logits_b=logits_b,
+            logits_bk=logits_bk,
             weights=weights_b,
             source_weights=weights_b * source_weights_b,
         )
@@ -318,10 +305,8 @@ class ArtifactModel(torch.nn.Module):
         # We do this by penalizes the probability assigned to the outlier pseudo-cluster. Since
         # some genuine outlier data does exist, such as rare or unmodeled artifacts, we clip the outlier
         # logit to avert unduly strong influence.
-        outlier_losses_b = BCE(
-            torch.clip(output.outlier_binary_logits, max=MAX_OUTLIER_LOGIT),
-            torch.zeros_like(output.outlier_binary_logits),
-        )
+        clipped_logits = torch.clip(output.outlier_binary_logits, max=MAX_OUTLIER_LOGIT)
+        outlier_losses_b = BCE(clipped_logits, torch.zeros_like(output.outlier_binary_logits))
 
         unsupervised_losses_b = (1 - is_labeled_b) * outlier_losses_b
         alt_count_losses_b = self.compute_alt_count_losses(output.features_be, batch)
@@ -340,6 +325,7 @@ class ArtifactModel(torch.nn.Module):
         )
 
     def make_dict_for_saving(self, artifact_log_priors=None, artifact_spectra=None):
+        spectra_dict = artifact_spectra.state_dict() if artifact_spectra is not None else None
         return {
             constants.STATE_DICT_NAME: self.state_dict(),
             constants.HYPERPARAMS_NAME: self._params,
@@ -347,9 +333,7 @@ class ArtifactModel(torch.nn.Module):
             constants.NUM_INFO_FEATURES_NAME: self.info_embedding.input_dimension(),
             constants.REF_SEQUENCE_LENGTH_NAME: self.haplotypes_length(),
             constants.ARTIFACT_LOG_PRIORS_NAME: artifact_log_priors,
-            constants.ARTIFACT_SPECTRA_STATE_DICT_NAME: artifact_spectra.state_dict()
-            if artifact_spectra is not None
-            else None,
+            constants.ARTIFACT_SPECTRA_STATE_DICT_NAME: spectra_dict,
         }
 
     # save a model, optionally with artifact log priors and spectra
@@ -388,7 +372,6 @@ def load_model(path, device: torch.device = None):
 # after training for visualizing clustering etc of base model embeddings
 @torch.no_grad()
 def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWriter):
-    # base_model.freeze_all() whoops -- it doesn't have freeze_all
     embedding_metrics = EmbeddingMetrics()
     ref_alt_seq_metrics = EmbeddingMetrics()
 
@@ -398,12 +381,8 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
             batch, weight_range=model._params.reweighting_range
         )
 
-        recentered_alt_bre = model.feature_clustering.transform_reads(alt_bre)
-        recentered_ref_bre = model.feature_clustering.transform_reads(ref_bre)
-        # TODO: TRANSFORM or use logits or something
-
-        alt_means_be = recentered_alt_bre.means_over_sets().cpu()
-        ref_means_be = recentered_ref_bre.means_over_sets().cpu()
+        alt_means_be = alt_bre.means_over_sets().cpu()
+        ref_means_be = ref_bre.means_over_sets().cpu()
         ref_alt_seq_embeddings_be = ref_alt_seq_embeddings_be.cpu()
 
         labels = [

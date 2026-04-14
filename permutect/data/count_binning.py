@@ -15,12 +15,13 @@ MIN_LOGIT = -10
 MAX_LOGIT = 10
 
 COUNT_BIN_SKIP = 3
-NUM_REF_COUNT_BINS = (
-    MAX_REF_COUNT // COUNT_BIN_SKIP
-) + 1  # eg if max count is 10, the 10//3 + 1 = 4 bins are {0-2}, {3-5},{6-8},{9-10}
-NUM_ALT_COUNT_BINS = (
-    (MAX_ALT_COUNT - MIN_ALT_COUNT) // COUNT_BIN_SKIP
-) + 1  # eg if max count is 9 and min is 1, the 8//3 + 1 = 3 bins are {1-3}, {4-6},{7-9}
+
+# eg if max count is 10, the 10//3 + 1 = 4 bins are {0-2}, {3-5},{6-8},{9-10}
+NUM_REF_COUNT_BINS = (MAX_REF_COUNT // COUNT_BIN_SKIP) + 1
+
+# eg if max count is 9 and min is 1, the 8//3 + 1 = 3 bins are {1-3}, {4-6},{7-9}
+NUM_ALT_COUNT_BINS = ((MAX_ALT_COUNT - MIN_ALT_COUNT) // COUNT_BIN_SKIP) + 1
+
 LOGIT_BIN_SKIP = 1
 NUM_LOGIT_BINS = floor((MAX_LOGIT - MIN_LOGIT) / LOGIT_BIN_SKIP) + 1
 ALT_COUNT_BIN_BOUNDS = [(MIN_ALT_COUNT + COUNT_BIN_SKIP * count_bin) for count_bin in range(NUM_ALT_COUNT_BINS + 1)]

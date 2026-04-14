@@ -86,7 +86,7 @@ class Calibration(nn.Module):
             x_label="alt count",
             y_label="ref count",
             row_labels=[str(n) for n in ref_counts],
-            column_labels=[str(n) for n in alt_counts],
+            col_labels=[str(n) for n in alt_counts],
         )
 
         return cal_fig, cal_axes
