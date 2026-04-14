@@ -225,7 +225,6 @@ class SpatialGatingUnitRefAlt(nn.Module):
         self.reg_weight = nn.Parameter(torch.tensor(0.1))
         parametrize.register_parametrization(self, "reg_weight", PositiveNumber())
 
-
     def forward(self, zref_brd: RaggedSets, zalt_brd: RaggedSets) -> tuple[RaggedSets, RaggedSets]:
         # Split $Z$ into $Z_1$ and $Z_2$ over the hidden dimension and normalize $Z_2$ before $f_{W,b}(\cdot)$
         z1_ref_brd, z2_ref_brd = zref_brd.split_in_two_by_features()

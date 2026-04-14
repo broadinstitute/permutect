@@ -34,7 +34,7 @@ class LossRecorder:
 
         if generate_plots:
             self.primary_metrics.make_plots(summary_writer, "semisupervised loss", epoch_type, epoch)
-            self.primary_metrics.make_plots(summary_writer,"total weight", epoch_type, epoch, plot_type="counts")
+            self.primary_metrics.make_plots(summary_writer, "total weight", epoch_type, epoch, plot_type="counts")
             self.count_metrics.make_plots(summary_writer, "alt count prediction loss", epoch_type, epoch)
             if self.num_sources > 1:
                 self.source_metrics.make_plots(summary_writer, "source prediction loss", epoch_type, epoch)

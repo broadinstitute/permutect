@@ -22,6 +22,7 @@ class PlotType(enum.Enum):
     COUNTS = "counts"
     WEIGHTS = "weights"
 
+
 class Balancer(Module):
     ATTENUATION_PER_DATUM = 0.99999
     DATA_BEFORE_RECOMPUTE = 10000
@@ -62,7 +63,7 @@ class Balancer(Module):
 
             counts_slv = torch.sum(self.counts_slvra, dim=(-2, -1))
             total_labeled_sv = counts_slv[:, Label.ARTIFACT] + counts_slv[:, Label.VARIANT]
-            unlabeled_weight_sv = torch.clip(total_labeled_sv / counts_slv[:, Label.UNLABELED],0, 1)
+            unlabeled_weight_sv = torch.clip(total_labeled_sv / counts_slv[:, Label.UNLABELED], 0, 1)
             new_weights_slvra[:, Label.UNLABELED] = unlabeled_weight_sv.view(self.num_sources, len(Variation), 1, 1)
 
             attenuation = math.pow(Balancer.ATTENUATION_PER_DATUM, self.count_since_last_recomputation)
@@ -106,7 +107,7 @@ class Balancer(Module):
             row_names = [label.name for label in Label]
             col_names = [var_type.name for var_type in Variation]
             common_colormesh = None
-            for (label, var_type) in itertools.product(Label, Variation):
+            for label, var_type in itertools.product(Label, Variation):
                 common_colormesh = self.make_plot(label, var_type, axes[label, var_type], source, plot_type)
 
             fig.colorbar(common_colormesh)

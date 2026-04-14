@@ -56,9 +56,7 @@ class ReadsDataset(IterableDataset):
         :param num_folds:
         """
         super(ReadsDataset, self).__init__()
-        self.totals_slvra = BatchIndexedTensor.zeros(
-            num_sources=1, include_logits=False, device=torch.device("cpu")
-        )
+        self.totals_slvra = BatchIndexedTensor.zeros(num_sources=1, include_logits=False, device=torch.device("cpu"))
         # if no folds, no copying is done; otherwise this creates a new file on disk
         self.memory_mapped_data = memory_mapped_data.restrict_to_folds(num_folds, folds_to_use, keep_probs_by_label_l)
         self._size = self.memory_mapped_data.num_data

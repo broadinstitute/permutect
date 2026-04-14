@@ -25,6 +25,8 @@ leading to NaNs when its log is taken.  Here for large arguments we use the asym
 
 erfc(z) ~ [exp(-z^2)/(z sqrt(pi))] * [1 - 1/(2z^2) + 3/(4z^4) - 15/(8z^6) . . .]
 """
+
+
 def logerfc(z: Tensor) -> Tensor:
     use_asymptotic = z > 5
 
@@ -52,6 +54,7 @@ def logerfc(z: Tensor) -> Tensor:
     # If one branch of torch.where is a NaN, backpropagation yields a NaN regardless of whether that branch is used!!
     return torch.where(use_asymptotic, asymptotic, built_in)
 
+
 class ExponentiallyModifiedGaussian(nn.Module):
     """
     an exponentially-modified Gaussian (EMG) distribution is a Gaussian modulated to have an exp(-lambda*x)
@@ -61,6 +64,7 @@ class ExponentiallyModifiedGaussian(nn.Module):
 
     This module contains K independent EMG distributions and calculates their log likelihoods independently.
     """
+
     def __init__(self, num_distributions: int):
         super(ExponentiallyModifiedGaussian, self).__init__()
 
@@ -79,9 +83,9 @@ class ExponentiallyModifiedGaussian(nn.Module):
         variance = torch.square(self.sigma_k)
 
         return (
-                torch.log(self.lambda_k / 2)
-                + logerfc((self.mu_k + self.lambda_k * variance - x_bk) / (SQRT2 * self.sigma_k))
-                + (self.lambda_k / 2) * (2 * self.mu_k + self.lambda_k * variance - 2 * x_bk)
+            torch.log(self.lambda_k / 2)
+            + logerfc((self.mu_k + self.lambda_k * variance - x_bk) / (SQRT2 * self.sigma_k))
+            + (self.lambda_k / 2) * (2 * self.mu_k + self.lambda_k * variance - 2 * x_bk)
         )
 
     def forward(self, x):

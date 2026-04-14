@@ -303,7 +303,7 @@ class MemoryMappedData:
         for datum in reads_datum_source:
             int_array = datum.get_int_array()
             float_array = datum.get_float_array()
-            reads_array = datum.get_reads_array_re() # this works both for raw data and compressed reads
+            reads_array = datum.get_reads_array_re()  # this works both for raw data and compressed reads
 
             num_data += 1
             num_reads += len(reads_array)
@@ -317,7 +317,7 @@ class MemoryMappedData:
                 )
                 old_int_mmap, old_float_mmap = int_mmap, float_mmap
                 int_shape, float_shape = (data_capacity, int_array.shape[-1]), (data_capacity, float_array.shape[-1])
-                int_mmap = np.memmap(int_file.name, dtype=int_array.dtype, mode="w+",shape=int_shape)
+                int_mmap = np.memmap(int_file.name, dtype=int_array.dtype, mode="w+", shape=int_shape)
                 float_mmap = np.memmap(float_file.name, dtype=float_array.dtype, mode="w+", shape=float_shape)
                 if old_int_mmap is not None:
                     int_mmap[: len(old_int_mmap)] = old_int_mmap

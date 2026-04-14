@@ -16,6 +16,8 @@ parametrize.register_parametrization(self, "unit_vec", UnitVector())
 Note that the forward function uses norm(. . ., dim=-1) so this works equally well for a single vector,
 or 2D, 3D etc arrays of vectors.
 """
+
+
 class UnitVector(nn.Module):
     def __init__(self):
         super().__init__()
@@ -38,6 +40,8 @@ self.positive_values = nn.Parameter(torch.ones(dim1, dim2))
 
 parametrize.register_parametrization(self, "positive_values", PositiveNumber())
 """
+
+
 class PositiveNumber(nn.Module):
     def __init__(self):
         super().__init__()
@@ -59,6 +63,8 @@ self.positive_values = nn.Parameter(torch.ones(dim1, dim2))
 
 parametrize.register_parametrization(self, "positive_values", PositiveNumber())
 """
+
+
 class BoundedNumber(nn.Module):
     def __init__(self, min_val: float, max_val: float):
         super().__init__()
@@ -75,6 +81,7 @@ class BoundedNumber(nn.Module):
     def right_inverse(self, P: Tensor):
         # torch.logit is the inverse of torch.sigmoid
         return torch.logit((P - self.min_val) / self.size)
+
 
 """
 Constrain a vector so that the exp of its values sum to one.  That is, the vector represents the
@@ -94,6 +101,8 @@ self.log_weights = nn.Parameter(torch.ones(dim1, dim2))
 
 parametrize.register_parametrization(self, "log_weights", LogWeights())
 """
+
+
 class LogWeights(nn.Module):
     def __init__(self):
         super().__init__()
@@ -101,4 +110,3 @@ class LogWeights(nn.Module):
     # Maps the unconstrained tensor X to a constrained tensor s.t. sumexp(output, dim=-1) == 1
     def forward(self, X: Tensor):
         return torch.log_softmax(X, dim=-1)
-

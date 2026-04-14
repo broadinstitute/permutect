@@ -48,7 +48,7 @@ class SomaticSpectrum(nn.Module):
 
         # initialize evenly spaced cell fractions pre-sigmoid from -3 to 3
         self.cf_k = Parameter(torch.sigmoid((6 * ((torch.arange(num_components) / num_components) - 0.5))))
-        parametrize.register_parametrization(self, "cf_k", BoundedNumber(0,1))
+        parametrize.register_parametrization(self, "cf_k", BoundedNumber(0, 1))
 
         # rough idea for initializing weights: the bigger the cell fraction 1) the more cells there are for mutations to arise
         # and 2) the longer the cluster has probably been around for mutations to arise
@@ -94,7 +94,6 @@ class SomaticSpectrum(nn.Module):
             self.log_background_weight + background_log_lks_b,
         )
         return result_b
-
 
     def fit(self, num_epochs, depths_b, alt_counts_b, mafs_b, batch_size=64):
         optimizer = torch.optim.Adam(self.parameters())

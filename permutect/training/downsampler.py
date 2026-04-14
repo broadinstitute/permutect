@@ -1,4 +1,3 @@
-
 import torch
 from torch import IntTensor
 from torch import Tensor
@@ -91,14 +90,17 @@ class Downsampler(Module):
         # for each source/label/var type/ ref/alt bin we have mixture component weights for both ref and alt downsampling
         # 'k' and 'h' are both indices to denote the mixture components
         slvra_shape = BatchIndexedTensor.shape_without_logits(num_sources)
-        slvrak_shape = (slvra_shape + (len(self.beta_basis),))
+        slvrak_shape = slvra_shape + (len(self.beta_basis),)
         self.log_ref_weights_slvrak = Parameter(torch.zeros(slvrak_shape), requires_grad=False)
         parametrize.register_parametrization(self, "log_ref_weights_slvrak", LogWeights())
         self.log_alt_weights_slvrah = Parameter(torch.zeros(slvrak_shape), requires_grad=False)
         parametrize.register_parametrization(self, "log_alt_weights_slvrah", LogWeights())
 
     def weights_parameters(self):
-        return [self.parametrizations.log_ref_weights_slvrak.original, self.parametrizations.log_alt_weights_slvrah.original]
+        return [
+            self.parametrizations.log_ref_weights_slvrak.original,
+            self.parametrizations.log_alt_weights_slvrah.original,
+        ]
 
     def calculate_downsampling_fractions(self, batch: Batch) -> tuple[Tensor, Tensor]:
         # we will flatten all the batch indices -- slvra, but not k -- to get a 2D tensor indexed by the batch's

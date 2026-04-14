@@ -29,7 +29,7 @@ class NormalArtifactSpectrum(nn.Module):
 
         # mean of tumor beta is type-dependent multiplier of normal AF.
         self.mean_multiplier_v = torch.nn.Parameter(0.5 * torch.ones(V))
-        parametrize.register_parametrization(self, "mean_multiplier_v", BoundedNumber(0,1))
+        parametrize.register_parametrization(self, "mean_multiplier_v", BoundedNumber(0, 1))
 
         self.concentration_v = torch.nn.Parameter(30 * torch.ones(V))  # alpha + beta parameters
         parametrize.register_parametrization(self, "concentration_v", PositiveNumber())

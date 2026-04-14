@@ -114,7 +114,7 @@ class MonotonicHighwayLayer(nn.Module):
 
         # initialize with negative bias so behavior starts near identity with gates almost closed
         self.gate = nn.Parameter(torch.sigmoid(torch.tensor(-2.0)))
-        parametrize.register_parametrization(self, "gate", BoundedNumber(0,1))
+        parametrize.register_parametrization(self, "gate", BoundedNumber(0, 1))
 
     def forward(self, x):
         return (1 - self.gate) * x + self.gate * self.nonlinear(x)

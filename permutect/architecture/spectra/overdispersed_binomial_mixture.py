@@ -153,12 +153,7 @@ class OverdispersedBinomialMixture(nn.Module):
 
         # get 1D tensors of one selected alpha and beta shape parameter per datum / row, then sample a fraction from each
         # It may be very wasteful computing everything and only using one component, but this is just for unit testing
-        means = (
-            self.max_mean
-            * self.mean_vk[types_b, :].detach()
-            .gather(dim=1, index=component_indices)
-            .squeeze()
-        )
+        means = self.max_mean * self.mean_vk[types_b, :].detach().gather(dim=1, index=component_indices).squeeze()
         concentrations = self.get_concentration(types_b).detach().gather(dim=1, index=component_indices).squeeze()
         alphas = means * concentrations
         betas = (1 - means) * concentrations if self.mode == "beta" else concentrations
@@ -212,10 +207,7 @@ class OverdispersedBinomialMixture(nn.Module):
             )  # 1D tensor
             return fractions, densities
         else:
-            concentrations_k = (
-                self.max_concentration.cpu()
-                * self.concentration_vk[variant_type].detach().cpu()
-            )
+            concentrations_k = self.max_concentration.cpu() * self.concentration_vk[variant_type].detach().cpu()
             alphas_k = means_k * concentrations_k
             betas_k = (1 - means_k) * concentrations_k if self.mode == "beta" else concentrations_k
 

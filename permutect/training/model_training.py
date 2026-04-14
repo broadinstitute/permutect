@@ -70,7 +70,12 @@ def train_artifact_model(
         lr=training_params.learning_rate,
         weight_decay=training_params.weight_decay,
     )
-    scheduler_kwargs = {"factor": 0.2, "patience": 5, "threshold": 0.001, "min_lr": (training_params.learning_rate / 100)}
+    scheduler_kwargs = {
+        "factor": 0.2,
+        "patience": 5,
+        "threshold": 0.001,
+        "min_lr": (training_params.learning_rate / 100),
+    }
     train_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(train_optimizer, **scheduler_kwargs)
 
     checkpoint = Checkpoint(device, model, train_optimizer)
@@ -87,9 +92,24 @@ def train_artifact_model(
         model.source_predictor.set_adversarial_strength((2 / (1 + math.exp(-0.1 * (epoch - 1)))) - 1)
 
         for epoch_type in [Epoch.TRAIN, Epoch.VALID]:
-            train_one_epoch(balancer, checkpoint, device, downsampler, epoch, epoch_type, epochs_per_evaluation,
-                            is_calibration_epoch, last_epoch, model, num_sources, summary_writer, train_loader,
-                            train_optimizer, train_scheduler, valid_loader)
+            train_one_epoch(
+                balancer,
+                checkpoint,
+                device,
+                downsampler,
+                epoch,
+                epoch_type,
+                epochs_per_evaluation,
+                is_calibration_epoch,
+                last_epoch,
+                model,
+                num_sources,
+                summary_writer,
+                train_loader,
+                train_optimizer,
+                train_scheduler,
+                valid_loader,
+            )
 
         # done with training and validation for this epoch
         report_memory_usage(f"End of epoch {epoch}.")
@@ -102,11 +122,24 @@ def train_artifact_model(
     embeddings_timer.report("Time to record embeddings for tensorboard.")
 
 
-def train_one_epoch(balancer: Balancer, checkpoint: Checkpoint, device: device, downsampler: Downsampler,
-                    epoch: int, epoch_type: Epoch, epochs_per_evaluation: int, is_calibration_epoch: bool,
-                    last_epoch: int, model: ArtifactModel, num_sources: int, summary_writer: SummaryWriter,
-                    train_loader: DataLoader[Any], train_optimizer: AdamW, train_scheduler: ReduceLROnPlateau,
-                    valid_loader: DataLoader[Any]):
+def train_one_epoch(
+    balancer: Balancer,
+    checkpoint: Checkpoint,
+    device: device,
+    downsampler: Downsampler,
+    epoch: int,
+    epoch_type: Epoch,
+    epochs_per_evaluation: int,
+    is_calibration_epoch: bool,
+    last_epoch: int,
+    model: ArtifactModel,
+    num_sources: int,
+    summary_writer: SummaryWriter,
+    train_loader: DataLoader[Any],
+    train_optimizer: AdamW,
+    train_scheduler: ReduceLROnPlateau,
+    valid_loader: DataLoader[Any],
+):
     loss_recorder = LossRecorder(device, num_sources)
     model.set_epoch_type(epoch_type)
     if is_calibration_epoch and epoch_type == Epoch.TRAIN:
@@ -134,16 +167,14 @@ def train_one_epoch(balancer: Balancer, checkpoint: Checkpoint, device: device, 
     # done with this parent batch
     check_for_nan(model)
     if epoch_type == Epoch.TRAIN:
-        mean_loss = torch.mean(
-            loss_recorder.primary_metrics.get_marginal(BatchProperty.LABEL)
-        ).item()
+        mean_loss = torch.mean(loss_recorder.primary_metrics.get_marginal(BatchProperty.LABEL)).item()
         train_scheduler.step(mean_loss)
 
     generate_plots = epoch % epochs_per_evaluation == 0 or epoch == last_epoch
     loss_recorder.output_results(epoch_type, epoch, summary_writer, generate_plots)
 
     if generate_plots:
-        weight_prefix  = "log(label-balancing weights)" + f"({epoch_type.name})"
+        weight_prefix = "log(label-balancing weights)" + f"({epoch_type.name})"
         count_prefix = "unweighted data counts after downsampling" + f"({epoch_type.name})"
         balancer.make_plots(summary_writer, weight_prefix, epoch, PlotType.WEIGHTS)
         balancer.make_plots(summary_writer, count_prefix, epoch, PlotType.COUNTS)

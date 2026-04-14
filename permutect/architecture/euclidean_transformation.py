@@ -10,6 +10,7 @@ class EuclideanTransformation(nn.Module):
     Euclidean transformation: translation composed with rotation i.e. distance- and angle-preserving
     affine transformation.
     """
+
     def __init__(self, dimension: int):
         super(EuclideanTransformation, self).__init__()
         self.translation_e = Parameter(torch.rand(dimension))
