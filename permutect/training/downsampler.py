@@ -1,4 +1,3 @@
-from itertools import chain
 
 import torch
 from torch import IntTensor
@@ -8,7 +7,7 @@ from torch.nn import Module
 from torch.nn import Parameter
 from torch.nn.utils import parametrize
 
-from permutect import utils, misc_utils
+from permutect import misc_utils
 from permutect.architecture.parameterizations import LogWeights
 from permutect.data.batch import Batch
 from permutect.data.batch import BatchIndexedTensor
@@ -21,8 +20,6 @@ from permutect.data.count_binning import NUM_REF_COUNT_BINS
 from permutect.data.count_binning import alt_count_bin_index
 from permutect.data.count_binning import ref_count_bin_index
 from permutect.misc_utils import backpropagate
-from permutect.utils.enums import Label
-from permutect.utils.enums import Variation
 from permutect.utils.stats_utils import beta_binomial_log_lk
 
 

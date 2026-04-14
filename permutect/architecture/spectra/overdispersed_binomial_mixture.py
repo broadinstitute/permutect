@@ -5,11 +5,10 @@ from torch import IntTensor
 from torch import exp
 from torch import logsumexp
 from torch import nn
-from torch.nn.functional import log_softmax
-from torch.nn.functional import softmax
 from torch.nn.utils import parametrize
 
-from permutect.architecture.parameterizations import LogWeights, BoundedNumber
+from permutect.architecture.parameterizations import BoundedNumber
+from permutect.architecture.parameterizations import LogWeights
 from permutect.metrics.plotting import simple_plot
 from permutect.misc_utils import backpropagate
 from permutect.utils.enums import Variation

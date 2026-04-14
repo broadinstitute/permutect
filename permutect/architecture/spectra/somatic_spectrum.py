@@ -5,10 +5,10 @@ from torch import log
 from torch import logsumexp
 from torch import nn
 from torch.nn import Parameter
-from torch.nn.functional import log_softmax
 from torch.nn.utils import parametrize
 
-from permutect.architecture.parameterizations import LogWeights, BoundedNumber
+from permutect.architecture.parameterizations import BoundedNumber
+from permutect.architecture.parameterizations import LogWeights
 from permutect.metrics.plotting import simple_plot
 from permutect.misc_utils import backpropagate
 from permutect.utils.math_utils import add_in_log_space

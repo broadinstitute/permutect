@@ -6,7 +6,8 @@ from typing import Iterable
 from typing import TypeVar
 
 import torch
-from torch import LongTensor, IntTensor
+from torch import IntTensor
+from torch import LongTensor
 from torch import Tensor
 
 ThisClass = TypeVar("ThisClass", bound="RaggedSets")

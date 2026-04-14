@@ -3,7 +3,8 @@ from torch import Tensor
 from torch import nn
 from torch.nn.utils import parametrize
 
-from permutect.architecture.parameterizations import PositiveNumber, BoundedNumber
+from permutect.architecture.parameterizations import BoundedNumber
+from permutect.architecture.parameterizations import PositiveNumber
 from permutect.architecture.spectra.artifact_spectra import ArtifactSpectra
 from permutect.utils.enums import Variation
 from permutect.utils.stats_utils import beta_binomial_log_lk
