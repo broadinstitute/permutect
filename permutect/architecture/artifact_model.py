@@ -285,7 +285,7 @@ class ArtifactModel(torch.nn.Module):
         weights_b, source_weights_b = (
             (torch.ones_like(logits_b), torch.ones_like(logits_b))
             if balancer is None
-            else balancer.process_batch_and_compute_weights(batch)
+            else balancer.process_batch_and_compute_weights(batch, artifact_probs_b=torch.sigmoid(logits_b).detach())
         )
         return BatchOutput(
             features_be=alt_bre.means_over_sets(),

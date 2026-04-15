@@ -5,6 +5,7 @@ import math
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
+from torch import Tensor
 from torch.nn import Module
 from torch.nn import Parameter
 from torch.utils.tensorboard import SummaryWriter
@@ -36,6 +37,12 @@ class Balancer(Module):
         # not weighted, just the actual counts of data seen
         self.counts_slvra = Parameter(BatchIndexedTensor.zeros(num_sources=num_sources), requires_grad=False)
 
+        # same, but here unlabeled data are probabilistically assigned to artifact or non-artifact based on
+        # the model output.  This lets us balance training when, for example, the preponderance of unlabeled
+        # data are non-artifacts.  (Very often unlabeled data are sequencing errors, which are not artifacts.
+        # also, in test-time adaptation of somatic calls most data are germline variants, which are not artifacts).
+        self.pseudo_counts_slvra = Parameter(BatchIndexedTensor.zeros(num_sources=num_sources), requires_grad=False)
+
         # initialize weights to be flat
         self.weights_slvra = Parameter(BatchIndexedTensor.ones(num_sources=num_sources), requires_grad=False)
 
@@ -44,7 +51,7 @@ class Balancer(Module):
 
         self.to(device=device)
 
-    def process_batch_and_compute_weights(self, batch: Batch):
+    def process_batch_and_compute_weights(self, batch: Batch, artifact_probs_b: Tensor):
         # this updates the counts that are used to compute weights, recomputes the weights, and returns the weights
         # increment counts by 1
         batch.batch_indices().increment_tensor(self.counts_slvra, values=torch.ones(batch.size(), device=self.device))
