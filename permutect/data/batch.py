@@ -216,7 +216,7 @@ class BatchIndices:
     ):
         """
         sources override is used for something of a hack where in filtering there is only one source, so we use the
-        source dimensipn to instead represent the call type
+        source dimension to instead represent the call type
         """
         self.sources = sources
         self.labels = labels
