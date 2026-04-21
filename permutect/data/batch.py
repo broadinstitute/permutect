@@ -63,11 +63,11 @@ class Batch:
 
     def _finish_initialization_from_arrays(self):
         self._size = len(self.int_tensor)
-        self.lazy_batch_indices = None
+        self.lazy_batch_indices = {False: None, True: None}
 
     def batch_indices(self, use_original_counts: bool = False) -> BatchIndices:
-        if self.lazy_batch_indices is not None:
-            return self.lazy_batch_indices
+        if self.lazy_batch_indices[use_original_counts] is not None:
+            return self.lazy_batch_indices[use_original_counts]
         else:
             ref_counts = (
                 (self.get(Data.ORIGINAL_DEPTH) - self.get(Data.ORIGINAL_ALT_COUNT))
@@ -75,14 +75,14 @@ class Batch:
                 else self.get(Data.REF_COUNT)
             )
             alt_counts = self.get(Data.ORIGINAL_ALT_COUNT if use_original_counts else Data.ALT_COUNT)
-            self.lazy_batch_indices = BatchIndices(
+            self.lazy_batch_indices[use_original_counts] = BatchIndices(
                 sources=self.get(Data.SOURCE),
                 labels=self.get(Data.LABEL),
                 var_types=self.get(Data.VARIANT_TYPE),
                 ref_counts=ref_counts,
                 alt_counts=alt_counts,
             )
-            return self.lazy_batch_indices
+            return self.lazy_batch_indices[use_original_counts]
 
     def get(self, data_field: Data):
         index = data_field.idx
