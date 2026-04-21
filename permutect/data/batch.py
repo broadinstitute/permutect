@@ -202,10 +202,6 @@ class BatchProperty(IntEnum):
 
 
 class BatchIndices:
-    PRODUCT_OF_NON_SOURCE_DIMS_INCLUDING_LOGITS = (
-        len(Label) * len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS * NUM_LOGIT_BINS
-    )
-
     def __init__(
         self,
         sources: IntTensor,
@@ -233,7 +229,7 @@ class BatchIndices:
         idx = (self.sources, self.labels, self.var_types, self.ref_count_bins, self.alt_count_bins)
         self.flattened_idx = flattened_indices(dims, idx)
 
-    def _flattened_idx(self, logits: Tensor=None, pseudolabels: IntTensor=None):
+    def _flattened_idx(self, source_override: IntTensor=None, pseudolabels: IntTensor=None, logits: Tensor=None):
         """
         If using pseudolabels, return what the flattened indices would be if the labels were different.
         This is used when pseudolabeling unlabeled data; for example indexing into a tensor of pseudocounts
@@ -243,17 +239,26 @@ class BatchIndices:
         len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS, so we simply add the product of this
         stride length with the difference between pseudolabels and actual labels.
 
+        A source_override works similarly, but with stride length equal to
+        len(Label) * len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS
+
         If using logits, we use the fact that logits are the last indexed dimnension.  Every flattened index
         without logits corresponds to NUM_LOGIT_BINS bins with logits, so the flattened index with logits
         is related by simple arithmetic.
         """
         flattened_indices = self.flattened_idx
 
+        if source_override is not None:
+            assert len(source_override) == len(self.sources)
+            stride_length = len(Label) * len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS
+            diff = source_override - self.sources
+            flattened_indices = flattened_indices + (stride_length * diff)
+
         if pseudolabels is not None:
             assert len(pseudolabels) == len(self.labels)
-            label_stride_length = len(Label) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS
-            label_diff = pseudolabels - self.labels
-            flattened_indices = flattened_indices + (label_stride_length * label_diff)
+            stride_length = len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS
+            diff = pseudolabels - self.labels
+            flattened_indices = flattened_indices + (stride_length * diff)
 
         if logits is not None:
             logit_bins = logit_bin_indices(logits)
@@ -296,13 +301,7 @@ class BatchIndices:
         # we sometimes need to override the sources (in filter_variants.py there is a hack where we use the Call type
         # in place of the sources).  This is how we do that.
         assert tens.has_logits(), "Tensor must have a logit dimension"
-        indices_with_logits = self._flattened_idx(logits=logits)
-
-        # eg, if the dimensions after source are 2, 3, 4 then every increase of the source by 1 is accompanied by an increase
-        # of 2x3x4 = 24 in the flattened indices.
-        indices = indices_with_logits + BatchIndices.PRODUCT_OF_NON_SOURCE_DIMS_INCLUDING_LOGITS * (
-            sources_override - self.sources
-        )
+        indices = self._flattened_idx(source_override=sources_override, logits=logits)
         return tens.view(-1).index_add_(dim=0, index=indices, source=values)
 
 
