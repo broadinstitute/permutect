@@ -267,15 +267,23 @@ class BatchIndices:
         return flattened_indices
 
 
-    def index_into_tensor(self, tens: BatchIndexedTensor, logits: Tensor = None):
+    def index_into_tensor(
+            self,
+            tens: BatchIndexedTensor,
+            sources: IntTensor=None,
+            labels: IntTensor=None,
+            logits: Tensor = None,
+    ):
         """
         given 5D batch-indexed tensor x_slvra get the 1D tensor
         result[i] = x_slvra[source[i], label[i], variant type[i], ref bin[i], alt bin[i]]
         This is equivalent to flattening x and indexing by the cached flattened indices
+
+        Optionally, override the sources and/or labels and/or include logits in the indexing
         :return:
         """
         assert (logits is None) == (not tens.has_logits()), "Logits used iff batch-indexed tensor has logit dimension."
-        return tens.view(-1)[self._flattened_idx(logits=logits)]
+        return tens.view(-1)[self._flattened_idx(source_override=sources, pseudolabels=labels, logits=logits)]
 
 
     def increment_tensor(self, tens: BatchIndexedTensor, values: Tensor, logits: Tensor = None):
