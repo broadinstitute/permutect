@@ -54,7 +54,16 @@ class Balancer(Module):
     def process_batch_and_compute_weights(self, batch: Batch, artifact_probs_b: Tensor):
         # this updates the counts that are used to compute weights, recomputes the weights, and returns the weights
         # increment counts by 1
-        batch.batch_indices().increment_tensor(self.counts_slvra, values=torch.ones(batch.size(), device=self.device))
+        idx = batch.batch_indices()
+        idx.increment_tensor(self.counts_slvra, values=torch.ones(batch.size(), device=self.device))
+
+        art_probs_b = artifact_probs_b.to(device=self.device)
+        artifact_labels = torch.tensor([Label.ARTIFACT], device=self.device).expand(batch.size())
+        nonartifact_labels = torch.tensor([Label.VARIANT], device=self.device).expand(batch.size())
+
+        idx.increment_tensor(self.pseudo_counts_slvra, labels=artifact_labels, values=art_probs_b)
+        idx.increment_tensor(self.pseudo_counts_slvra, labels=nonartifact_labels, values=(1-art_probs_b))
+
         self.count_since_last_recomputation += batch.size()
 
         if self.count_since_last_recomputation > Balancer.DATA_BEFORE_RECOMPUTE:
