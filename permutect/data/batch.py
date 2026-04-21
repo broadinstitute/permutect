@@ -274,26 +274,16 @@ class BatchIndices:
         This is equivalent to flattening x and indexing by the cached flattened indices
         :return:
         """
-        if logits is None and not tens.has_logits():
-            return tens.view(-1)[self.flattened_idx]
-        elif logits is not None and tens.has_logits():
-            return tens.view(-1)[self._flattened_idx(logits=logits)]
-        else:
-            raise Exception(
-                "Logits are used if and only if batch-indexed tensor to be indexed includes a logit dimension."
-            )
+        assert (logits is None) == (not tens.has_logits()), "Logits used iff batch-indexed tensor has logit dimension."
+        return tens.view(-1)[self._flattened_idx(logits=logits)]
+
 
     def increment_tensor(self, tens: BatchIndexedTensor, values: Tensor, logits: Tensor = None):
         # Similar, but implements: x_slvra[source[i], label[i], variant type[i], ref bin[i], alt bin[i]] += values[i]
         # Addition is in-place. The flattened view(-1) shares memory with the original tensor
-        if logits is None and not tens.has_logits():
-            return tens.view(-1).index_add_(dim=0, index=self.flattened_idx, source=values)
-        elif logits is not None and tens.has_logits():
-            return tens.view(-1).index_add_(dim=0, index=self._flattened_idx(logits=logits), source=values)
-        else:
-            raise Exception(
-                "Logits are used if and only if batch-indexed tensor to be indexed includes a logit dimension."
-            )
+        assert (logits is None) == (not tens.has_logits()), "Logits used iff batch-indexed tensor has logit dimension."
+        return tens.view(-1).index_add_(dim=0, index=self._flattened_idx(logits=logits), source=values)
+
 
     def increment_tensor_with_sources_and_logits(
         self, tens: BatchIndexedTensor, values: Tensor, sources_override: IntTensor, logits: Tensor
