@@ -226,17 +226,41 @@ class BatchIndices:
 
         # We do something kind of dangerous-seeming here: sources is the zeroth dimension and so the formula for
         # flattened indices *doesn't depend on the number of sources* since the stride from one source to the next is the
-        # product of all the *other* dimensionalities.  Thus we can set the zeroth dimension to anythiong we want!
+        # product of all the *other* dimensionalities.  Thus we can set the zeroth dimension to anything we want!
         # Just to make sure that this doesn't cause a silent error, we set it to None so that things will blow up
         # if my little analysis here is wrong
         dims = (None, len(Label), len(Variation), NUM_REF_COUNT_BINS, NUM_ALT_COUNT_BINS)
         idx = (self.sources, self.labels, self.var_types, self.ref_count_bins, self.alt_count_bins)
         self.flattened_idx = flattened_indices(dims, idx)
 
-    def _flattened_idx_with_logits(self, logits: Tensor):
-        # because logits are the last index, the flattened indices with logits are related to those without in a simple way
-        logit_bins = logit_bin_indices(logits)
-        return logit_bins + NUM_LOGIT_BINS * self.flattened_idx
+    def _flattened_idx(self, logits: Tensor=None, pseudolabels: IntTensor=None):
+        """
+        If using pseudolabels, return what the flattened indices would be if the labels were different.
+        This is used when pseudolabeling unlabeled data; for example indexing into a tensor of pseudocounts
+        of imputed unlabeled data.
+
+        The stride from one label to the next is the product of all successive dimensionalities, i.e.
+        len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS, so we simply add the product of this
+        stride length with the difference between pseudolabels and actual labels.
+
+        If using logits, we use the fact that logits are the last indexed dimnension.  Every flattened index
+        without logits corresponds to NUM_LOGIT_BINS bins with logits, so the flattened index with logits
+        is related by simple arithmetic.
+        """
+        flattened_indices = self.flattened_idx
+
+        if pseudolabels is not None:
+            assert len(pseudolabels) == len(self.labels)
+            label_stride_length = len(Label) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS
+            label_diff = pseudolabels - self.labels
+            flattened_indices = flattened_indices + (label_stride_length * label_diff)
+
+        if logits is not None:
+            logit_bins = logit_bin_indices(logits)
+            flattened_indices = logit_bins + NUM_LOGIT_BINS * flattened_indices
+
+        return flattened_indices
+
 
     def index_into_tensor(self, tens: BatchIndexedTensor, logits: Tensor = None):
         """
@@ -248,7 +272,7 @@ class BatchIndices:
         if logits is None and not tens.has_logits():
             return tens.view(-1)[self.flattened_idx]
         elif logits is not None and tens.has_logits():
-            return tens.view(-1)[self._flattened_idx_with_logits(logits)]
+            return tens.view(-1)[self._flattened_idx(logits=logits)]
         else:
             raise Exception(
                 "Logits are used if and only if batch-indexed tensor to be indexed includes a logit dimension."
@@ -260,7 +284,7 @@ class BatchIndices:
         if logits is None and not tens.has_logits():
             return tens.view(-1).index_add_(dim=0, index=self.flattened_idx, source=values)
         elif logits is not None and tens.has_logits():
-            return tens.view(-1).index_add_(dim=0, index=self._flattened_idx_with_logits(logits), source=values)
+            return tens.view(-1).index_add_(dim=0, index=self._flattened_idx(logits=logits), source=values)
         else:
             raise Exception(
                 "Logits are used if and only if batch-indexed tensor to be indexed includes a logit dimension."
@@ -272,7 +296,7 @@ class BatchIndices:
         # we sometimes need to override the sources (in filter_variants.py there is a hack where we use the Call type
         # in place of the sources).  This is how we do that.
         assert tens.has_logits(), "Tensor must have a logit dimension"
-        indices_with_logits = self._flattened_idx_with_logits(logits)
+        indices_with_logits = self._flattened_idx(logits=logits)
 
         # eg, if the dimensions after source are 2, 3, 4 then every increase of the source by 1 is accompanied by an increase
         # of 2x3x4 = 24 in the flattened indices.
