@@ -286,21 +286,19 @@ class BatchIndices:
         return tens.view(-1)[self._flattened_idx(source_override=sources, pseudolabels=labels, logits=logits)]
 
 
-    def increment_tensor(self, tens: BatchIndexedTensor, values: Tensor, logits: Tensor = None):
+    def increment_tensor(
+            self,
+            tens: BatchIndexedTensor,
+            values: Tensor,
+            sources: IntTensor = None,
+            labels: IntTensor = None,
+            logits: Tensor = None,
+    ):
         # Similar, but implements: x_slvra[source[i], label[i], variant type[i], ref bin[i], alt bin[i]] += values[i]
         # Addition is in-place. The flattened view(-1) shares memory with the original tensor
         assert (logits is None) == (not tens.has_logits()), "Logits used iff batch-indexed tensor has logit dimension."
-        return tens.view(-1).index_add_(dim=0, index=self._flattened_idx(logits=logits), source=values)
-
-
-    def increment_tensor_with_sources_and_logits(
-        self, tens: BatchIndexedTensor, values: Tensor, sources_override: IntTensor, logits: Tensor
-    ):
-        # we sometimes need to override the sources (in filter_variants.py there is a hack where we use the Call type
-        # in place of the sources).  This is how we do that.
-        assert tens.has_logits(), "Tensor must have a logit dimension"
-        indices = self._flattened_idx(source_override=sources_override, logits=logits)
-        return tens.view(-1).index_add_(dim=0, index=indices, source=values)
+        idx = self._flattened_idx(source_override=sources, pseudolabels=labels, logits=logits)
+        return tens.view(-1).index_add_(dim=0, index=idx, source=values)
 
 
 class BatchIndexedTensor(Tensor):
