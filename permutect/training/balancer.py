@@ -43,8 +43,11 @@ class Balancer(Module):
         # also, in test-time adaptation of somatic calls most data are germline variants, which are not artifacts).
         self.pseudo_counts_slvra = Parameter(BatchIndexedTensor.zeros(num_sources=num_sources), requires_grad=False)
 
-        # initialize weights to be flat
+        # weights for labeled data, initialized flat
         self.weights_slvra = Parameter(BatchIndexedTensor.ones(num_sources=num_sources), requires_grad=False)
+
+        # weights for unlabeled data, where index l is a guess for the correct label
+        self.unlabeled_weights_slvra = Parameter(BatchIndexedTensor.ones(num_sources=num_sources), requires_grad=False)
 
         # the overall weights for adversarial source prediction are the regular weights times the source weights
         self.source_weights_s = Parameter(torch.ones(num_sources), requires_grad=False)
@@ -57,33 +60,43 @@ class Balancer(Module):
         idx = batch.batch_indices()
         idx.increment_tensor(self.counts_slvra, values=torch.ones(batch.size(), device=self.device))
 
+        # increment the pseudo-label counts for unlabeled data according to the amount of probability
+        # assigned to artifact/nonartifact
         art_probs_b = artifact_probs_b.to(device=self.device)
+        unlabeled_mask = 1 - batch.get_is_labeled_mask()
         artifact_labels = torch.tensor([Label.ARTIFACT], device=self.device).expand(batch.size())
         nonartifact_labels = torch.tensor([Label.VARIANT], device=self.device).expand(batch.size())
-
-        idx.increment_tensor(self.pseudo_counts_slvra, labels=artifact_labels, values=art_probs_b)
-        idx.increment_tensor(self.pseudo_counts_slvra, labels=nonartifact_labels, values=(1-art_probs_b))
+        idx.increment_tensor(self.pseudo_counts_slvra, labels=artifact_labels, values=unlabeled_mask*art_probs_b)
+        idx.increment_tensor(self.pseudo_counts_slvra, labels=nonartifact_labels, values=unlabeled_mask*(1-art_probs_b))
 
         self.count_since_last_recomputation += batch.size()
 
         if self.count_since_last_recomputation > Balancer.DATA_BEFORE_RECOMPUTE:
-            art_to_nonart_ratios_svra = (self.counts_slvra[:, Label.ARTIFACT] + 0.01) / (
-                self.counts_slvra[:, Label.VARIANT] + 0.01
-            )
-            # TODO: perhaps don't recompute weights at every batch, as we do here
-            new_weights_slvra = torch.zeros_like(self.weights_slvra)
-            new_weights_slvra[:, Label.ARTIFACT] = torch.clip(
-                (1 + 1 / art_to_nonart_ratios_svra) / 2, min=0.01, max=100
-            )
-            new_weights_slvra[:, Label.VARIANT] = torch.clip((1 + art_to_nonart_ratios_svra) / 2, min=0.01, max=100)
+            attenuation = math.pow(Balancer.ATTENUATION_PER_DATUM, self.count_since_last_recomputation)
+
+            # update weights for both labeled and unlabeled data
+            for is_labeled in (True, False):
+                counts_slvra = self.counts_slvra if is_labeled else self.pseudo_counts_slvra
+                art_counts_svra = counts_slvra[:, Label.ARTIFACT]
+                nonart_counts_svra = counts_slvra[:, Label.VARIANT]
+                ratio_svra = (art_counts_svra + 0.01) / (nonart_counts_svra + 0.01)
+
+                new_weights_slvra = torch.zeros_like(counts_slvra)
+                new_weights_slvra[:, Label.ARTIFACT] = torch.clip((1 + 1 / ratio_svra) / 2, min=0.01, max=100)
+                new_weights_slvra[:, Label.VARIANT] = torch.clip((1 + ratio_svra) / 2, min=0.01, max=100)
+
+                old_weights_slvra = self.weights_slvra if is_labeled else self.unlabeled_weights_slvra
+                lin_comb_slvra = attenuation * old_weights_slvra + (1 - attenuation) * new_weights_slvra
+                old_weights_slvra.copy_(lin_comb_slvra)
 
             counts_slv = torch.sum(self.counts_slvra, dim=(-2, -1))
-            total_labeled_sv = counts_slv[:, Label.ARTIFACT] + counts_slv[:, Label.VARIANT]
-            unlabeled_weight_sv = torch.clip(total_labeled_sv / counts_slv[:, Label.UNLABELED], 0, 1)
-            new_weights_slvra[:, Label.UNLABELED] = unlabeled_weight_sv.view(self.num_sources, len(Variation), 1, 1)
 
-            attenuation = math.pow(Balancer.ATTENUATION_PER_DATUM, self.count_since_last_recomputation)
-            self.weights_slvra.copy_(attenuation * self.weights_slvra + (1 - attenuation) * new_weights_slvra)
+            # TODO: here is old code for making total unlabeled weight at most equal to total labeled weight
+            # TODO: can it be thrown out?  Wha tis the right thing to do?  Maybe nothing?
+            # TODO: maybe it's the responsibility of the dataset?
+            #total_labeled_sv = counts_slv[:, Label.ARTIFACT] + counts_slv[:, Label.VARIANT]
+            #unlabeled_weight_sv = torch.clip(total_labeled_sv / counts_slv[:, Label.UNLABELED], 0, 1)
+            #new_weights_slvra[:, Label.UNLABELED] = unlabeled_weight_sv.view(self.num_sources, len(Variation), 1, 1)
 
             counts_s = torch.sum(counts_slv, dim=(-2, -1))
             total_s = torch.sum(counts_s, dim=0, keepdim=True)
@@ -91,9 +104,15 @@ class Balancer(Module):
             self.source_weights_s.copy_(attenuation * self.source_weights_s + (1 - attenuation) * new_source_weights_s)
             self.count_since_last_recomputation = 0
             # TODO: also attenuate counts -- multiply by an attenuation factor or something?
-        batch_weights = batch.batch_indices().index_into_tensor(self.weights_slvra)
-        source_weights = self.source_weights_s[batch.batch_indices().sources]
-        return batch_weights, source_weights
+
+        labeled_weights_b = idx.index_into_tensor(self.weights_slvra)
+        pseudo_art_weights_b = idx.index_into_tensor(self.unlabeled_weights_slvra, labels=artifact_labels)
+        pseudo_nonart_weights_b = idx.index_into_tensor(self.unlabeled_weights_slvra, labels=nonartifact_labels)
+        unlabeled_weights_b = art_probs_b * pseudo_art_weights_b + (1 - art_probs_b) * pseudo_nonart_weights_b
+        weights_b = unlabeled_mask * unlabeled_weights_b + (1 - unlabeled_mask) * labeled_weights_b
+
+        source_weights = self.source_weights_s[idx.sources]
+        return weights_b, source_weights
 
     # TODO: lots of code duplication with the plotting in loss_metrics.py
     def make_plot(self, label: Label, var_type: Variation, axis, source: int, plot_type: PlotType):
