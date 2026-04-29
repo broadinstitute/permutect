@@ -66,8 +66,10 @@ class Balancer(Module):
         unlabeled_mask = 1 - batch.get_is_labeled_mask()
         artifact_labels = torch.tensor([Label.ARTIFACT], device=self.device).expand(batch.size())
         nonartifact_labels = torch.tensor([Label.VARIANT], device=self.device).expand(batch.size())
-        idx.increment_tensor(self.pseudo_counts_slvra, labels=artifact_labels, values=unlabeled_mask*art_probs_b)
-        idx.increment_tensor(self.pseudo_counts_slvra, labels=nonartifact_labels, values=unlabeled_mask*(1-art_probs_b))
+        idx.increment_tensor(self.pseudo_counts_slvra, labels=artifact_labels, values=unlabeled_mask * art_probs_b)
+        idx.increment_tensor(
+            self.pseudo_counts_slvra, labels=nonartifact_labels, values=unlabeled_mask * (1 - art_probs_b)
+        )
 
         self.count_since_last_recomputation += batch.size()
 
@@ -94,9 +96,9 @@ class Balancer(Module):
             # TODO: here is old code for making total unlabeled weight at most equal to total labeled weight
             # TODO: can it be thrown out?  Wha tis the right thing to do?  Maybe nothing?
             # TODO: maybe it's the responsibility of the dataset?
-            #total_labeled_sv = counts_slv[:, Label.ARTIFACT] + counts_slv[:, Label.VARIANT]
-            #unlabeled_weight_sv = torch.clip(total_labeled_sv / counts_slv[:, Label.UNLABELED], 0, 1)
-            #new_weights_slvra[:, Label.UNLABELED] = unlabeled_weight_sv.view(self.num_sources, len(Variation), 1, 1)
+            # total_labeled_sv = counts_slv[:, Label.ARTIFACT] + counts_slv[:, Label.VARIANT]
+            # unlabeled_weight_sv = torch.clip(total_labeled_sv / counts_slv[:, Label.UNLABELED], 0, 1)
+            # new_weights_slvra[:, Label.UNLABELED] = unlabeled_weight_sv.view(self.num_sources, len(Variation), 1, 1)
 
             counts_s = torch.sum(counts_slv, dim=(-2, -1))
             total_s = torch.sum(counts_s, dim=0, keepdim=True)

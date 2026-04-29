@@ -229,7 +229,7 @@ class BatchIndices:
         idx = (self.sources, self.labels, self.var_types, self.ref_count_bins, self.alt_count_bins)
         self.flattened_idx = flattened_indices(dims, idx)
 
-    def _flattened_idx(self, source_override: IntTensor=None, pseudolabels: IntTensor=None, logits: Tensor=None):
+    def _flattened_idx(self, source_override: IntTensor = None, pseudolabels: IntTensor = None, logits: Tensor = None):
         """
         If using pseudolabels, return what the flattened indices would be if the labels were different.
         This is used when pseudolabeling unlabeled data; for example indexing into a tensor of pseudocounts
@@ -266,13 +266,12 @@ class BatchIndices:
 
         return flattened_indices
 
-
     def index_into_tensor(
-            self,
-            tens: BatchIndexedTensor,
-            sources: IntTensor=None,
-            labels: IntTensor=None,
-            logits: Tensor = None,
+        self,
+        tens: BatchIndexedTensor,
+        sources: IntTensor = None,
+        labels: IntTensor = None,
+        logits: Tensor = None,
     ):
         """
         given 5D batch-indexed tensor x_slvra get the 1D tensor
@@ -285,14 +284,13 @@ class BatchIndices:
         assert (logits is None) == (not tens.has_logits()), "Logits used iff batch-indexed tensor has logit dimension."
         return tens.view(-1)[self._flattened_idx(source_override=sources, pseudolabels=labels, logits=logits)]
 
-
     def increment_tensor(
-            self,
-            tens: BatchIndexedTensor,
-            values: Tensor,
-            sources: IntTensor = None,
-            labels: IntTensor = None,
-            logits: Tensor = None,
+        self,
+        tens: BatchIndexedTensor,
+        values: Tensor,
+        sources: IntTensor = None,
+        labels: IntTensor = None,
+        logits: Tensor = None,
     ):
         # Similar, but implements: x_slvra[source[i], label[i], variant type[i], ref bin[i], alt bin[i]] += values[i]
         # Addition is in-place. The flattened view(-1) shares memory with the original tensor
