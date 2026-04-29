@@ -298,7 +298,6 @@ class BatchIndices:
         # Addition is in-place. The flattened view(-1) shares memory with the original tensor
         assert (logits is None) == (not tens.has_logits()), "Logits used iff batch-indexed tensor has logit dimension."
         idx = self._flattened_idx(source_override=sources, pseudolabels=labels, logits=logits)
-        b = torch.min(idx).item()
         return tens.view(-1).index_add_(dim=0, index=idx, source=values)
 
 
