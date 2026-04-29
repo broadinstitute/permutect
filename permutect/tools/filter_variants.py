@@ -398,6 +398,7 @@ def apply_filtering_to_vcf(
             values=most_confident_probs_b,
             sources_override=most_confident_calls_b,
             logits=batch.get(Data.CACHED_ARTIFACT_LOGIT),
+            use_original_counts=True,
         )
 
         artifact_logits = batch.get(Data.CACHED_ARTIFACT_LOGIT).cpu().tolist()

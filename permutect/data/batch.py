@@ -63,11 +63,11 @@ class Batch:
 
     def _finish_initialization_from_arrays(self):
         self._size = len(self.int_tensor)
-        self.lazy_batch_indices = None
+        self.lazy_batch_indices = {False: None, True: None}
 
     def batch_indices(self, use_original_counts: bool = False) -> BatchIndices:
-        if self.lazy_batch_indices is not None:
-            return self.lazy_batch_indices
+        if self.lazy_batch_indices[use_original_counts] is not None:
+            return self.lazy_batch_indices[use_original_counts]
         else:
             ref_counts = (
                 (self.get(Data.ORIGINAL_DEPTH) - self.get(Data.ORIGINAL_ALT_COUNT))
@@ -75,14 +75,14 @@ class Batch:
                 else self.get(Data.REF_COUNT)
             )
             alt_counts = self.get(Data.ORIGINAL_ALT_COUNT if use_original_counts else Data.ALT_COUNT)
-            self.lazy_batch_indices = BatchIndices(
+            self.lazy_batch_indices[use_original_counts] = BatchIndices(
                 sources=self.get(Data.SOURCE),
                 labels=self.get(Data.LABEL),
                 var_types=self.get(Data.VARIANT_TYPE),
                 ref_counts=ref_counts,
                 alt_counts=alt_counts,
             )
-            return self.lazy_batch_indices
+            return self.lazy_batch_indices[use_original_counts]
 
     def get(self, data_field: Data):
         index = data_field.idx
@@ -202,10 +202,6 @@ class BatchProperty(IntEnum):
 
 
 class BatchIndices:
-    PRODUCT_OF_NON_SOURCE_DIMS_INCLUDING_LOGITS = (
-        len(Label) * len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS * NUM_LOGIT_BINS
-    )
-
     def __init__(
         self,
         sources: IntTensor,
@@ -216,7 +212,7 @@ class BatchIndices:
     ):
         """
         sources override is used for something of a hack where in filtering there is only one source, so we use the
-        source dimensipn to instead represent the call type
+        source dimension to instead represent the call type
         """
         self.sources = sources
         self.labels = labels
@@ -226,60 +222,81 @@ class BatchIndices:
 
         # We do something kind of dangerous-seeming here: sources is the zeroth dimension and so the formula for
         # flattened indices *doesn't depend on the number of sources* since the stride from one source to the next is the
-        # product of all the *other* dimensionalities.  Thus we can set the zeroth dimension to anythiong we want!
+        # product of all the *other* dimensionalities.  Thus we can set the zeroth dimension to anything we want!
         # Just to make sure that this doesn't cause a silent error, we set it to None so that things will blow up
         # if my little analysis here is wrong
         dims = (None, len(Label), len(Variation), NUM_REF_COUNT_BINS, NUM_ALT_COUNT_BINS)
         idx = (self.sources, self.labels, self.var_types, self.ref_count_bins, self.alt_count_bins)
         self.flattened_idx = flattened_indices(dims, idx)
 
-    def _flattened_idx_with_logits(self, logits: Tensor):
-        # because logits are the last index, the flattened indices with logits are related to those without in a simple way
-        logit_bins = logit_bin_indices(logits)
-        return logit_bins + NUM_LOGIT_BINS * self.flattened_idx
+    def _flattened_idx(self, source_override: IntTensor = None, pseudolabels: IntTensor = None, logits: Tensor = None):
+        """
+        If using pseudolabels, return what the flattened indices would be if the labels were different.
+        This is used when pseudolabeling unlabeled data; for example indexing into a tensor of pseudocounts
+        of imputed unlabeled data.
 
-    def index_into_tensor(self, tens: BatchIndexedTensor, logits: Tensor = None):
+        The stride from one label to the next is the product of all successive dimensionalities, i.e.
+        len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS, so we simply add the product of this
+        stride length with the difference between pseudolabels and actual labels.
+
+        A source_override works similarly, but with stride length equal to
+        len(Label) * len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS
+
+        If using logits, we use the fact that logits are the last indexed dimnension.  Every flattened index
+        without logits corresponds to NUM_LOGIT_BINS bins with logits, so the flattened index with logits
+        is related by simple arithmetic.
+        """
+        flattened_indices = self.flattened_idx
+
+        if source_override is not None:
+            assert len(source_override) == len(self.sources)
+            stride_length = len(Label) * len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS
+            diff = source_override - self.sources
+            flattened_indices = flattened_indices + (stride_length * diff)
+
+        if pseudolabels is not None:
+            assert len(pseudolabels) == len(self.labels)
+            stride_length = len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS
+            diff = pseudolabels - self.labels
+            flattened_indices = flattened_indices + (stride_length * diff)
+
+        if logits is not None:
+            logit_bins = logit_bin_indices(logits)
+            flattened_indices = logit_bins + NUM_LOGIT_BINS * flattened_indices
+
+        return flattened_indices
+
+    def index_into_tensor(
+        self,
+        tens: BatchIndexedTensor,
+        sources: IntTensor = None,
+        labels: IntTensor = None,
+        logits: Tensor = None,
+    ):
         """
         given 5D batch-indexed tensor x_slvra get the 1D tensor
         result[i] = x_slvra[source[i], label[i], variant type[i], ref bin[i], alt bin[i]]
         This is equivalent to flattening x and indexing by the cached flattened indices
+
+        Optionally, override the sources and/or labels and/or include logits in the indexing
         :return:
         """
-        if logits is None and not tens.has_logits():
-            return tens.view(-1)[self.flattened_idx]
-        elif logits is not None and tens.has_logits():
-            return tens.view(-1)[self._flattened_idx_with_logits(logits)]
-        else:
-            raise Exception(
-                "Logits are used if and only if batch-indexed tensor to be indexed includes a logit dimension."
-            )
+        assert (logits is None) == (not tens.has_logits()), "Logits used iff batch-indexed tensor has logit dimension."
+        return tens.view(-1)[self._flattened_idx(source_override=sources, pseudolabels=labels, logits=logits)]
 
-    def increment_tensor(self, tens: BatchIndexedTensor, values: Tensor, logits: Tensor = None):
+    def increment_tensor(
+        self,
+        tens: BatchIndexedTensor,
+        values: Tensor,
+        sources: IntTensor = None,
+        labels: IntTensor = None,
+        logits: Tensor = None,
+    ):
         # Similar, but implements: x_slvra[source[i], label[i], variant type[i], ref bin[i], alt bin[i]] += values[i]
         # Addition is in-place. The flattened view(-1) shares memory with the original tensor
-        if logits is None and not tens.has_logits():
-            return tens.view(-1).index_add_(dim=0, index=self.flattened_idx, source=values)
-        elif logits is not None and tens.has_logits():
-            return tens.view(-1).index_add_(dim=0, index=self._flattened_idx_with_logits(logits), source=values)
-        else:
-            raise Exception(
-                "Logits are used if and only if batch-indexed tensor to be indexed includes a logit dimension."
-            )
-
-    def increment_tensor_with_sources_and_logits(
-        self, tens: BatchIndexedTensor, values: Tensor, sources_override: IntTensor, logits: Tensor
-    ):
-        # we sometimes need to override the sources (in filter_variants.py there is a hack where we use the Call type
-        # in place of the sources).  This is how we do that.
-        assert tens.has_logits(), "Tensor must have a logit dimension"
-        indices_with_logits = self._flattened_idx_with_logits(logits)
-
-        # eg, if the dimensions after source are 2, 3, 4 then every increase of the source by 1 is accompanied by an increase
-        # of 2x3x4 = 24 in the flattened indices.
-        indices = indices_with_logits + BatchIndices.PRODUCT_OF_NON_SOURCE_DIMS_INCLUDING_LOGITS * (
-            sources_override - self.sources
-        )
-        return tens.view(-1).index_add_(dim=0, index=indices, source=values)
+        assert (logits is None) == (not tens.has_logits()), "Logits used iff batch-indexed tensor has logit dimension."
+        idx = self._flattened_idx(source_override=sources, pseudolabels=labels, logits=logits)
+        return tens.view(-1).index_add_(dim=0, index=idx, source=values)
 
 
 class BatchIndexedTensor(Tensor):

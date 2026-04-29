@@ -232,11 +232,17 @@ class AccuracyMetrics(BatchIndexedTensor):
         )
         return cls(torch.zeros(shape, device=device))
 
-    def record_with_sources_and_logits(self, batch: Batch, values: Tensor, sources_override: IntTensor, logits: Tensor):
+    def record_with_sources_and_logits(
+        self,
+        batch: Batch,
+        values: Tensor,
+        sources_override: IntTensor,
+        logits: Tensor,
+        use_original_counts: bool = False,
+    ):
         assert self.has_logits(), "Tensor lacks a logit dimension"
-        batch.batch_indices().increment_tensor_with_sources_and_logits(
-            self, values=values, sources_override=sources_override, logits=logits
-        )
+        idx = batch.batch_indices(use_original_counts=use_original_counts)
+        idx.increment_tensor(self, values=values, sources=sources_override, logits=logits)
 
     def split_over_sources(self) -> List[AccuracyMetrics]:
         # split into single-source BatchIndexedTotals

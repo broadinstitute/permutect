@@ -7,22 +7,23 @@ from torch import Tensor
 
 
 def flattened_indices(shape: Tuple[int, ...], idx: Tuple[IntTensor, ...]):
+    """
+    Example: for shape = (3, 4, 5) and idx = (1, 2, 3) the flattened index is
+        1 * (4 * 5) + 2 * (5) + 3
+        = [(1) * 4 + 2] * 5 + 3
+
+    In general, suppose that indices 0, 1. . . D-1 yield a flattened index F_{D-1}.  If the D + 1 dimension has size
+    S_D and index I_D then the flattened index F_D is F_{D-1} * S_D + I_D, because every combination of the indices
+    0,1. . .D-1 can be associated with any of S_D values of index D.  Thus flattened indices can be computed with
+    a quick recursion.
+    """
+    assert len(shape) == len(idx)
     dim = len(shape)
-    if dim < 4:
-        if dim == 2:
-            return idx[1] + shape[1] * idx[0]
-        elif dim == 3:
-            return idx[2] + shape[2] * (idx[1] + shape[1] * idx[0])
-    elif dim == 5:
-        return idx[4] + shape[4] * (idx[3] + shape[3] * (idx[2] + shape[2] * (idx[1] + shape[1] * idx[0])))
-    elif dim == 6:
-        return idx[5] + shape[5] * (
-            idx[4] + shape[4] * (idx[3] + shape[3] * (idx[2] + shape[2] * (idx[1] + shape[1] * idx[0])))
-        )
-    elif dim == 4:
-        return idx[3] + shape[3] * (idx[2] + shape[2] * (idx[1] + shape[1] * idx[0]))
-    else:
-        raise Exception("Not implemented yet.")
+
+    result = idx[0]
+    for i in range(1, dim):
+        result = result * shape[i] + idx[i]
+    return result
 
 
 def index_tensor(tens: Tensor, idx: Tuple[IntTensor, ...]) -> Tensor:
