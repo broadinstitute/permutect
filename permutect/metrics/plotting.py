@@ -125,14 +125,13 @@ def plot_roc_on_axis(list_of_tuple_lists, curve_labels, axis, sens_prec: bool, t
 # labels are 0 for non-artifact, 1 for artifact
 # predicted_error_probs is a list of list of floats between 0 and 1
 # curve labels is a list of strings
-def plot_theoretical_roc_on_axis(predicted_error_probs, curve_labels, axis):
+def plot_theoretical_roc_on_axis(predicted_error_probs, curve_labels, axis, recall_weight: float = 1.0):
     x_y_lab_tuples = []
     dots = []
     best_thresholds = []
     for error_probs, curve_label in zip(predicted_error_probs, curve_labels):
-        thresh_and_accs, best_threshold = get_theoretical_roc_data(
-            error_probs
-        )  # best threshold is (threshold, art accuracay, non-art accuracy)
+        # best threshold is (threshold, art accuracay, non-art accuracy)
+        thresh_and_accs, best_threshold = get_theoretical_roc_data(error_probs, recall_weight=recall_weight)
         x_y_lab_tuples.append(([x[1] for x in thresh_and_accs], [x[2] for x in thresh_and_accs], curve_label))
 
         for threshold, art_acc, non_art_acc in thresh_and_accs:
@@ -151,7 +150,10 @@ def plot_theoretical_roc_on_axis(predicted_error_probs, curve_labels, axis):
 # fixing code duplication with the above method we'll call it "artifact"
 # 1st output is (threshold, accuracy on non-errors, accuracy on errors) tuples
 # 2nd output is the threshold that maximizes harmonic mean of these two accuracies
-def get_theoretical_roc_data(artifact_probs):
+def get_theoretical_roc_data(artifact_probs, recall_weight: float = 1.0):
+    # recall weight is the relative of importance of recall vs precision in the weighted harmonic
+    # mean i.e. the "beta" in the general F_beta score
+    beta_sqr = recall_weight ** 2
     artifact_probs.sort(key=lambda p: p)  # sort from least to greatest error probability
     num_calls = len(artifact_probs)
     total_artifact = sum([prob for prob in artifact_probs]) + 0.0001
@@ -176,7 +178,7 @@ def get_theoretical_roc_data(artifact_probs):
         sensitivity = tp / total_non_artifact
         precision = tp / (tp + fp)
 
-        harmonic_mean = 0 if (precision == 0 or sensitivity == 0) else 1 / ((1 / sensitivity) + (1 / precision))
+        harmonic_mean = (1 + beta_sqr) * sensitivity * precision / (sensitivity + (beta_sqr * precision) + 0.0001)
 
         if harmonic_mean > best_harmonic_mean:
             best_harmonic_mean = harmonic_mean
