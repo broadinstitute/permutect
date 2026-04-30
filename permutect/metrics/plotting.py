@@ -153,7 +153,7 @@ def plot_theoretical_roc_on_axis(predicted_error_probs, curve_labels, axis, reca
 def get_theoretical_roc_data(artifact_probs, recall_weight: float = 1.0):
     # recall weight is the relative of importance of recall vs precision in the weighted harmonic
     # mean i.e. the "beta" in the general F_beta score
-    beta_sqr = recall_weight ** 2
+    beta_sqr = recall_weight**2
     artifact_probs.sort(key=lambda p: p)  # sort from least to greatest error probability
     num_calls = len(artifact_probs)
     total_artifact = sum([prob for prob in artifact_probs]) + 0.0001
