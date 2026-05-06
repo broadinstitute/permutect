@@ -198,7 +198,7 @@ def main_without_parsing(args):
         tensorboard_dir=getattr(args, constants.TENSORBOARD_DIR_NAME),
         genomic_span=getattr(args, constants.GENOMIC_SPAN_NAME),
         germline_mode=getattr(args, constants.GERMLINE_MODE_NAME),
-        recall_weight=1.0,
+        recall_weight=getattr(args, constants.RECALL_WEIGHT_NAME),
         no_germline_mode=getattr(args, constants.NO_GERMLINE_MODE_NAME),
         het_beta=getattr(args, constants.HET_BETA_NAME),
         segmentation=get_segmentation(getattr(args, constants.MAF_SEGMENTS_NAME)),
