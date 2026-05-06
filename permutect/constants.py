@@ -56,6 +56,7 @@ MAF_SEGMENTS_NAME = "maf_segments"
 NORMAL_MAF_SEGMENTS_NAME = "normal_maf_segments"
 GERMLINE_MODE_NAME = "germline_mode"
 NO_GERMLINE_MODE_NAME = "no_germline_mode"
+RECALL_WEIGHT_NAME = "recall_weight"
 HET_BETA_NAME = "het_beta"
 
 PRETRAINED_ARTIFACT_MODEL_NAME = "pretrained_artifact_model"

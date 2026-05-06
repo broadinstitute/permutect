@@ -196,7 +196,11 @@ class PosteriorModel(torch.nn.Module):
     # map of Variant type to probability threshold that maximizes F1 score
     # loader is a Dataloader whose collate_fn is the PosteriorBatch constructor
     def calculate_probability_thresholds(
-        self, posterior_loader, summary_writer: SummaryWriter = None, germline_mode: bool = False
+        self,
+        posterior_loader,
+        summary_writer: SummaryWriter = None,
+        germline_mode: bool = False,
+        recall_weight: float = 1.0,
     ):
         self.train(False)
         error_probs_by_type = {var_type: [] for var_type in Variation}  # includes both artifact and seq errors
@@ -230,7 +234,7 @@ class PosteriorModel(torch.nn.Module):
                 error_probs_by_type_by_cnt[var_type], count_bin_labels, roc_by_cnt_axes[0, var_type]
             )
             best_threshold = plotting.plot_theoretical_roc_on_axis(
-                [error_probs_by_type[var_type]], [""], roc_axes[0, var_type]
+                [error_probs_by_type[var_type]], [""], roc_axes[0, var_type], recall_weight=recall_weight
             )[0][0]
 
             # TODO: the theoretical ROC might need to return the best threshold for this
