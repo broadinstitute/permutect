@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 import time
 from collections import defaultdict
@@ -49,7 +51,7 @@ WORST_OFFENDERS_QUEUE_SIZE = 100
 def train_artifact_model(
     model: ArtifactModel,
     train_dataset: ReadsDataset,
-    valid_dataset: ReadsDataset,
+    valid_dataset: ReadsDataset | None,
     training_params: TrainingParameters,
     summary_writer: SummaryWriter,
     epochs_per_evaluation: int = 5,
@@ -82,7 +84,7 @@ def train_artifact_model(
     checkpoint = Checkpoint(device, model, train_optimizer)
 
     train_loader = train_dataset.make_data_loader(training_params.batch_size, is_cuda, training_params.num_workers)
-    valid_loader = valid_dataset.make_data_loader(training_params.batch_size, is_cuda, training_params.num_workers)
+    valid_loader = None if valid_dataset is None else valid_dataset.make_data_loader(training_params.batch_size, is_cuda, training_params.num_workers)
     report_memory_usage("Loaders created, about to train.")
 
     first_epoch, last_epoch = 1, training_params.num_epochs + training_params.num_calibration_epochs
@@ -92,7 +94,7 @@ def train_artifact_model(
         is_calibration_epoch = epoch > training_params.num_epochs
         model.source_predictor.set_adversarial_strength((2 / (1 + math.exp(-0.1 * (epoch - 1)))) - 1)
 
-        for epoch_type in [Epoch.TRAIN, Epoch.VALID]:
+        for epoch_type in [Epoch.TRAIN] if valid_loader is None else [Epoch.TRAIN, Epoch.VALID]:
             train_one_epoch(
                 balancer,
                 checkpoint,
