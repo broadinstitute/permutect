@@ -2,7 +2,7 @@ import math
 import time
 from collections import defaultdict
 from queue import PriorityQueue
-from typing import Any
+from typing import Any, List
 
 import torch
 from torch import device
@@ -39,7 +39,7 @@ from permutect.training.balancer import PlotType
 from permutect.training.checkpoint import Checkpoint
 from permutect.training.downsampler import Downsampler
 from permutect.training.loss_recorder import LossRecorder
-from permutect.utils.enums import Epoch
+from permutect.utils.enums import Epoch, ParameterSet
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
 
@@ -53,6 +53,7 @@ def train_artifact_model(
     training_params: TrainingParameters,
     summary_writer: SummaryWriter,
     epochs_per_evaluation: int = 5,
+    trainable_params: List[ParameterSet] = None,
 ):
     device, dtype = model._device, model._dtype
     balancer = Balancer(num_sources=train_dataset.num_sources(), device=device).to(device=device, dtype=dtype)
@@ -109,6 +110,7 @@ def train_artifact_model(
                 train_optimizer,
                 train_scheduler,
                 valid_loader,
+                trainable_params,
             )
 
         # done with training and validation for this epoch
@@ -139,9 +141,10 @@ def train_one_epoch(
     train_optimizer: AdamW,
     train_scheduler: ReduceLROnPlateau,
     valid_loader: DataLoader[Any],
+    trainable_params: List[ParameterSet] = None
 ):
     loss_recorder = LossRecorder(device, num_sources)
-    model.set_epoch_type(epoch_type)
+    model.set_epoch_type(epoch_type, trainable_params)
     if is_calibration_epoch and epoch_type == Epoch.TRAIN:
         freeze(model.parameters())
         unfreeze(model.calibration_parameters())  # unfreeze calibration but everything else stays frozen
