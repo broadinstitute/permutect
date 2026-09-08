@@ -69,12 +69,6 @@ workflow CNVSomaticPairWorkflow {
       Int? bin_length
       Int? mem_gb_for_preprocess_intervals
 
-      ##############################################
-      #### optional arguments for CollectCounts ####
-      ##############################################
-      String? collect_counts_format
-      Int? mem_gb_for_collect_counts
-
       #####################################################
       #### optional arguments for CollectAllelicCounts ####
       #####################################################
@@ -164,27 +158,6 @@ workflow CNVSomaticPairWorkflow {
             gcs_project_for_requester_pays = gcs_project_for_requester_pays
     }
 
-    if (use_read_counts) {
-        Int collect_counts_tumor_disk = tumor_bam_size + ceil(size(PreprocessIntervals.preprocessed_intervals, "GB")) + disk_pad
-        call CollectCounts as CollectCountsTumor {
-            input:
-                intervals = PreprocessIntervals.preprocessed_intervals,
-                bam = tumor_bam,
-                bam_idx = tumor_bam_idx,
-                ref_fasta = ref_fasta,
-                ref_fasta_fai = ref_fasta_fai,
-                ref_fasta_dict = ref_fasta_dict,
-                format = collect_counts_format,
-                enable_indexing = false,
-                gatk4_jar_override = gatk4_jar_override,
-                gatk_docker = gatk_docker,
-                mem_gb = mem_gb_for_collect_counts,
-                disk_space_gb = collect_counts_tumor_disk,
-                preemptible_attempts = preemptible_attempts,
-                gcs_project_for_requester_pays = gcs_project_for_requester_pays
-        }
-    }
-
     Int model_segments_normal_portion = if defined(normal_bam) then ceil(size(CollectAllelicCountsNormal.allelic_counts, "GB")) else 0
     Int model_segments_tumor_disk = ceil(size(CollectAllelicCountsTumor.allelic_counts, "GB")) + model_segments_normal_portion + disk_pad
     call ModelSegments as ModelSegmentsTumor {
@@ -257,26 +230,6 @@ workflow CNVSomaticPairWorkflow {
                 gcs_project_for_requester_pays = gcs_project_for_requester_pays
         }
 
-        if (use_read_counts) {
-            call CollectCounts as CollectCountsNormal {
-                input:
-                    intervals = PreprocessIntervals.preprocessed_intervals,
-                    bam = final_normal_bam,
-                    bam_idx = final_normal_bam_idx,
-                    ref_fasta = ref_fasta,
-                    ref_fasta_fai = ref_fasta_fai,
-                    ref_fasta_dict = ref_fasta_dict,
-                    format = collect_counts_format,
-                    enable_indexing = false,
-                    gatk4_jar_override = gatk4_jar_override,
-                    gatk_docker = gatk_docker,
-                    mem_gb = mem_gb_for_collect_counts,
-                    disk_space_gb = collect_counts_normal_disk,
-                    preemptible_attempts = preemptible_attempts,
-                    gcs_project_for_requester_pays = gcs_project_for_requester_pays
-            }
-        }
-
         Int model_segments_normal_disk =  ceil(size(CollectAllelicCountsNormal.allelic_counts, "GB")) + disk_pad
         call ModelSegments as ModelSegmentsNormal {
             input:
@@ -332,41 +285,29 @@ workflow CNVSomaticPairWorkflow {
     output {
         File preprocessed_intervals = PreprocessIntervals.preprocessed_intervals
 
-        #File? read_counts_entity_id_tumor = CollectCountsTumor.entity_id
-        File? read_counts_tumor = CollectCountsTumor.counts
 
         #File allelic_counts_entity_id_tumor = CollectAllelicCountsTumor.entity_id
         File allelic_counts_tumor = CollectAllelicCountsTumor.allelic_counts
         File het_allelic_counts_tumor = ModelSegmentsTumor.het_allelic_counts
         File normal_het_allelic_counts_tumor = ModelSegmentsTumor.normal_het_allelic_counts
-        #File copy_ratio_only_segments_tumor = ModelSegmentsTumor.copy_ratio_only_segments
-        #File copy_ratio_legacy_segments_tumor = ModelSegmentsTumor.copy_ratio_legacy_segments
         #File allele_fraction_legacy_segments_tumor = ModelSegmentsTumor.allele_fraction_legacy_segments
         #File modeled_segments_begin_tumor = ModelSegmentsTumor.modeled_segments_begin
-        #File copy_ratio_parameters_begin_tumor = ModelSegmentsTumor.copy_ratio_parameters_begin
         #File allele_fraction_parameters_begin_tumor = ModelSegmentsTumor.allele_fraction_parameters_begin
         File modeled_segments_tumor = ModelSegmentsTumor.modeled_segments
-        File copy_ratio_parameters_tumor = ModelSegmentsTumor.copy_ratio_parameters
         File allele_fraction_parameters_tumor = ModelSegmentsTumor.allele_fraction_parameters
 
 
 
         File modeled_segments_plot_tumor = PlotModeledSegmentsTumor.modeled_segments_plot
 
-        #File? read_counts_entity_id_normal = CollectCountsNormal.entity_id
-        File? read_counts_normal = CollectCountsNormal.counts
         #File? allelic_counts_entity_id_normal = CollectAllelicCountsNormal.entity_id
         File? allelic_counts_normal = CollectAllelicCountsNormal.allelic_counts
         File? het_allelic_counts_normal = ModelSegmentsNormal.het_allelic_counts
         File? normal_het_allelic_counts_normal = ModelSegmentsNormal.normal_het_allelic_counts
-        #File? copy_ratio_only_segments_normal = ModelSegmentsNormal.copy_ratio_only_segments
-        #File? copy_ratio_legacy_segments_normal = ModelSegmentsNormal.copy_ratio_legacy_segments
         #File? allele_fraction_legacy_segments_normal = ModelSegmentsNormal.allele_fraction_legacy_segments
         #File? modeled_segments_begin_normal = ModelSegmentsNormal.modeled_segments_begin
-        #File? copy_ratio_parameters_begin_normal = ModelSegmentsNormal.copy_ratio_parameters_begin
         #File? allele_fraction_parameters_begin_normal = ModelSegmentsNormal.allele_fraction_parameters_begin
         File? modeled_segments_normal = ModelSegmentsNormal.modeled_segments
-        File? copy_ratio_parameters_normal = ModelSegmentsNormal.copy_ratio_parameters
         File? allele_fraction_parameters_normal = ModelSegmentsNormal.allele_fraction_parameters
 
         File? modeled_segments_plot_normal = PlotModeledSegmentsNormal.modeled_segments_plot
@@ -424,124 +365,6 @@ task PreprocessIntervals {
 
     output {
         File preprocessed_intervals = "~{base_filename}.preprocessed.interval_list"
-    }
-}
-
-task CollectCounts {
-    input {
-      File intervals
-      File bam
-      File bam_idx
-      File ref_fasta
-      File ref_fasta_fai
-      File ref_fasta_dict
-      Array[String]? disabled_read_filters
-      Boolean? enable_indexing
-      String? format
-      File? gatk4_jar_override
-      String? gcs_project_for_requester_pays
-
-      # Runtime parameters
-      String gatk_docker
-      Int? mem_gb
-      Int? disk_space_gb
-      Boolean use_ssd = false
-      Int? cpu
-      Int? preemptible_attempts
-    }
-
-    parameter_meta {
-      bam: {
-        localization_optional: true
-      }
-      bam_idx: {
-        localization_optional: true
-      }
-    }
-
-    Int machine_mem_mb = select_first([mem_gb, 7]) * 1000
-    Int command_mem_mb = machine_mem_mb - 1000
-
-    Boolean enable_indexing_ = select_first([enable_indexing, false])
-
-    Array[String] disabled_read_filters_arr = if defined(disabled_read_filters) then prefix("--disable-read-filter ", select_first([disabled_read_filters])) else []
-
-    # Sample name is derived from the bam filename
-    String base_filename = basename(bam, ".bam")
-    String format_ = select_first([format, "HDF5"])
-    String hdf5_or_tsv_or_null_format =
-        if format_ == "HDF5" then "HDF5" else
-        (if format_ == "TSV" then "TSV" else
-        (if format_ == "TSV_GZ" then "TSV" else "null")) # until we can write TSV_GZ in CollectReadCounts, we write TSV and use bgzip
-    String counts_filename_extension =
-        if format_ == "HDF5" then "counts.hdf5" else
-        (if format_ == "TSV" then "counts.tsv" else
-        (if format_ == "TSV_GZ" then "counts.tsv.gz" else "null"))
-    String counts_index_filename_extension =
-        if format_ == "HDF5" then "null" else
-        (if format_ == "TSV" then "counts.tsv.idx" else
-        (if format_ == "TSV_GZ" then "counts.tsv.gz.tbi" else "null"))
-    Boolean do_block_compression =
-        if format_ == "HDF5" then false else
-        (if format_ == "TSV" then false else
-        (if format_ == "TSV_GZ" then true else false))
-    String counts_filename = "~{base_filename}.~{counts_filename_extension}"
-    String counts_filename_for_collect_read_counts = basename(counts_filename, ".gz")
-
-    command <<<
-        set -eu
-        export GATK_LOCAL_JAR=~{default="/root/gatk.jar" gatk4_jar_override}
-
-        case ~{format_} in
-            HDF5 | TSV | TSV_GZ)
-                ;;
-            *)
-                echo "ERROR: Unknown format specified. Format must be one of HDF5, TSV, or TSV_GZ."
-                exit 1
-                ;;
-        esac
-
-        if [ ~{format_} = "HDF5" ] && [ ~{enable_indexing_} = "true" ]; then
-            echo "ERROR: Incompatible WDL parameters. Cannot have format = HDF5 and enable_indexing = true."
-            exit 1
-        fi
-
-        if [ ~{hdf5_or_tsv_or_null_format} = "null" ]; then
-            echo "ERROR: Should never reach here."
-            exit 1
-        fi
-
-        gatk --java-options "-Xmx~{command_mem_mb}m" CollectReadCounts \
-            -L ~{intervals} \
-            --input ~{bam} \
-            --reference ~{ref_fasta} \
-            --format ~{default="HDF5" hdf5_or_tsv_or_null_format} \
-            --interval-merging-rule OVERLAPPING_ONLY \
-            --output ~{counts_filename_for_collect_read_counts} \
-            ~{"--gcs-project-for-requester-pays " + gcs_project_for_requester_pays} \
-            ~{sep=' ' disabled_read_filters_arr}
-
-        if [ ~{do_block_compression} = "true" ]; then
-            bgzip ~{counts_filename_for_collect_read_counts}
-        fi
-
-        if [ ~{enable_indexing_} = "true" ]; then
-            gatk --java-options "-Xmx~{command_mem_mb}m" IndexFeatureFile \
-                -I ~{counts_filename}
-        fi
-    >>>
-
-    runtime {
-        docker: gatk_docker
-        memory: machine_mem_mb + " MB"
-        disks: "local-disk " + select_first([disk_space_gb, ceil(size(bam, "GB")) + 50]) + if use_ssd then " SSD" else " HDD"
-        cpu: select_first([cpu, 1])
-        preemptible: select_first([preemptible_attempts, 5])
-    }
-
-    output {
-        String entity_id = base_filename
-        File counts = counts_filename
     }
 }
 
