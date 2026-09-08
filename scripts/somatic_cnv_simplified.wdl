@@ -45,7 +45,6 @@ workflow CNVSomaticPairWorkflow {
       File tumor_bam_idx
       File? normal_bam
       File? normal_bam_idx
-      File? read_count_pon
       File ref_fasta_dict
       File ref_fasta_fai
       File ref_fasta
@@ -81,12 +80,6 @@ workflow CNVSomaticPairWorkflow {
       #####################################################
       String? minimum_base_quality
       Int? mem_gb_for_collect_allelic_counts
-
-      ##################################################
-      #### optional arguments for DenoiseReadCounts ####
-      ##################################################
-      Int? number_of_eigensamples
-      Int? mem_gb_for_denoise_read_counts
 
       ##############################################
       #### optional arguments for ModelSegments ####
@@ -126,7 +119,6 @@ workflow CNVSomaticPairWorkflow {
     }
 
     Int ref_size = ceil(size(ref_fasta, "GB") + size(ref_fasta_dict, "GB") + size(ref_fasta_fai, "GB"))
-    Int read_count_pon_size = if defined(read_count_pon) then ceil(size(read_count_pon, "GB")) else 0
     Int tumor_bam_size = ceil(size(tumor_bam, "GB") + size(tumor_bam_idx, "GB"))
     Int normal_bam_size = if defined(normal_bam) then ceil(size(normal_bam, "GB") + size(normal_bam_idx, "GB")) else 0
 
@@ -191,30 +183,13 @@ workflow CNVSomaticPairWorkflow {
                 preemptible_attempts = preemptible_attempts,
                 gcs_project_for_requester_pays = gcs_project_for_requester_pays
         }
-
-        Int denoise_read_counts_tumor_disk = read_count_pon_size + ceil(size(CollectCountsTumor.counts, "GB")) + disk_pad
-        call DenoiseReadCounts as DenoiseReadCountsTumor {
-            input:
-                entity_id = "tumor",
-                read_counts = CollectCountsTumor.counts,
-                read_count_pon = read_count_pon,
-                number_of_eigensamples = number_of_eigensamples,
-                gatk4_jar_override = gatk4_jar_override,
-                gatk_docker = gatk_docker,
-                mem_gb = mem_gb_for_denoise_read_counts,
-                disk_space_gb = denoise_read_counts_tumor_disk,
-                preemptible_attempts = preemptible_attempts
-        }
-
     }
 
     Int model_segments_normal_portion = if defined(normal_bam) then ceil(size(CollectAllelicCountsNormal.allelic_counts, "GB")) else 0
-    Int model_segments_tumor_counts_portion = if (use_read_counts) then ceil(size(DenoiseReadCountsTumor.denoised_copy_ratios, "GB")) else 0
-    Int model_segments_tumor_disk = model_segments_tumor_counts_portion + ceil(size(CollectAllelicCountsTumor.allelic_counts, "GB")) + model_segments_normal_portion + disk_pad
+    Int model_segments_tumor_disk = ceil(size(CollectAllelicCountsTumor.allelic_counts, "GB")) + model_segments_normal_portion + disk_pad
     call ModelSegments as ModelSegmentsTumor {
         input:
             entity_id = "tumor",
-            denoised_copy_ratios = DenoiseReadCountsTumor.denoised_copy_ratios,
             allelic_counts = CollectAllelicCountsTumor.allelic_counts,
             normal_allelic_counts = CollectAllelicCountsNormal.allelic_counts,
             max_num_segments_per_chromosome = max_num_segments_per_chromosome,
@@ -244,12 +219,10 @@ workflow CNVSomaticPairWorkflow {
             preemptible_attempts = preemptible_attempts
     }
 
-    Int tumor_cr_size = select_first([ceil(size(DenoiseReadCountsTumor.standardized_copy_ratios, "GB")), 0]) + select_first([ceil(size(DenoiseReadCountsTumor.denoised_copy_ratios, "GB")), 0])
-    Int plot_tumor_disk = ref_size + tumor_cr_size + ceil(size(ModelSegmentsTumor.het_allelic_counts, "GB")) + ceil(size(ModelSegmentsTumor.modeled_segments, "GB")) + disk_pad
+    Int plot_tumor_disk = ref_size + ceil(size(ModelSegmentsTumor.het_allelic_counts, "GB")) + ceil(size(ModelSegmentsTumor.modeled_segments, "GB")) + disk_pad
     call PlotModeledSegments as PlotModeledSegmentsTumor {
         input:
             entity_id = "tumor",
-            denoised_copy_ratios = DenoiseReadCountsTumor.denoised_copy_ratios,
             het_allelic_counts = ModelSegmentsTumor.het_allelic_counts,
             modeled_segments = ModelSegmentsTumor.modeled_segments,
             ref_fasta_dict = ref_fasta_dict,
@@ -302,28 +275,12 @@ workflow CNVSomaticPairWorkflow {
                     preemptible_attempts = preemptible_attempts,
                     gcs_project_for_requester_pays = gcs_project_for_requester_pays
             }
-
-            Int denoise_read_counts_normal_disk = read_count_pon_size + ceil(size(CollectCountsNormal.counts, "GB")) + disk_pad
-            call DenoiseReadCounts as DenoiseReadCountsNormal {
-                input:
-                    entity_id = "normal",
-                    read_counts = CollectCountsNormal.counts,
-                    read_count_pon = read_count_pon,
-                    number_of_eigensamples = number_of_eigensamples,
-                    gatk4_jar_override = gatk4_jar_override,
-                    gatk_docker = gatk_docker,
-                    mem_gb = mem_gb_for_denoise_read_counts,
-                    disk_space_gb = denoise_read_counts_normal_disk,
-                    preemptible_attempts = preemptible_attempts
-            }
         }
 
-        Int model_segments_normal_counts_portion = if (use_read_counts) then ceil(size(DenoiseReadCountsNormal.denoised_copy_ratios, "GB")) else 0
-        Int model_segments_normal_disk = model_segments_normal_counts_portion + ceil(size(CollectAllelicCountsNormal.allelic_counts, "GB")) + disk_pad
+        Int model_segments_normal_disk =  ceil(size(CollectAllelicCountsNormal.allelic_counts, "GB")) + disk_pad
         call ModelSegments as ModelSegmentsNormal {
             input:
                 entity_id = "normal",
-                denoised_copy_ratios = DenoiseReadCountsNormal.denoised_copy_ratios,
                 allelic_counts = CollectAllelicCountsNormal.allelic_counts,
                 max_num_segments_per_chromosome = max_num_segments_per_chromosome,
                 min_total_allele_count = min_total_allele_count_normal,
@@ -352,12 +309,10 @@ workflow CNVSomaticPairWorkflow {
         }
 
 
-        Int normal_cr_size = if (use_read_counts) then ceil(size(DenoiseReadCountsNormal.denoised_copy_ratios, "GB")) else 0
-        Int plot_normal_segments_disk = normal_cr_size + ref_size + ceil(size(ModelSegmentsNormal.het_allelic_counts, "GB")) + ceil(size(ModelSegmentsNormal.modeled_segments, "GB")) + disk_pad
+        Int plot_normal_segments_disk = ref_size + ceil(size(ModelSegmentsNormal.het_allelic_counts, "GB")) + ceil(size(ModelSegmentsNormal.modeled_segments, "GB")) + disk_pad
         call PlotModeledSegments as PlotModeledSegmentsNormal {
             input:
                 entity_id = "normal",
-                denoised_copy_ratios = DenoiseReadCountsNormal.denoised_copy_ratios,
                 het_allelic_counts = ModelSegmentsNormal.het_allelic_counts,
                 modeled_segments = ModelSegmentsNormal.modeled_segments,
                 ref_fasta_dict = ref_fasta_dict,
@@ -382,8 +337,6 @@ workflow CNVSomaticPairWorkflow {
 
         #File allelic_counts_entity_id_tumor = CollectAllelicCountsTumor.entity_id
         File allelic_counts_tumor = CollectAllelicCountsTumor.allelic_counts
-        File? denoised_copy_ratios_tumor = DenoiseReadCountsTumor.denoised_copy_ratios
-        File? standardized_copy_ratios_tumor = DenoiseReadCountsTumor.standardized_copy_ratios
         File het_allelic_counts_tumor = ModelSegmentsTumor.het_allelic_counts
         File normal_het_allelic_counts_tumor = ModelSegmentsTumor.normal_het_allelic_counts
         #File copy_ratio_only_segments_tumor = ModelSegmentsTumor.copy_ratio_only_segments
@@ -404,8 +357,6 @@ workflow CNVSomaticPairWorkflow {
         File? read_counts_normal = CollectCountsNormal.counts
         #File? allelic_counts_entity_id_normal = CollectAllelicCountsNormal.entity_id
         File? allelic_counts_normal = CollectAllelicCountsNormal.allelic_counts
-        File? denoised_copy_ratios_normal = DenoiseReadCountsNormal.denoised_copy_ratios
-        File? standardized_copy_ratios_normal = DenoiseReadCountsNormal.standardized_copy_ratios
         File? het_allelic_counts_normal = ModelSegmentsNormal.het_allelic_counts
         File? normal_het_allelic_counts_normal = ModelSegmentsNormal.normal_het_allelic_counts
         #File? copy_ratio_only_segments_normal = ModelSegmentsNormal.copy_ratio_only_segments
@@ -656,52 +607,6 @@ task CollectAllelicCounts {
     output {
         String entity_id = base_filename
         File allelic_counts = allelic_counts_filename
-    }
-}
-
-task DenoiseReadCounts {
-    input {
-      String entity_id
-      File read_counts
-      File? read_count_pon
-      Int? number_of_eigensamples #use all eigensamples in panel by default
-      File? gatk4_jar_override
-
-      # Runtime parameters
-      String gatk_docker
-      Int? mem_gb
-      Int? disk_space_gb
-      Boolean use_ssd = false
-      Int? cpu
-      Int? preemptible_attempts
-    }
-
-    Int machine_mem_mb = select_first([mem_gb, 13]) * 1000
-    Int command_mem_mb = machine_mem_mb - 1000
-
-    command <<<
-        set -e
-        export GATK_LOCAL_JAR=~{default="/root/gatk.jar" gatk4_jar_override}
-
-        gatk --java-options "-Xmx~{command_mem_mb}m" DenoiseReadCounts \
-            --input ~{read_counts} \
-            ~{"--count-panel-of-normals " + read_count_pon} \
-            ~{"--number-of-eigensamples " + number_of_eigensamples} \
-            --standardized-copy-ratios ~{entity_id}.standardizedCR.tsv \
-            --denoised-copy-ratios ~{entity_id}.denoisedCR.tsv
-    >>>
-
-    runtime {
-        docker: "~{gatk_docker}"
-        memory: machine_mem_mb + " MB"
-        disks: "local-disk " + disk_space_gb + if use_ssd then " SSD" else " HDD"
-        cpu: select_first([cpu, 1])
-        preemptible: select_first([preemptible_attempts, 5])
-    }
-
-    output {
-        File standardized_copy_ratios = "~{entity_id}.standardizedCR.tsv"
-        File denoised_copy_ratios = "~{entity_id}.denoisedCR.tsv"
     }
 }
 
