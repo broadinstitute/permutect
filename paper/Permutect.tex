@@ -4,6 +4,16 @@
 \usepackage{graphicx}
 \setlength{\parindent}{15pt}
 
+% Put this in your preamble
+\newcommand{\dummyfig}[1]{
+  \centering
+  \fbox{
+    \begin{minipage}[c][0.33\textheight][c]{0.5\textwidth}
+      \centering{#1}
+    \end{minipage}
+  }
+}
+
 % Please give the surname of the lead author for the running footer
 \leadauthor{Benjamin} 
 
@@ -33,6 +43,8 @@
 %the command above serves to have a word count for the abstract
 \begin{abstract}
 We present Permutect (Permutation-Invariant Mutect), the successor to Mutect2.  Permutect combines a novel machine learning model of technical error with a probabilistic model of sample-specific biology, Permutect is able to genotype somatic and germline variants despite being trained using only germline data.  By encoding permutation symmetry within a set of reads into its architecture, Permutect can obtain accurate results with very few parameters.
+
+Compared to other leading somatic variant calling tools, Permutect has a better balance of sensitivity and precision ($F_1$ score), more consistent performance between tumor-only and tumor-normal settings, low computational requirements, and requires extremely little data for training new models.
 \end {abstract}
 %TC:break main
 %the command above serves to have a word count for the abstract
@@ -75,11 +87,58 @@ Reliable truth data for somatic mutations is extremely rare.  One can generate s
 
 Our simulated data includes the popular DREAM challenge WGS tumor-normal pairs\cite{dream}, as well as our own synthetic data that we generated from Illumina HiseqX and Novaseq whole genomes sequenced at the Broad Institute.  Whereas the DREAM challenge pairs split the reads from a single normal BAM file and add mutations in silico to one of the halves to form a ``tumor" and ``normal", our simulated tumor and normal come from independently-sequenced replicates of the same normal sample, adding a slight layer of extra realism.  To model different tumor purities, we generated synthetic tumors at various somatic mutation allele frequencies.
 
+% Put this where you want the figure
+\begin{figure}[htbp]
+  \dummyfig{Placeholder: Synthetic BAM results here}
+  \caption{Several sub-figures for allele fractions of 5\%, 10\%, 25\%, and 50\% synthetic (BAMSurgeon) tumor-only and tumor-normal calls.  Separate plots for SNV/indel, WES/WGS.  x-axis is tool, y-axis is sensitivity, precision, $F_1$.}
+  \label{fig:placeholder}
+\end{figure}
+
+% Put this where you want the figure
+\begin{figure}[htbp]
+  \dummyfig{Placeholder: DREAM challenge results here}
+  \caption{Several sub-figures for DREAM challenges 1, 2, 3, and 4 tumor-only and tumor-normal calls.  Separate plots for SNV/indel, WES/WGS.  x-axis is tool, y-axis is sensitivity, precision, $F_1$.}
+  \label{fig:placeholder}
+\end{figure}
+
 
 \subsection*{SEQC2 sample}
 Because wet lab techniques for validating somatic mutations are very expensive, it is tempting to instead determine truth as the consensus between different variant calling pipelines.  In our opinion this usually results in ``truth" data of dubious quality.  The errors of different algorithms are not independent, and therefore relying on a majority vote among them only gives an illusion of statistical power.  For example, variants with low allele fraction are difficult for all algorithms; hence consensus callsets tend to omit such variants.
 
 The SEQC2 Consortium\cite{seqc2} have meticulously created truth data for a breast cancer cell line that avoids the usual shortcomings of consensus data.  Rather than simply combining several variant calling algorithms, they used multiple variant callers, multiple alignment algorithms, multiple sequencing technologies, and multiple sequencing centers.  Additionally, they validated candidate mutations with extremely deep (greater than 2000x coverage) targeted sequencing.  Finally, they validated a random subset of their results with wet lab techniques and showed that their high-confidence truth set is very reliable.
+
+Additionally, the SEQC2 cell line was prepared in FFPE conditions with different digestion times and sequenced.
+
+% Put this where you want the figure
+\begin{figure}[htbp]
+  \dummyfig{Placeholder: SEQC2 results here}
+  \caption{Sensitivity, precision, and $F_1$ scores on the SEQC2 HiSeqX and Novaseq replicates.  Separate plots for SNV/indel, WES/WGS.  x-axis is tool, y-axis is sensitivity, precision, $F_1$.}
+  \label{fig:placeholder}
+\end{figure}
+
+% Put this where you want the figure
+\begin{figure}[htbp]
+  \dummyfig{Placeholder: SEQC2 FFPE results here}
+  \caption{Sensitivity, precision, and $F_1$ scores on the SEQC2 FFPE digestion time series.  Separate plots for SNV/indel, WES/WGS. x-axis is tool (with multiple bars for tool for digestion times of 2, 4, 6, and 24 hours), y-axis is sensitivity, precision, $F_1$.}
+  \label{fig:placeholder}
+\end{figure}
+
+% Put this where you want the figure
+\begin{figure}[htbp]
+  \dummyfig{Placeholder: SEQC2 depth and allele fraction series}
+  \caption{Sensitivity, precision, and $F_1$ scores on the SEQC2 WGS depth series.  Separate plots for SNV/indel and different tumor:normal ratios (1:1, 1:3, 1:9, 1:19). x-axis is tool (with multiple bars for tool for depth of 30x, 50x, 100x, and 300x), y-axis is sensitivity, precision, $F_1$.}
+  \label{fig:placeholder}
+\end{figure}
+
+\subsection*{Computational Resources}
+We compared Permutect's RAM requirements and runtime against other tools.
+
+% Put this where you want the figure
+\begin{figure}[htbp]
+  \dummyfig{Placeholder: RAM and CPU}
+  \caption{RAM requirements and CPU/GPU time for different tools' pipeline on WGS samples of different depths.  Two plots -- one RAM, one runtime -- each with multiple lines -- one line per tool.  x-axis is average depth 30x, 50x, 100x, 300x; y-axis is RAM in Gb or runtime in hours.}
+  \label{fig:placeholder}
+\end{figure}
 
 \section*{Methods}
 \subsection*{Labeling training data} 
