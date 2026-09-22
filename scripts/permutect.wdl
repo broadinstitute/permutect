@@ -1,6 +1,6 @@
 version 1.0
 
-import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2/versions/20/plain-WDL/descriptor" as m2
+import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/52/plain-WDL/descriptor" as m2
 
 workflow Permutect {
     input {
@@ -35,6 +35,12 @@ workflow Permutect {
         File? test_dataset_truth_vcf    # used for evaluation
         File? test_dataset_truth_vcf_idx
         String? concordance_header
+
+        # segmentation arguments
+        File? common_hets_for_segmentation
+        String? collect_allelic_counts_extra_args
+        Int? model_segments_min_total_allele_count
+        String? model_segments_extra_args
 
         # These HACKS are required to get around Terra's unreliable call-caching
         # note: defining them as Strings instead of Files is essential because otherwise
@@ -128,6 +134,11 @@ workflow Permutect {
                 m2_extra_args = m2_extra_args,
                 make_bamout = false,
 
+                common_hets_for_segmentation = common_hets_for_segmentation,
+                collect_allelic_counts_extra_args = collect_allelic_counts_extra_args,
+                model_segments_min_total_allele_count = model_segments_min_total_allele_count,
+                model_segments_extra_args = model_segments_extra_args,
+
                 gatk_docker = permutect_docker,
                 gcs_project_for_requester_pays = gcs_project_for_requester_pays_hack,
                 gatk_override = gatk_override,
@@ -202,6 +213,11 @@ workflow Permutect {
         String maf_segments = select_first([Mutect2.maf_segments, cached_maf_segments_hack])
         String normal_maf_segments = select_first([Mutect2.normal_maf_segments, cached_normal_maf_segments_hack])
         String mutect_stats = select_first([Mutect2.mutect_stats, cached_mutect_stats_hack])
+
+        File? modeled_segments_tumor = Mutect2.modeled_segments_tumor
+        File? modeled_segments_plot_tumor = Mutect2.modeled_segments_plot_tumor
+        File? modeled_segments_normal = Mutect2.modeled_segments_normal
+        File? modeled_segments_plot_normal = Mutect2.modeled_segments_plot_normal
 
         File? fn = PermutectConcordance.fn
         File? fn_idx = PermutectConcordance.fn_idx
