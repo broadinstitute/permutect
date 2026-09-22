@@ -122,8 +122,8 @@ workflow Permutect {
                 normal_reads_index = control_bai_hack,
 
                 scatter_count = scatter_count,
-                gnomad = gnomad_hack,
-                gnomad_idx = gnomad_idx_hack,
+                germline_resource = gnomad_hack,
+                germline_resource_idx = gnomad_idx_hack,
                 variants_for_contamination = variants_for_contamination_hack,
                 variants_for_contamination_idx = variants_for_contamination_idx_hack,
                 skip_filtering = skip_m2_filtering,
