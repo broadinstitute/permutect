@@ -1,6 +1,6 @@
 version 1.0
 
-import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2/versions/20/plain-WDL/descriptor" as m2
+import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/53/plain-WDL/descriptor" as m2
 
 workflow Permutect {
     input {
@@ -30,6 +30,10 @@ workflow Permutect {
         Boolean filter_pcr_errors = false   # run pre_permutect_filtering, which applies the hairpin filter
         String? m2_extra_args
         String? split_intervals_extra_args
+        File? common_hets_for_segmentation  # Mutect2 runs ModelSegments if and only if this is given
+        String? collect_allelic_counts_extra_args
+        Int? model_segments_min_total_allele_count
+        String? model_segments_extra_args
         Int batch_size
         Int num_workers
         Int? gpu_count
@@ -85,6 +89,7 @@ workflow Permutect {
     File? variants_for_contamination_idx_hack = if select_first([variants_for_contamination_idx, ""]) == "" then EMPTY_STRING_HACK else variants_for_contamination_idx
     File? realignment_index_bundle_hack = if select_first([realignment_index_bundle, ""]) == "" then EMPTY_STRING_HACK else realignment_index_bundle
     File? dragstr_model_hack = if select_first([dragstr_model, ""]) == "" then EMPTY_STRING_HACK else dragstr_model
+    File? common_hets_for_segmentation_hack = if select_first([common_hets_for_segmentation, ""]) == "" then EMPTY_STRING_HACK else common_hets_for_segmentation
     File? test_dataset_truth_vcf_hack = if select_first([test_dataset_truth_vcf, ""]) == "" then EMPTY_STRING_HACK else test_dataset_truth_vcf
     File? test_dataset_truth_vcf_idx_hack = if select_first([test_dataset_truth_vcf_idx, ""]) == "" then EMPTY_STRING_HACK else test_dataset_truth_vcf_idx
 
@@ -117,8 +122,8 @@ workflow Permutect {
                 normal_reads_index = control_bai_hack,
 
                 scatter_count = scatter_count,
-                gnomad = gnomad_hack,
-                gnomad_idx = gnomad_idx_hack,
+                germline_resource = gnomad_hack,
+                germline_resource_idx = gnomad_idx_hack,
                 variants_for_contamination = variants_for_contamination_hack,
                 variants_for_contamination_idx = variants_for_contamination_idx_hack,
                 skip_filtering = skip_m2_filtering,
@@ -127,6 +132,10 @@ workflow Permutect {
                 dragstr_model = dragstr_model_hack,
                 run_orientation_bias_mixture_model_filter = run_orientation_bias_mixture_model_filter,
                 m2_extra_args = m2_extra_args,
+                common_hets_for_segmentation = common_hets_for_segmentation_hack,
+                collect_allelic_counts_extra_args = collect_allelic_counts_extra_args,
+                model_segments_min_total_allele_count = model_segments_min_total_allele_count,
+                model_segments_extra_args = model_segments_extra_args,
                 make_bamout = false,
 
                 gatk_docker = permutect_docker,
@@ -157,6 +166,11 @@ workflow Permutect {
         }
     }
 
+    # minor allele fraction segments from Mutect2's ModelSegments if Mutect2 ran, otherwise the cached segments.
+    # Unlike select_first, this allows the segments to be absent.
+    File? tumor_segments = if defined(Mutect2.modeled_segments_tumor) then Mutect2.modeled_segments_tumor else cached_maf_segments_hack
+    File? normal_segments = if defined(Mutect2.modeled_segments_normal) then Mutect2.modeled_segments_normal else cached_normal_maf_segments_hack
+
     call PermutectFiltering {
         input:
             mutect2_vcf = select_first([PrePermutectFiltering.output_vcf, SplitMultiallelics.output_vcf]),
@@ -164,8 +178,8 @@ workflow Permutect {
             artifact_model = artifact_model,
             test_dataset = select_first([Mutect2.permutect_test_dataset, cached_dataset_hack]),
             contigs_table = select_first([Mutect2.permutect_contigs_table, cached_contigs_table_hack]),
-            maf_segments = select_first([Mutect2.maf_segments, cached_maf_segments_hack]),
-            normal_maf_segments = select_first([Mutect2.normal_maf_segments, cached_normal_maf_segments_hack]),
+            maf_segments = tumor_segments,
+            normal_maf_segments = normal_segments,
             mutect_stats = select_first([Mutect2.mutect_stats, cached_mutect_stats_hack]),
             batch_size = batch_size,
             num_workers = num_workers,
@@ -210,8 +224,9 @@ workflow Permutect {
         String mutect2_vcf = select_first([Mutect2.output_vcf, cached_mutect2_vcf_hack])
         String mutect2_vcf_idx = select_first([Mutect2.output_vcf_idx, cached_mutect2_vcf_idx_hack])
         String contigs_table = select_first([Mutect2.permutect_contigs_table, cached_contigs_table_hack])
-        String maf_segments = select_first([Mutect2.maf_segments, cached_maf_segments_hack])
-        String normal_maf_segments = select_first([Mutect2.normal_maf_segments, cached_normal_maf_segments_hack])
+        # the segments given to PermutectFiltering, for use as cached segments in later runs
+        String? maf_segments = tumor_segments
+        String? normal_maf_segments = normal_segments
         String mutect_stats = select_first([Mutect2.mutect_stats, cached_mutect_stats_hack])
 
         File? fn = PermutectConcordance.fn
@@ -228,6 +243,11 @@ workflow Permutect {
         File? filter_analysis = PermutectConcordance.filter_analysis
 
         File? m2_concordance_summary = M2Concordance.summary
+
+        File? modeled_segments_tumor = Mutect2.modeled_segments_tumor
+        File? modeled_segments_plot_tumor = Mutect2.modeled_segments_plot_tumor
+        File? modeled_segments_normal = Mutect2.modeled_segments_normal
+        File? modeled_segments_plot_normal = Mutect2.modeled_segments_plot_normal
     }
 }
 

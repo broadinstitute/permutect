@@ -17,8 +17,9 @@ HG38_CHR20_REFERENCE = os.path.join(integration_test_dir, "Homo_sapiens_assembly
 HG38_CHR20_REFERENCE_INDEX = HG38_CHR20_REFERENCE + ".fai"
 HG38_CHR20_REFERENCE_DICT = os.path.join(integration_test_dir, "Homo_sapiens_assembly38_chr20.dict")
 SEQC2_WES_PLAIN_TEXT_DATA = os.path.join(integration_test_dir, "seqc2-wes-chr20-plain-text.dataset")
-# a uniform minor allele fraction of 0.5, the same as having no segmentation
-SEQC2_WES_SEGMENTS_TABLE = os.path.join(integration_test_dir, "seqc2-wes-chr20-segments.table")
+# GATK ModelSegments output
+SEQC2_WES_TUMOR_SEGMENTS = os.path.join(integration_test_dir, "seqc2-wes-tumor.modelFinal.seg")
+SEQC2_WES_NORMAL_SEGMENTS = os.path.join(integration_test_dir, "seqc2-wes-normal.modelFinal.seg")
 
 ARTIFACT_MODEL_V_0_4_0 = os.path.join(integration_test_dir, "artifact-model-v0.4.0.pt")
 PERMUTECT_V0_9_2_ARTIFACT_MODEL = os.path.join(integration_test_dir, "permutect-v0.9.2-artifact-model.pt")
