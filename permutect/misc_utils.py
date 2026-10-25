@@ -35,30 +35,6 @@ class ConsistentValue:
             assert self.value == value, "inconsistent values"
 
 
-class MutableInt:
-    def __init__(self, value: int = 0):
-        self.value = value
-
-    def __str__(self):
-        return str(self.value)
-
-    def increment(self, amount: int = 1):
-        self.value += amount
-
-    def decrement(self, amount: int = 1):
-        self.value -= amount
-
-    def get_and_then_increment(self):
-        self.value += 1
-        return self.value - 1
-
-    def get(self):
-        return self.value
-
-    def set(self, value: int):
-        self.value = value
-
-
 def gpu_if_available(exploit_mps=False) -> torch.device:
     if torch.cuda.is_available():
         d = "cuda"
