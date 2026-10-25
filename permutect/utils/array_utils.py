@@ -16,6 +16,12 @@ def flattened_indices(shape: Tuple[int, ...], idx: Tuple[IntTensor, ...]):
     S_D and index I_D then the flattened index F_D is F_{D-1} * S_D + I_D, because every combination of the indices
     0,1. . .D-1 can be associated with any of S_D values of index D.  Thus flattened indices can be computed with
     a quick recursion.
+
+    This is equivalent to numpy's ravel_multi_index (torch has no equivalent), but don't replace it with that!  Using
+    ravel_multi_index on torch tensors requires a round trip to numpy, which is much slower for large batches:
+    2-3x slower on CPU at ~100K elements, and 15-40x slower on GPU (measured on MPS) at all batch sizes, because
+    of the device -> host -> device copy and synchronization.  Two other differences: unlike ravel_multi_index,
+    this does no bounds checking, and shape[0] is never used so it may be None.
     """
     assert len(shape) == len(idx)
     dim = len(shape)
