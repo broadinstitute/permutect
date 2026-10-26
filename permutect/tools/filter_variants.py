@@ -636,9 +636,17 @@ def apply_filtering_to_vcf(
             total_alt_depth = np.sum(v.format("AD")[tumor_sample_index][1:])
             if total_alt_depth == 0:
                 filters.add(FILTER_NAMES[Call.SEQ_ERROR])
+            # without a posterior Permutect has no call to make, so keep the input's filters rather than writing PASS
+            if v.FILTER is not None:
+                filters.update(v.FILTER.split(";"))
             missing_encodings.append(encoding)
         v.FILTER = ";".join(filters) if filters else "PASS"
         writer.write_record(v)
+    if missing_encodings:
+        print(
+            f"{len(missing_encodings)} variants in the input VCF had no Permutect posterior, for example because they "
+            f"are missing from the dataset, and keep their input filters.  Examples: {', '.join(missing_encodings[:5])}"
+        )
     print("closing resources")
     writer.close()
     unfiltered_vcf.close()
