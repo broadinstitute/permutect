@@ -130,13 +130,14 @@ def parse_arguments(argv=None):
     parser.add_argument(
         "--" + constants.MAF_SEGMENTS_NAME,
         required=False,
-        help="copy-number segmentation file from GATK containing minor allele fractions.  "
+        help="minor allele fraction segmentation from GATK ModelSegments (modelFinal.seg) or CalculateContamination.  "
         "Useful for modeling germline variation as the minor allele fraction determines the distribution of germline allele counts.",
     )
     parser.add_argument(
         "--" + constants.NORMAL_MAF_SEGMENTS_NAME,
         required=False,
-        help="copy-number segmentation file from GATK containing minor allele fractions in the normal/control sample",
+        help="minor allele fraction segmentation of the normal/control sample, in the same formats as --"
+        + constants.MAF_SEGMENTS_NAME,
     )
 
     parser.add_argument(
@@ -170,19 +171,37 @@ def parse_arguments(argv=None):
 
 
 def get_segmentation(segments_file) -> defaultdict:
+    """
+    Minor allele fractions by contig and position from either the modelFinal.seg output of GATK ModelSegments or the
+    tumor segmentation output of GATK CalculateContamination.  ModelSegments has SAM-style @ header lines, upper case
+    column names, and posterior percentiles of the minor allele fraction, of which we use the median.
+    CalculateContamination has #<METADATA> header lines and lower case column names.  Both have 1-based, closed intervals.
+    """
     result = defaultdict(IntervalTree)
     if segments_file is None:
         return result
 
     print("reading segmentation file")
     with open(segments_file, "r") as file:
-        for line in file:
-            if line.startswith("#") or (line.startswith("contig") and "minor_allele_fraction" in line):
-                continue
+        lines = (line for line in file if not line.startswith(("@", "#")))
+        columns = [column.lower() for column in next(lines).split()]
+        maf_column = (
+            "minor_allele_fraction_posterior_50"
+            if "minor_allele_fraction_posterior_50" in columns
+            else "minor_allele_fraction"
+        )
+        contig_idx, start_idx, end_idx, maf_idx = (columns.index(c) for c in ("contig", "start", "end", maf_column))
+        for line in lines:
             tokens = line.split()
-            contig, start, stop, maf = tokens[0], int(tokens[1]), int(tokens[2]), float(tokens[3])
-            if stop > start:  # IntervalTree throws error if start == stop
-                result[contig][start:stop] = maf
+            contig, start, end, maf = (
+                tokens[contig_idx],
+                int(tokens[start_idx]),
+                int(tokens[end_idx]),
+                float(tokens[maf_idx]),
+            )
+            # ModelSegments gives NaN for segments without het sites, which get the default minor allele fraction instead
+            if not math.isnan(maf):
+                result[contig][start : end + 1] = maf  # IntervalTree intervals are half-open
 
     return result
 

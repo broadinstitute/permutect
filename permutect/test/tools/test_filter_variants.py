@@ -85,6 +85,10 @@ def test_filtering_on_seqc2_wes_chr20():
             "60000000",
             "--" + constants.CONTIGS_TABLE_NAME,
             HG38_CONTIGS_TABLE,
+            "--" + constants.MAF_SEGMENTS_NAME,
+            SEQC2_WES_TUMOR_SEGMENTS,
+            "--" + constants.NORMAL_MAF_SEGMENTS_NAME,
+            SEQC2_WES_NORMAL_SEGMENTS,
             "--" + constants.BATCH_SIZE_NAME,
             "64",
             "--" + constants.NUM_WORKERS_NAME,
@@ -117,3 +121,24 @@ def test_filtering_on_seqc2_wes_chr20():
     target_records = [v for v in cyvcf2.VCF(permutect_vcf.name) if v.CHROM == "chr20" and v.POS == 4932703]
     assert len(target_records) == 1
     assert pre_permutect_filtering.HAIRPIN_FILTER in target_records[0].FILTER.split(";")
+
+
+def segment_mafs(segmentation, contig: str, position: int) -> list[float]:
+    return [interval.data for interval in segmentation[contig][position]]
+
+
+def test_get_segmentation_from_model_segments():
+    segmentation = filter_variants.get_segmentation(SEQC2_WES_TUMOR_SEGMENTS)
+    # the segment chr20:187825-2536731 has median minor allele fraction posterior 0.176770
+    for position in (187825, 1000000, 2536731):
+        assert segment_mafs(segmentation, "chr20", position) == [pytest.approx(0.176770)]
+    # before the first chr20 segment, and between it and the next segment, which starts at 2537107
+    assert segment_mafs(segmentation, "chr20", 187824) == []
+    assert segment_mafs(segmentation, "chr20", 2536732) == []
+
+
+def test_get_segmentation_from_calculate_contamination():
+    segmentation = filter_variants.get_segmentation(SEGMENTS_TABLE)
+    for position in (17280822, 51065361):
+        assert segment_mafs(segmentation, "22", position) == [pytest.approx(0.44015695469901417)]
+    assert segment_mafs(segmentation, "22", 51065362) == []

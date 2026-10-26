@@ -45,8 +45,8 @@ def run_permutect_wdl(working_dir, filter_pcr_errors: bool) -> dict:
         "Permutect.cached_mutect2_vcf": MUTECT2_SEQC2_WES_VCF,
         "Permutect.cached_mutect2_vcf_idx": MUTECT2_SEQC2_WES_VCF_INDEX,
         "Permutect.cached_contigs_table": HG38_CONTIGS_TABLE,
-        "Permutect.cached_maf_segments": SEQC2_WES_SEGMENTS_TABLE,
-        "Permutect.cached_normal_maf_segments": SEQC2_WES_SEGMENTS_TABLE,
+        "Permutect.cached_maf_segments": SEQC2_WES_TUMOR_SEGMENTS,
+        "Permutect.cached_normal_maf_segments": SEQC2_WES_NORMAL_SEGMENTS,
         "Permutect.cached_mutect_stats": MUTECT2_SEQC2_WES_STATS,
         "Permutect.permutect_docker": PERMUTECT_TEST_DOCKER,
     }
