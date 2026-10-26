@@ -5,12 +5,17 @@ Fast checks of the WDL scripts that need neither Cromwell nor Docker.
 import glob
 import os
 import re
+import shlex
 import subprocess
+import sys
 
+from permutect import constants
 from permutect.test.test_file_names import test_dir
+from permutect.tools import edit_dataset
 
 SCRIPTS_DIR = os.path.abspath(os.path.join(test_dir, "..", "..", "scripts"))
 COMPARE_WDL = os.path.join(SCRIPTS_DIR, "compare_permutect_results.wdl")
+EDIT_DATASET_WDL = os.path.join(SCRIPTS_DIR, "permutect_edit_dataset.wdl")
 
 # a stand-in for gatk SelectVariants: copy the -V input to the -O output and write an index
 FAKE_GATK = """#!/bin/bash
@@ -41,6 +46,20 @@ def test_index_inputs_are_given_index_files():
     assert not wrong, f"index inputs bound to something other than an index: {wrong}"
 
 
+def test_command_placeholders_start_with_a_tilde():
+    # a placeholder written {" --source " + new_source} instead of ~{...} reaches bash as literal text
+    missing_tilde = []
+    for wdl in glob.glob(os.path.join(SCRIPTS_DIR, "*.wdl")):
+        with open(wdl) as file:
+            text = file.read()
+        for command in re.finditer(r"command\s*<<<(.*?)>>>", text, re.S):
+            for placeholder in re.finditer(r'(?<![~$])\{\s*(?:"|true=|false=|sep=|default=)', command.group(1)):
+                line_number = text.count("\n", 0, command.start(1) + placeholder.start()) + 1
+                missing_tilde.append(f"{os.path.basename(wdl)}:{line_number}")
+
+    assert not missing_tilde, f"command placeholders missing their ~: {missing_tilde}"
+
+
 def task_command(wdl_path: str, task_name: str) -> str:
     with open(wdl_path) as file:
         wdl = file.read()
@@ -63,6 +82,26 @@ def fill_placeholders(command: str, inputs: dict) -> str:
         return (prefix or "") + str(value)
 
     return re.sub(r'~\{(?:default="([^"]*)"\s+)?(?:"([^"]*)"\s*\+\s*)?(\w+)\}', fill, command)
+
+
+def edit_dataset_arguments(monkeypatch, new_source):
+    command = fill_placeholders(
+        task_command(EDIT_DATASET_WDL, "EditDataset"),
+        {"train_tar": "data.tar", "new_source": new_source, "edit_type": "keep_everything", "extra_args": None},
+    )
+    words = shlex.split(command.replace("\\\n", " "))
+    monkeypatch.setattr(sys, "argv", words[words.index("edit_dataset") :])
+    return edit_dataset.parse_arguments()
+
+
+def test_edit_dataset_command(monkeypatch):
+    arguments = edit_dataset_arguments(monkeypatch, new_source=3)
+    assert getattr(arguments, constants.TRAIN_TAR_NAME) == ["data.tar"]
+    assert getattr(arguments, constants.SOURCE_NAME) == 3
+
+    arguments = edit_dataset_arguments(monkeypatch, new_source=None)
+    assert getattr(arguments, constants.TRAIN_TAR_NAME) == ["data.tar"]
+    assert getattr(arguments, constants.SOURCE_NAME) is None
 
 
 def compare_command(working_dir) -> str:

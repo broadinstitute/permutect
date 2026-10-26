@@ -50,7 +50,7 @@ task EditDataset {
 
         edit_dataset \
             --train_tar ~{train_tar} \
-            {" --source " + new_source} \
+            ~{" --source " + new_source} \
             --dataset_edit ~{edit_type} \
             --output edited_dataset.tar \
             ~{extra_args}
