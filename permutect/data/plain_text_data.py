@@ -508,4 +508,5 @@ def convert_quantile_normalized_to_uint8(data: np.ndarray):
 
 
 def convert_uint8_to_quantile_normalized(data: np.ndarray):
-    return np.ndarray.astype((data - 128) / 32, FLOAT_DTYPE)
+    # cast before subtracting: uint8 - 128 stays uint8 and wraps around for every byte below 128
+    return np.ndarray.astype((data.astype(np.float32) - 128) / 32, FLOAT_DTYPE)
