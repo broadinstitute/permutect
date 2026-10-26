@@ -20,6 +20,10 @@ system-requirements = { cuda = "13.0" }
 permutect = { path = ".", editable = true, extras = ["dev"] }
 torch = { version = ">=2.10.0,<2.11", index = "https://download.pytorch.org/whl/cu130" }
 
+# the newest Python permutect supports, so that CI also tests it; the default environment locks an older one
+[feature.py313.dependencies]
+python = "3.13.*"
+
 # for running scripts/permutect.wdl locally with Cromwell, which needs Java 17
 [feature.wdl.dependencies]
 openjdk = "17.*"
@@ -35,10 +39,11 @@ test-wdl = { cmd = "pytest permutect/test/wdl -v", depends-on = ["download-cromw
 
 [environments]
 default = { features = ["cpu"], solve-group = "default" }
+py313 = { features = ["cpu", "py313"], solve-group = "py313" }
 gpu = { features = ["gpu"], solve-group = "gpu" }
 wdl = { features = ["cpu", "wdl"], solve-group = "default" }
 
 [tasks]
 test = "pytest permutect/test -x -v"
-test-unit = "pytest permutect/test/utils permutect/test/architecture permutect/test/data -x -v"
+test-unit = "pytest permutect/test/utils permutect/test/architecture permutect/test/data permutect/test/training permutect/test/metrics permutect/test/wdl/test_wdl_scripts.py -x -v"
 install-hooks = "ln -sf ../../scripts/pre-commit .git/hooks/pre-commit && echo 'Pre-commit hook installed.'"

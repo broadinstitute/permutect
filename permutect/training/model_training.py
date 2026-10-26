@@ -18,7 +18,6 @@ from tqdm import trange
 from permutect.architecture.artifact_model import ArtifactModel
 from permutect.architecture.artifact_model import record_embeddings
 from permutect.data.batch import Batch
-from permutect.data.batch import BatchProperty
 from permutect.data.batch import DownsampledBatch
 from permutect.data.count_binning import alt_count_bin_index
 from permutect.data.count_binning import alt_count_bin_name
@@ -166,7 +165,7 @@ def train_one_epoch(
     # done with this parent batch
     check_for_nan(model)
     if epoch_type == Epoch.TRAIN:
-        mean_loss = torch.mean(loss_recorder.primary_metrics.get_marginal(BatchProperty.LABEL)).item()
+        mean_loss = loss_recorder.mean_loss()
         train_scheduler.step(mean_loss)
 
     generate_plots = epoch % epochs_per_evaluation == 0 or epoch == last_epoch
@@ -194,7 +193,6 @@ def train_one_epoch(
         )
 
     if epoch_type == Epoch.TRAIN:
-        mean_loss = torch.mean(loss_recorder.primary_metrics.get_marginal(BatchProperty.LABEL))
         checkpoint.save_checkpoint_if_needed(epoch, mean_loss)
         checkpoint.load_checkpoint_if_needed(mean_loss)
 

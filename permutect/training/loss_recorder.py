@@ -1,6 +1,9 @@
+import torch
+
 from permutect.architecture.artifact_model import BatchLosses
 from permutect.architecture.artifact_model import BatchOutput
 from permutect.data.batch import Batch
+from permutect.data.batch import BatchProperty
 from permutect.metrics.loss_metrics import LossMetrics
 
 
@@ -18,6 +21,16 @@ class LossRecorder:
         self.primary_metrics.record(batch, losses.supervised_losses_b, labeled_weights)
         self.primary_metrics.record(batch, losses.unsupervised_losses_b, unlabeled_weights)
         self.count_metrics.record(batch, losses.alt_count_losses_b, output.weights)
+
+    def mean_loss(self) -> float:
+        """
+        Mean over labels of each label's average semi-supervised loss.  Labels without data, such as artifact and
+        variant when all data are unlabeled, are skipped instead of contributing 0/0 = NaN.  NaN only if there are no data.
+        """
+        totals_l = self.primary_metrics.totals_slvra.get_marginal(BatchProperty.LABEL)
+        counts_l = self.primary_metrics.counts_slvra.get_marginal(BatchProperty.LABEL)
+        has_data_l = counts_l > 0
+        return torch.mean(totals_l[has_data_l] / counts_l[has_data_l]).item()
 
     def output_results(self, epoch_type, epoch, summary_writer, generate_plots):
         self.primary_metrics.put_on_cpu()

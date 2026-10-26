@@ -45,12 +45,12 @@ workflow ComparePermutect {
     call Compare {
         input:
             permutect_ffn = PermutectConcordance.ffn,
-            permutect_ffn_idx = PermutectConcordance.ffn,
+            permutect_ffn_idx = PermutectConcordance.ffn_idx,
             other_ffn = OtherConcordance.ffn,
             other_ffn_idx = OtherConcordance.ffn_idx,
 
             permutect_fp = PermutectConcordance.fp,
-            permutect_fp_idx = PermutectConcordance.fp,
+            permutect_fp_idx = PermutectConcordance.fp_idx,
             other_fp = OtherConcordance.fp,
             other_fp_idx = OtherConcordance.fp_idx,
 
@@ -179,6 +179,7 @@ task Compare {
 	}
 
     command <<<
+        set -e
         export GATK_LOCAL_JAR=~{default="/root/gatk.jar" gatk_override}
 
         gatk --java-options "-Xmx2g" SelectVariants \
@@ -201,28 +202,28 @@ task Compare {
         cat ~{other_summary} >> summary.txt
         printf "\n" >> summary.txt
 
-        echo "Permutect FFN count:"
+        printf "Permutect FFN count: " >> summary.txt
         grep -v '#' ~{permutect_ffn} | wc -l >> summary.txt
 
-        echo "Other tool FFN count:"
+        printf "Other tool FFN count: " >> summary.txt
         grep -v '#' ~{other_ffn} | wc -l >> summary.txt
 
-        echo "Permutect FP count:"
+        printf "Permutect FP count: " >> summary.txt
         grep -v '#' ~{permutect_fp} | wc -l >> summary.txt
 
-        echo "Other tool FP count:"
+        printf "Other tool FP count: " >> summary.txt
         grep -v '#' ~{other_fp} | wc -l >> summary.txt
 
-        echo "Permutect created FFN count:"
+        printf "Permutect created FFN count: " >> summary.txt
         grep -v '#' ffn_created_by_permutect.vcf | wc -l >> summary.txt
 
-        echo "Permutect fixed FFN count:"
+        printf "Permutect fixed FFN count: " >> summary.txt
         grep -v '#' ffn_fixed_by_permutect.vcf | wc -l >> summary.txt
 
-        echo "Permutect created FP count:"
+        printf "Permutect created FP count: " >> summary.txt
         grep -v '#' fp_created_by_permutect.vcf | wc -l >> summary.txt
 
-        echo "Permutect fixed FP count:"
+        printf "Permutect fixed FP count: " >> summary.txt
         grep -v '#' fp_fixed_by_permutect.vcf | wc -l >> summary.txt
     >>>
 

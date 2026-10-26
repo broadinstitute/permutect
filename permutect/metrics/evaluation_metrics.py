@@ -353,21 +353,23 @@ class EmbeddingMetrics:
 
             idx = sample_indices_for_tensorboard(np.hstack((boring_to_keep, np.array([int(n) for n in interesting]))))
 
-            summary_writer.add_embedding(
-                stacked_features[idx],
-                metadata=[all_metadata[round(n)] for n in idx.tolist()],
-                metadata_header=["Labels", "Correctness", "Types", "Counts"],
-                tag=prefix + "embedding for variant type " + variant_name,
-                global_step=epoch,
-            )
-            if self.ref_features:
+            # skip variant types without data, e.g. indels in an SNV-only panel; tensorboard fails on empty embeddings
+            if len(idx) > 0:
                 summary_writer.add_embedding(
-                    stacked_ref_features[idx],
+                    stacked_features[idx],
                     metadata=[all_metadata[round(n)] for n in idx.tolist()],
                     metadata_header=["Labels", "Correctness", "Types", "Counts"],
-                    tag=prefix + "ref embedding for variant type " + variant_name,
+                    tag=prefix + "embedding for variant type " + variant_name,
                     global_step=epoch,
                 )
+                if self.ref_features:
+                    summary_writer.add_embedding(
+                        stacked_ref_features[idx],
+                        metadata=[all_metadata[round(n)] for n in idx.tolist()],
+                        metadata_header=["Labels", "Correctness", "Types", "Counts"],
+                        tag=prefix + "ref embedding for variant type " + variant_name,
+                        global_step=epoch,
+                    )
 
         # read average embeddings stratified by alt count
         for count_bin in range(NUM_ALT_COUNT_BINS):

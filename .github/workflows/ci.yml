@@ -34,6 +34,20 @@ jobs:
       - name: Run unit tests
         run: pixi run test-unit
 
+  # the default environment locks an older Python, so also test the newest one permutect supports
+  test-py313:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - uses: prefix-dev/setup-pixi@a0af7a228712d6121d37aba47adf55c1332c9c2e  # v0.9.4
+        with:
+          cache: true
+          environments: py313
+
+      - name: Run unit tests on Python 3.13
+        run: pixi run -e py313 test-unit
+
   docker:
     runs-on: ubuntu-latest
     steps:

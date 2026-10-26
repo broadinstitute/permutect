@@ -47,6 +47,22 @@ def test_filtering_on_dream1_chr20():
 
     filter_variants.main_without_parsing(filtering_args)
 
+    # the output has one record per input record, in order.  Variants without a Permutect posterior, such as those
+    # missing from the dataset, keep the filters they had in the input instead of becoming PASS
+    num_unscored = 0
+    input_records, output_records = cyvcf2.VCF(MUTECT2_CHR20_FILTERED_VCF), cyvcf2.VCF(permutect_vcf.name)
+    for input_record, output_record in zip(input_records, output_records, strict=True):
+        assert (input_record.CHROM, input_record.POS) == (output_record.CHROM, output_record.POS)
+        if output_record.INFO.get(filter_variants.POST_PROB_INFO_KEY) is None:
+            num_unscored += 1
+            assert record_filters(output_record) >= record_filters(input_record)
+    assert num_unscored > 0
+
+
+def record_filters(record) -> set:
+    # cyvcf2 gives None for PASS and for a missing FILTER
+    return set(record.FILTER.split(";")) if record.FILTER else set()
+
 
 def test_filtering_on_seqc2_wes_chr20():
     artifact_model = PERMUTECT_V0_9_2_ARTIFACT_MODEL
