@@ -259,15 +259,18 @@ class ArtifactModel(torch.nn.Module):
         alt_count_target_b = batch.get(Data.ALT_COUNT).to(dtype=alt_count_pred_b.dtype) / MAX_ALT_COUNT
         return self.alt_count_loss_func(alt_count_pred_b, alt_count_target_b)
 
-    def compute_batch_output(self, batch: Batch, balancer: Balancer = None):
+    # update_balancer=False uses the balancer's weights without counting this batch, eg for validation data
+    def compute_batch_output(self, batch: Batch, balancer: Balancer = None, update_balancer: bool = True):
         ref_bre, alt_bre, _ = self.calculate_features(batch)  # ragged sets of reduced and transformed reads
         logits_b, logits_bk = self.feature_clustering.calculate_logits(alt_bre, batch)
 
-        weights_b = (
-            torch.ones_like(logits_b)
-            if balancer is None
-            else balancer.process_batch_and_compute_weights(batch, artifact_probs_b=torch.sigmoid(logits_b).detach())
-        )
+        artifact_probs_b = torch.sigmoid(logits_b).detach()
+        if balancer is None:
+            weights_b = torch.ones_like(logits_b)
+        elif update_balancer:
+            weights_b = balancer.process_batch_and_compute_weights(batch, artifact_probs_b=artifact_probs_b)
+        else:
+            weights_b = balancer.compute_weights(batch, artifact_probs_b=artifact_probs_b)
         return BatchOutput(
             features_be=alt_bre.means_over_sets(),
             ref_features_be=ref_bre.means_over_sets(),
