@@ -51,11 +51,25 @@ def test_filtering_on_dream1_chr20():
     # missing from the dataset, keep the filters they had in the input instead of becoming PASS
     num_unscored = 0
     input_records, output_records = cyvcf2.VCF(MUTECT2_CHR20_FILTERED_VCF), cyvcf2.VCF(permutect_vcf.name)
+
+    # these INFO fields hold one value per call type, as their headers declare
+    per_call_type_keys = [
+        filter_variants.POST_PROB_INFO_KEY,
+        filter_variants.LOG_PRIOR_INFO_KEY,
+        filter_variants.SPECTRA_LOG_LIKELIHOOD_INFO_KEY,
+        filter_variants.NORMAL_LOG_LIKELIHOOD_INFO_KEY,
+    ]
+    for key in per_call_type_keys:
+        assert output_records.get_header_type(key)["Number"] == str(len(Call))
+
     for input_record, output_record in zip(input_records, output_records, strict=True):
         assert (input_record.CHROM, input_record.POS) == (output_record.CHROM, output_record.POS)
         if output_record.INFO.get(filter_variants.POST_PROB_INFO_KEY) is None:
             num_unscored += 1
             assert record_filters(output_record) >= record_filters(input_record)
+        else:
+            for key in per_call_type_keys:
+                assert len(output_record.INFO.get(key)) == len(Call)
     assert num_unscored > 0
 
 
