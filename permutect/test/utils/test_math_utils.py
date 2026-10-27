@@ -2,6 +2,7 @@ import torch
 
 from permutect.utils.math_utils import add_in_log_space
 from permutect.utils.math_utils import find_factors
+from permutect.utils.math_utils import log1mexp
 from permutect.utils.math_utils import subtract_in_log_space
 
 
@@ -29,3 +30,14 @@ def test_subtract_in_log_space():
     exact = x - y
     calc = torch.exp(subtract_in_log_space(logx, logy))
     assert torch.sum(torch.abs(exact - calc)).item() < 10 ** (-5)
+
+
+def test_log1mexp():
+    # cover both branches: x near zero (exp(x) near 1) and very negative x (exp(x) tiny)
+    x = torch.tensor([-1e-10, -1e-4, -0.1, -0.69, -0.7, -1.0, -5.0, -20.0, -50.0], dtype=torch.float64)
+    exact = torch.log(1 - torch.exp(x.to(torch.float64)))
+    exact[0] = torch.log(torch.tensor(1e-10, dtype=torch.float64))  # 1 - exp(-1e-10) loses precision in float64
+    exact[-2:] = -torch.exp(x[-2:])  # log(1 - eps) ~ -eps, and float64 can't resolve 1 - exp(-50)
+    calc = log1mexp(x.to(torch.float32)).to(torch.float64)
+    assert torch.allclose(calc, exact, rtol=1e-5, atol=0)
+    assert log1mexp(torch.tensor([0.0])).item() == float("-inf")

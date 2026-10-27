@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import random
 import tarfile
@@ -122,7 +123,7 @@ class MemoryMappedData:
         return MemoryMappedData.from_generator(reads_datum_source, estimated_num_data, estimated_num_reads)
 
     """
-    Add allele frequency (AF), minor allele frequency (MAF), and normal minor allele frequency (normal MAF) to the
+    Add log allele frequency (AF), minor allele frequency (MAF), and normal minor allele frequency (normal MAF) to the
     float array of the output MemoryMappedData using information in a VCF and a segmentation.
     
     Additionally, skip data that have a given set of filters in the VCF, and mark data that have a given set of
@@ -138,7 +139,7 @@ class MemoryMappedData:
         segmentation=defaultdict(IntervalTree),
         normal_segmentation=defaultdict(IntervalTree),
     ) -> Generator[Datum, None, None]:
-        allele_frequencies = {}
+        log_allele_frequencies = {}
         encodings_to_exclude = set()
         artifact_encodings = set()
 
@@ -146,7 +147,8 @@ class MemoryMappedData:
         pbar = tqdm(enumerate(cyvcf2.VCF(input_vcf)), mininterval=60)
         for n, v in pbar:
             encoding = encode_variant(v, zero_based=True)
-            allele_frequencies[encoding] = 10 ** (-get_first_numeric_element(v, "POPAF"))
+            # POPAF is -log10(AF); we convert to natural log without exponentiating to avoid underflow
+            log_allele_frequencies[encoding] = -math.log(10) * get_first_numeric_element(v, "POPAF")
             if overlapping_filters(v, filters_to_exclude):
                 encodings_to_exclude.add(encoding)
             if overlapping_filters(v, artifact_filters):
@@ -157,7 +159,7 @@ class MemoryMappedData:
             position = datum.get(Data.POSITION)
             encoding = encode(contig_name, position, datum.get_ref_allele(), datum.get_alt_allele())
 
-            if encoding in allele_frequencies and encoding not in encodings_to_exclude:
+            if encoding in log_allele_frequencies and encoding not in encodings_to_exclude:
                 # NOTE: we copy the float array because it needs to be modified
                 new_datum = Datum(
                     int_array=datum.int_array,
@@ -168,13 +170,13 @@ class MemoryMappedData:
 
                 # these are default dicts, so if there's no segmentation for the contig we will get no overlaps but not an error
                 # For a general IntervalTree there is a list of potentially multiple overlaps but here there is either one or zero
-                allele_frequency = allele_frequencies[encoding]
+                log_allele_frequency = log_allele_frequencies[encoding]
                 segmentation_overlaps = segmentation[contig_name][position]
                 normal_segmentation_overlaps = normal_segmentation[contig_name][position]
                 maf = list(segmentation_overlaps)[0].data if segmentation_overlaps else 0.5
                 normal_maf = list(normal_segmentation_overlaps)[0].data if normal_segmentation_overlaps else 0.5
 
-                new_datum.set(Data.ALLELE_FREQUENCY, allele_frequency)
+                new_datum.set(Data.LOG_ALLELE_FREQUENCY, log_allele_frequency)
                 new_datum.set(Data.MAF, maf)
                 new_datum.set(Data.NORMAL_MAF, normal_maf)
                 if encoding in artifact_encodings:

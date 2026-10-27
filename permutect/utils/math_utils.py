@@ -59,3 +59,11 @@ def subtract_in_log_space(x: Tensor, y: Tensor):
     """
     m = torch.maximum(x, y)
     return m + torch.log(torch.exp(x - m) - torch.exp(y - m))
+
+
+def log1mexp(x: Tensor):
+    """
+    implement result = log(1 - exp(x)) for x <= 0 in a numerically stable way.  Following Machler (2012), use
+    log(-expm1(x)) when x is close to zero (exp(x) close to 1) and log1p(-exp(x)) otherwise (exp(x) small).
+    """
+    return torch.where(x > -math.log(2), torch.log(-torch.expm1(x)), torch.log1p(-torch.exp(x)))
