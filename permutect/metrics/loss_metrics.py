@@ -29,6 +29,14 @@ from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
 
 
+def masked_ratio(numerator: Tensor, denominator: Tensor) -> Tensor:
+    """
+    numerator / denominator, but NaN wherever the denominator is zero, ie wherever there are no data.  This marks empty
+    categories consistently: they are skipped in printed and logged marginals and left blank in heatmaps.
+    """
+    return torch.where(denominator > 0, numerator / denominator, torch.nan)
+
+
 class LossMetrics:
     def __init__(self, num_sources: int, device=gpu_if_available()):
         self.totals_slvra = BatchIndexedTensor.zeros(num_sources=num_sources, device=device)
@@ -54,10 +62,10 @@ class LossMetrics:
         self.counts_slvra.record(batch, weights_to_use.detach())
 
     def get_averages(self) -> BatchIndexedTensor:
-        return self.totals_slvra / (0.001 + self.counts_slvra)
+        return masked_ratio(self.totals_slvra, self.counts_slvra)
 
     def get_marginal(self, *properties: BatchProperty) -> Tensor:
-        return self.totals_slvra.get_marginal(*properties) / self.counts_slvra.get_marginal(*properties)
+        return masked_ratio(self.totals_slvra.get_marginal(*properties), self.counts_slvra.get_marginal(*properties))
 
     def print_marginals(self, message: str):
         assert self.has_been_sent_to_cpu, "Can't report marginals before sending to CPU"
@@ -67,7 +75,8 @@ class LossMetrics:
             values = self.get_marginal(batch_property).tolist()
             print(f"Marginalizing by {batch_property.name}")
             for n, ave in enumerate(values):
-                print(f"{batch_property.get_name(n)}: {ave:.3f}")
+                if not np.isnan(ave):
+                    print(f"{batch_property.get_name(n)}: {ave:.3f}")
 
     def write_marginals(self, epoch_type: Epoch, epoch: int, summary_writer: SummaryWriter, prefix: str):
         """
@@ -79,6 +88,8 @@ class LossMetrics:
         for batch_property in (b for b in BatchProperty if b != BatchProperty.LOGIT_BIN):
             marginals = self.get_marginal(batch_property)
             for n, average in enumerate(marginals.tolist()):
+                if np.isnan(average):
+                    continue
                 heading = f"{prefix}/{epoch_type.name}/{batch_property.name}/{batch_property.get_name(n)}"
                 summary_writer.add_scalar(heading, average, epoch)
 
@@ -97,7 +108,7 @@ class LossMetrics:
 
         totals_ra = select_and_sum(self.totals_slvra, select=selection, sum=sum_dims)
         counts_ra = select_and_sum(self.counts_slvra, select=selection, sum=sum_dims)
-        average_ra = totals_ra / (counts_ra + 0.001)
+        average_ra = masked_ratio(totals_ra, counts_ra)
         return plotting.color_plot_2d_on_axis(
             axis,
             np.array(ALT_COUNT_BIN_BOUNDS),
@@ -345,7 +356,7 @@ class AccuracyMetrics(BatchIndexedTensor):
             torch.sum(true_lrag[label], dim=-1),
             torch.sum(false_lrag[label], dim=-1),
         )
-        acc_ra = true_ra / (true_ra + false_ra + 0.001)
+        acc_ra = masked_ratio(true_ra, true_ra + false_ra)
         return plotting.color_plot_2d_on_axis(
             axis,
             np.array(ALT_COUNT_BIN_BOUNDS),
