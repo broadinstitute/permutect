@@ -37,7 +37,6 @@ workflow MakeTrainingDataset {
         # runtime
         String permutect_docker
         File? gatk_override
-        String basic_bash_docker = "ubuntu:16.04"
         Int scatter_count
         Int preemptible = 2
         Int max_retries = 1
@@ -45,8 +44,6 @@ workflow MakeTrainingDataset {
         Int small_task_mem = 4
         Int small_task_disk = 100
         Int boot_disk_size = 12
-        Int learn_read_orientation_mem = 8000
-        Int filter_alignment_artifacts_mem = 9000
         String? gcs_project_for_requester_pays
 
         # Use as a last resort to increase the disk given to every task in case of ill behaving data
@@ -87,6 +84,7 @@ workflow MakeTrainingDataset {
                 m2_extra_args = m2_extra_args,
                 dragstr_model = dragstr_model_hack,
                 make_bamout = make_bamout,
+                compress_vcfs = compress_vcfs,
                 make_permutect_training_dataset = true,
                 permutect_training_dataset_truth_vcf = permutect_training_dataset_truth_vcf_hack,
                 permutect_training_dataset_truth_vcf_idx = permutect_training_dataset_truth_vcf_idx_hack,

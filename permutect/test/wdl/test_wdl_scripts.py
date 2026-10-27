@@ -15,6 +15,7 @@ from permutect.tools import edit_dataset
 
 SCRIPTS_DIR = os.path.abspath(os.path.join(test_dir, "..", "..", "scripts"))
 COMPARE_WDL = os.path.join(SCRIPTS_DIR, "compare_permutect_results.wdl")
+CONCATENATE_WDL = os.path.join(SCRIPTS_DIR, "concatenate.wdl")
 EDIT_DATASET_WDL = os.path.join(SCRIPTS_DIR, "permutect_edit_dataset.wdl")
 
 # a stand-in for gatk SelectVariants: copy the -V input to the -O output and write an index
@@ -79,6 +80,22 @@ def test_runtime_attributes_guard_optional_inputs():
                     unguarded.append(f"{os.path.basename(wdl)} task {task.split()[1]}: {name}")
 
     assert not unguarded, f"optional inputs used in runtime attributes without select_first or defined: {unguarded}"
+
+
+def test_workflow_inputs_are_used():
+    # e.g. Permutect.split_intervals_extra_args was declared but never passed to Mutect2, so setting it did nothing
+    unused = []
+    for wdl in glob.glob(os.path.join(SCRIPTS_DIR, "*.wdl")):
+        with open(wdl) as file:
+            text = re.sub(r"#[^\n]*", "", file.read())
+        workflow = re.search(r"^workflow \w+ \{.*?(?=^task |\Z)", text, re.M | re.S).group(0)
+        inputs = re.search(r"\binput\s*\{(.*?)\n\s*\}", workflow, re.S).group(1)
+        rest_of_workflow = workflow.replace(inputs, "")
+        for name in re.findall(r"^\s*[\w\[\], ]+\??\s+(\w+)\s*(?:=|$)", inputs, re.M):
+            if not re.search(r"\b" + name + r"\b", rest_of_workflow):
+                unused.append(f"{os.path.basename(wdl)}: {name}")
+
+    assert not unused, f"workflow inputs that are never used: {unused}"
 
 
 def task_command(wdl_path: str, task_name: str) -> str:
@@ -178,3 +195,18 @@ def test_compare_fails_when_gatk_fails(tmp_path):
     result = run_compare(tmp_path, "#!/bin/bash\nexit 1\n")
     assert result.returncode != 0
     assert not (tmp_path / "summary.txt").exists()
+
+
+def test_concatenate_sorts_by_heading_and_creates_no_stray_files(tmp_path):
+    # a comment written with $ instead of # made touch create files named $, first, column, etc.
+    inputs = []
+    for heading in ("zebra", "Apple"):
+        path = tmp_path / (heading + ".txt")
+        path.write_text(heading + " heading\nbody of " + heading + "\n")
+        inputs.append(str(path))
+    command = task_command(CONCATENATE_WDL, "concatenate").replace("~{sep=' ' inputs}", " ".join(inputs))
+
+    result = subprocess.run(["bash", "-c", command], cwd=tmp_path, capture_output=True)
+    assert result.returncode == 0, result.stderr.decode()
+    assert {path.name for path in tmp_path.iterdir()} == {"zebra.txt", "Apple.txt", "TMP", "result.txt"}
+    assert (tmp_path / "result.txt").read_text() == "Apple heading\nbody of Apple\n\nzebra heading\nbody of zebra\n\n"
