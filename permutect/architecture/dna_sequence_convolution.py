@@ -3,20 +3,23 @@ from math import floor
 from torch import nn
 
 
-def conv_output_length(input_length, kernel_size=1, stride=1, pad=0, dilation=1, **kwargs):
+def conv_output_length(input_length, kernel_size=1, stride=1, padding=0, dilation=1, **kwargs):
     """
     Output length of 1D convolution given input length and various options.  Copied from PyTorch docs
     """
-    return floor(((input_length + (2 * pad) - (dilation * (kernel_size - 1)) - 1) / stride) + 1)
+    return floor(((input_length + (2 * padding) - (dilation * (kernel_size - 1)) - 1) / stride) + 1)
 
 
-def pool_output_length(input_length, kernel_size=1, stride=None, pad=0, dilation=1, **kwargs):
+def pool_output_length(input_length, kernel_size=1, stride=None, padding=0, dilation=1, **kwargs):
     """
     Output length of 1D pooling given input length and various options.  Copied from PyTorch docs.
     Differs from convolution in that stride equals kernel_size by default.
     """
     return floor(
-        ((input_length + (2 * pad) - (dilation * (kernel_size - 1)) - 1) / (kernel_size if stride is None else stride))
+        (
+            (input_length + (2 * padding) - (dilation * (kernel_size - 1)) - 1)
+            / (kernel_size if stride is None else stride)
+        )
         + 1
     )
 
