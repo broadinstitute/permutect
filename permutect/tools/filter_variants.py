@@ -338,6 +338,9 @@ def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_
     # to get artifact logits, which we record in a dict keyed by variant strings.  These will later be added to PosteriorDatum objects.
     loader = dataset.make_data_loader(batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
 
+    # test-time adaptation leaves the model in training mode, which would turn on dropout and batch norm updates
+    model.train(False)
+
     print("creating posterior data...")
     batch: Batch
     for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):

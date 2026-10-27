@@ -335,6 +335,8 @@ def load_model(path, device: torch.device = None):
     # and we're now on CPU
     model.to(model._dtype)
 
+    # inference mode by default; set_epoch_type switches it back to training mode for training epochs
+    model.train(False)
     return model
 
 

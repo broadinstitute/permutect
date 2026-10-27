@@ -1,9 +1,15 @@
+import random
 import tempfile
 
 import cyvcf2
+import numpy as np
 import pytest
+import torch
 
 from permutect import constants
+from permutect.architecture.artifact_model import ArtifactModel
+from permutect.architecture.artifact_model import load_model
+from permutect.data.datum import Data
 from permutect.test.test_file_names import *
 from permutect.tools import filter_variants
 from permutect.tools import pre_permutect_filtering
@@ -158,3 +164,50 @@ def test_get_segmentation_from_calculate_contamination():
     for position in (17280822, 51065361):
         assert segment_mafs(segmentation, "22", position) == [pytest.approx(0.44015695469901417)]
     assert segment_mafs(segmentation, "22", 51065362) == []
+
+
+def save_dropout_model(path):
+    # the v0.9.2 hyperparameters with dropout, which makes the artifact logits random in training mode
+    saved = torch.load(PERMUTECT_V0_9_2_ARTIFACT_MODEL, map_location="cpu", weights_only=False)
+    hyperparams = saved[constants.HYPERPARAMS_NAME]
+    hyperparams.dropout_p = 0.3
+    model = ArtifactModel(
+        hyperparams,
+        num_read_features=saved[constants.NUM_READ_FEATURES_NAME],
+        num_info_features=saved[constants.NUM_INFO_FEATURES_NAME],
+        haplotypes_length=saved[constants.REF_SEQUENCE_LENGTH_NAME],
+        device=torch.device("cpu"),
+    )
+    saved[constants.STATE_DICT_NAME] = model.state_dict()
+    torch.save(saved, path)
+
+
+def test_load_model_returns_model_in_eval_mode():
+    model = load_model(PERMUTECT_V0_9_2_ARTIFACT_MODEL, device=torch.device("cpu"))
+    assert not any(module.training for module in model.modules())
+
+
+def test_posterior_data_artifact_logits_are_deterministic(tmp_path):
+    model_path = tmp_path / "dropout-model.pt"
+    save_dropout_model(model_path)
+    model = load_model(model_path, device=torch.device("cpu"))
+
+    contig_index_to_name_map = {}
+    with open(HG38_CONTIGS_TABLE) as file:
+        for line in file:
+            contig, index = line.split()
+            contig_index_to_name_map[int(index)] = contig
+    dataset = filter_variants.make_annotated_dataset(
+        SEQC2_WES_PLAIN_TEXT_DATA, MUTECT2_SEQC2_WES_VCF, contig_index_to_name_map
+    )
+
+    def artifact_logits():
+        random.seed(0)  # the dataset shuffles its data
+        posterior_data = filter_variants.generate_posterior_data(dataset, model, batch_size=64, num_workers=0)
+        return np.array([datum.get(Data.CACHED_ARTIFACT_LOGIT) for datum in posterior_data])
+
+    # first straight from load_model, then in training mode, as test-time adaptation leaves it
+    first_logits = artifact_logits()
+    model.train(True)
+    second_logits = artifact_logits()
+    assert np.array_equal(first_logits, second_logits)
