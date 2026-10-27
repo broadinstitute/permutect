@@ -433,8 +433,9 @@ class DownsampledBatch(Batch):
         )
         # randomly assign ref reads to keep
 
+        # reads_re holds all ref reads of the batch followed by all alt reads, so alt indices start after the refs
         kept_ref_indices = torch.nonzero(keep_ref_mask).view(-1)
-        kept_alt_indices = torch.nonzero(keep_alt_mask).view(-1)
+        kept_alt_indices = old_total_ref + torch.nonzero(keep_alt_mask).view(-1)
 
         self.read_indices = torch.hstack((kept_ref_indices, kept_alt_indices))
 
