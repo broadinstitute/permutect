@@ -61,13 +61,6 @@ workflow Permutect {
         String permutect_docker
         Int? preemptible
         Int? max_retries
-
-        # WDL version 1.0 does not have an empty Optional literal
-        # such a literal is very useful because Terra has a bug where whenever a data table is updated, empty values
-        # silently and invisibly get converted to empty strings "".  Thus it is useful to recognize empty strings and
-        # declare empty Optionals.  The only way to do this in WDL 1.0 is to get an empty Optional as a variable from the
-        # workflow inputs.  These inputs should NEVER be filled in!!!!!
-        File? EMPTY_STRING_HACK
     }
 
     # I (David Benjamin, that is) always run Permutect on Terra, which has the following extremely irritating bug:
@@ -77,31 +70,37 @@ workflow Permutect {
     # The workaround is to explicitly test for Strings equal to "", which are actually empty Optionals that
     # Terra converted.
 
-    File? intervals_hack = if (select_first([intervals,""]) == "") then EMPTY_STRING_HACK else intervals
-    File? masks_hack = if (select_first([masks,""]) == "") then EMPTY_STRING_HACK else masks
+    # WDL version 1.0 does not have an empty Optional literal, but a declaration inside a conditional is an Optional
+    # outside of it, so NONE is always an empty Optional.
+    if (false) {
+        File NONE = ""
+    }
 
-    File? control_bam_hack = if select_first([control_bam, ""]) == "" then EMPTY_STRING_HACK else control_bam
-    File? control_bai_hack = if select_first([control_bai, ""]) == "" then EMPTY_STRING_HACK else control_bai
-    File? gnomad_hack = if select_first([gnomad, ""]) == "" then EMPTY_STRING_HACK else gnomad
-    File? gnomad_idx_hack = if select_first([gnomad_idx, ""]) == "" then EMPTY_STRING_HACK else gnomad_idx
+    File? intervals_hack = if (select_first([intervals,""]) == "") then NONE else intervals
+    File? masks_hack = if (select_first([masks,""]) == "") then NONE else masks
 
-    File? variants_for_contamination_hack = if select_first([variants_for_contamination, ""]) == "" then EMPTY_STRING_HACK else variants_for_contamination
-    File? variants_for_contamination_idx_hack = if select_first([variants_for_contamination_idx, ""]) == "" then EMPTY_STRING_HACK else variants_for_contamination_idx
-    File? realignment_index_bundle_hack = if select_first([realignment_index_bundle, ""]) == "" then EMPTY_STRING_HACK else realignment_index_bundle
-    File? dragstr_model_hack = if select_first([dragstr_model, ""]) == "" then EMPTY_STRING_HACK else dragstr_model
-    File? common_hets_for_segmentation_hack = if select_first([common_hets_for_segmentation, ""]) == "" then EMPTY_STRING_HACK else common_hets_for_segmentation
-    File? test_dataset_truth_vcf_hack = if select_first([test_dataset_truth_vcf, ""]) == "" then EMPTY_STRING_HACK else test_dataset_truth_vcf
-    File? test_dataset_truth_vcf_idx_hack = if select_first([test_dataset_truth_vcf_idx, ""]) == "" then EMPTY_STRING_HACK else test_dataset_truth_vcf_idx
+    File? control_bam_hack = if select_first([control_bam, ""]) == "" then NONE else control_bam
+    File? control_bai_hack = if select_first([control_bai, ""]) == "" then NONE else control_bai
+    File? gnomad_hack = if select_first([gnomad, ""]) == "" then NONE else gnomad
+    File? gnomad_idx_hack = if select_first([gnomad_idx, ""]) == "" then NONE else gnomad_idx
 
-    File? cached_dataset_hack = if (select_first([cached_plain_text_test_dataset,""]) == "") then EMPTY_STRING_HACK else cached_plain_text_test_dataset
-    String? cached_mutect2_vcf_hack = if (select_first([cached_mutect2_vcf,""]) == "") then EMPTY_STRING_HACK else cached_mutect2_vcf
-    String? cached_mutect2_vcf_idx_hack = if (select_first([cached_mutect2_vcf_idx,""]) == "") then EMPTY_STRING_HACK else cached_mutect2_vcf_idx
-    String? cached_contigs_table_hack = if (select_first([cached_contigs_table,""]) == "") then EMPTY_STRING_HACK else cached_contigs_table
-    String? cached_maf_segments_hack = if (select_first([cached_maf_segments,""]) == "") then EMPTY_STRING_HACK else cached_maf_segments
-    String? cached_normal_maf_segments_hack = if (select_first([cached_normal_maf_segments,""]) == "") then EMPTY_STRING_HACK else cached_normal_maf_segments
-    String? cached_mutect_stats_hack = if (select_first([cached_mutect_stats,""]) == "") then EMPTY_STRING_HACK else cached_mutect_stats
+    File? variants_for_contamination_hack = if select_first([variants_for_contamination, ""]) == "" then NONE else variants_for_contamination
+    File? variants_for_contamination_idx_hack = if select_first([variants_for_contamination_idx, ""]) == "" then NONE else variants_for_contamination_idx
+    File? realignment_index_bundle_hack = if select_first([realignment_index_bundle, ""]) == "" then NONE else realignment_index_bundle
+    File? dragstr_model_hack = if select_first([dragstr_model, ""]) == "" then NONE else dragstr_model
+    File? common_hets_for_segmentation_hack = if select_first([common_hets_for_segmentation, ""]) == "" then NONE else common_hets_for_segmentation
+    File? test_dataset_truth_vcf_hack = if select_first([test_dataset_truth_vcf, ""]) == "" then NONE else test_dataset_truth_vcf
+    File? test_dataset_truth_vcf_idx_hack = if select_first([test_dataset_truth_vcf_idx, ""]) == "" then NONE else test_dataset_truth_vcf_idx
 
-    String? gcs_project_for_requester_pays_hack = if select_first([gcs_project_for_requester_pays, ""]) == "" then EMPTY_STRING_HACK else gcs_project_for_requester_pays
+    File? cached_dataset_hack = if (select_first([cached_plain_text_test_dataset,""]) == "") then NONE else cached_plain_text_test_dataset
+    String? cached_mutect2_vcf_hack = if (select_first([cached_mutect2_vcf,""]) == "") then NONE else cached_mutect2_vcf
+    String? cached_mutect2_vcf_idx_hack = if (select_first([cached_mutect2_vcf_idx,""]) == "") then NONE else cached_mutect2_vcf_idx
+    String? cached_contigs_table_hack = if (select_first([cached_contigs_table,""]) == "") then NONE else cached_contigs_table
+    String? cached_maf_segments_hack = if (select_first([cached_maf_segments,""]) == "") then NONE else cached_maf_segments
+    String? cached_normal_maf_segments_hack = if (select_first([cached_normal_maf_segments,""]) == "") then NONE else cached_normal_maf_segments
+    String? cached_mutect_stats_hack = if (select_first([cached_mutect_stats,""]) == "") then NONE else cached_mutect_stats
+
+    String? gcs_project_for_requester_pays_hack = if select_first([gcs_project_for_requester_pays, ""]) == "" then NONE else gcs_project_for_requester_pays
 
     Boolean use_cache = defined(cached_dataset_hack) && defined(cached_mutect2_vcf_hack) && defined(cached_contigs_table_hack) && defined(cached_mutect_stats_hack)
     if(!use_cache) {

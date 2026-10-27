@@ -49,6 +49,10 @@ def run_permutect_wdl(working_dir, filter_pcr_errors: bool) -> dict:
         "Permutect.cached_normal_maf_segments": SEQC2_WES_NORMAL_SEGMENTS,
         "Permutect.cached_mutect_stats": MUTECT2_SEQC2_WES_STATS,
         "Permutect.permutect_docker": PERMUTECT_TEST_DOCKER,
+        # Terra turns unset optional inputs into empty strings, which the workflow must treat as unset
+        "Permutect.masks": "",
+        "Permutect.test_dataset_truth_vcf": "",
+        "Permutect.test_dataset_truth_vcf_idx": "",
     }
     inputs_json, metadata_json = os.path.join(working_dir, "inputs.json"), os.path.join(working_dir, "metadata.json")
     with open(inputs_json, "w") as file:
@@ -91,6 +95,8 @@ def metadata_without_pcr_error_filtering(tmp_path_factory):
 
 def test_permutect_wdl_with_pcr_error_filtering(metadata_with_pcr_error_filtering):
     assert "Permutect.PrePermutectFiltering" in metadata_with_pcr_error_filtering["calls"]
+    # the empty truth VCF counts as no truth VCF
+    assert "Permutect.PermutectConcordance" not in metadata_with_pcr_error_filtering["calls"]
     records = output_vcf_records(metadata_with_pcr_error_filtering)
     assert any(v.INFO.get(POST_PROB_INFO_KEY) is not None for v in records)
 

@@ -31,13 +31,14 @@ workflow DeepSomatic {
         Int scatter_count
 
         String? gcs_project_for_requester_pays
+    }
 
-        # WDL version 1.0 does not have an empty Optional literal
-        # such a literal is very useful because Terra has a bug where whenever a data table is updated, empty values
-        # silently and invisibly get converted to empty strings "".  Thus it is useful to recognize empty strings and
-        # declare empty Optionals.  The only way to do this in WDL 1.0 is to get an empty Optional as a variable from the
-        # workflow inputs.  These inputs should NEVER be filled in!!!!!
-        File? EMPTY_STRING_HACK
+    # WDL version 1.0 does not have an empty Optional literal.  Such a literal is very useful because Terra has a bug
+    # where whenever a data table is updated, empty values silently and invisibly get converted to empty strings "".
+    # Thus it is useful to recognize empty strings and declare empty Optionals.  A declaration inside a conditional is
+    # an Optional outside of it, so NONE is always an empty Optional.
+    if (false) {
+        File NONE = ""
     }
 
     call GetSampleName {
@@ -103,7 +104,7 @@ workflow DeepSomatic {
         call Concordance {
             input:
                 intervals = intervals,
-                masks = if masks == "" then EMPTY_STRING_HACK else masks,
+                masks = if masks == "" then NONE else masks,
                 truth_vcf = select_first([truth_vcf]),
                 truth_vcf_idx = select_first([truth_vcf_idx]),
                 eval_vcf = Deepsomatic.output_vcf,

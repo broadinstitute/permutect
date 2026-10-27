@@ -48,24 +48,25 @@ workflow MakeTrainingDataset {
 
         # Use as a last resort to increase the disk given to every task in case of ill behaving data
         Int emergency_extra_disk = 0
-
-        # WDL version 1.0 does not have an empty Optional literal
-        # such a literal is very useful because Terra has a bug where whenever a data table is updated, empty values
-        # silently and invisibly get converted to empty strings "".  Thus it is useful to recognize empty strings and
-        # declare empty Optionals.  The only way to do this in WDL 1.0 is to get an empty Optional as a variable from the
-        # workflow inputs.  These inputs should NEVER be filled in!!!!!
-        File? EMPTY_STRING_HACK
     }
 
-    File? intervals_hack = if (select_first([intervals,""]) == "") then EMPTY_STRING_HACK else intervals
-    File? masks_hack = if (select_first([masked_intervals,""]) == "") then EMPTY_STRING_HACK else masked_intervals
-    File? gnomad_hack = if select_first([gnomad, ""]) == "" then EMPTY_STRING_HACK else gnomad
-    File? gnomad_idx_hack = if select_first([gnomad_idx, ""]) == "" then EMPTY_STRING_HACK else gnomad_idx
-    File? dragstr_model_hack = if select_first([dragstr_model, ""]) == "" then EMPTY_STRING_HACK else dragstr_model
-    String? gcs_project_for_requester_pays_hack = if select_first([gcs_project_for_requester_pays, ""]) == "" then EMPTY_STRING_HACK else gcs_project_for_requester_pays
-    File? permutect_training_dataset_truth_vcf_hack = if select_first([permutect_training_dataset_truth_vcf, ""]) == "" then EMPTY_STRING_HACK else permutect_training_dataset_truth_vcf
-    File? permutect_training_dataset_truth_vcf_idx_hack = if select_first([permutect_training_dataset_truth_vcf_idx, ""]) == "" then EMPTY_STRING_HACK else permutect_training_dataset_truth_vcf_idx
-    String? cached_plain_text_dataset_hack = if select_first([cached_plain_text_dataset, ""]) == "" then EMPTY_STRING_HACK else cached_plain_text_dataset
+    # WDL version 1.0 does not have an empty Optional literal.  Such a literal is very useful because Terra has a bug
+    # where whenever a data table is updated, empty values silently and invisibly get converted to empty strings "".
+    # Thus it is useful to recognize empty strings and declare empty Optionals.  A declaration inside a conditional is
+    # an Optional outside of it, so NONE is always an empty Optional.
+    if (false) {
+        File NONE = ""
+    }
+
+    File? intervals_hack = if (select_first([intervals,""]) == "") then NONE else intervals
+    File? masks_hack = if (select_first([masked_intervals,""]) == "") then NONE else masked_intervals
+    File? gnomad_hack = if select_first([gnomad, ""]) == "" then NONE else gnomad
+    File? gnomad_idx_hack = if select_first([gnomad_idx, ""]) == "" then NONE else gnomad_idx
+    File? dragstr_model_hack = if select_first([dragstr_model, ""]) == "" then NONE else dragstr_model
+    String? gcs_project_for_requester_pays_hack = if select_first([gcs_project_for_requester_pays, ""]) == "" then NONE else gcs_project_for_requester_pays
+    File? permutect_training_dataset_truth_vcf_hack = if select_first([permutect_training_dataset_truth_vcf, ""]) == "" then NONE else permutect_training_dataset_truth_vcf
+    File? permutect_training_dataset_truth_vcf_idx_hack = if select_first([permutect_training_dataset_truth_vcf_idx, ""]) == "" then NONE else permutect_training_dataset_truth_vcf_idx
+    String? cached_plain_text_dataset_hack = if select_first([cached_plain_text_dataset, ""]) == "" then NONE else cached_plain_text_dataset
 
     if (!defined(cached_plain_text_dataset)) {
         call m2.Mutect2 {
