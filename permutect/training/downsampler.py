@@ -153,9 +153,9 @@ class Downsampler(Module):
             expected_slvyz = self.calculate_expected_downsampled_counts(counts_slvra)
 
             # divide by the total over all counts for each slv bin to get a probability distribution over output r/a count bins
-            normalized_slvyz = expected_slvyz / torch.sum(expected_slvyz, dim=(-2, -1), keepdim=True).clamp_min(
-                torch.finfo(expected_slvyz.dtype).tiny
-            )
+            # an slv bin with no data sums to 0, so clamp its total to normalize it to zeros instead of 0/0
+            totals_slv11 = torch.sum(expected_slvyz, dim=(-2, -1), keepdim=True)
+            normalized_slvyz = expected_slvyz / totals_slv11.clamp_min(torch.finfo(expected_slvyz.dtype).tiny)
 
             # we want downsampled counts to be as even as possible among all ref and alt count bins.  This is equivalent
             # to minimizing the sum of squared downsampled counts.  Since the downsampling
