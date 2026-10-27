@@ -7,6 +7,7 @@ from matplotlib import pyplot as plt
 from torch import Tensor
 from torch import nn
 from torch.nn import Parameter
+from torch.nn.parameter import Buffer
 
 from permutect.data.batch import Batch
 from permutect.data.datum import Data
@@ -93,7 +94,8 @@ class PosteriorModelPriors(nn.Module):
         # we have 5 values just in case there is a D in the ref context (an indel next to a SNV, perhaps)
         self.somatic_snv_log_priors_rrra = Parameter(variant_log_prior * torch.ones((5, 5, 5, 5), device=self._device))
 
-        self.NONTRIVIAL_CONTEXTS_rrra = torch.ones((5, 5, 5, 5), device=self._device)
+        # a buffer so that it moves with the module; not persistent because it is a constant
+        self.NONTRIVIAL_CONTEXTS_rrra = Buffer(torch.ones((5, 5, 5, 5), device=self._device), persistent=False)
         self.NONTRIVIAL_CONTEXTS_rrra[4, :, :, :] = 0
         self.NONTRIVIAL_CONTEXTS_rrra[:, 4, :, :] = 0
         self.NONTRIVIAL_CONTEXTS_rrra[:, :, 4, :] = 0
