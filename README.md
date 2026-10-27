@@ -53,6 +53,4 @@ This is a list of required python packages along with the versions that will wor
 For development, this defines [pixi](https://pixi.sh) environments with locked dependencies and tasks such as "pixi run test-unit", which runs the tests that CI runs.
 
 ## Dockerfile
-This installs bcftools and GATK, then uses pyproject.toml to install Permutect in a Docker image with the correct dependencies.  I am afraid of this file.  The command on my laptop for building a Docker image and pushing it to the cloud is "tag='optional_tag'; docker build -t us.gcr.io/broad-dsde-methods/davidben/permutect:${tag} .; docker push us.gcr.io/broad-dsde-methods/davidben/permutect:${tag}".  This will not work for you because you don't have access to us.gcr.io/broad-dsde-methods/davidben/permutect, but I hope that you are more competent than me and understand this stuff.
-
-In the future the Broad Institute will host a pre-built Permutect Docker image so that only advanced users who clone this repo and modify the code will ever have to build one.
+This installs bcftools and GATK, then uses pyproject.toml to install Permutect in a Docker image with the correct dependencies.  Pre-built public Docker images are listed under each Permutect release.
