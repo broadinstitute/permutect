@@ -9,6 +9,8 @@ import shlex
 import subprocess
 import sys
 
+import pytest
+
 from permutect import constants
 from permutect.test.test_file_names import test_dir
 from permutect.tools import edit_dataset
@@ -17,6 +19,7 @@ SCRIPTS_DIR = os.path.abspath(os.path.join(test_dir, "..", "..", "scripts"))
 COMPARE_WDL = os.path.join(SCRIPTS_DIR, "compare_permutect_results.wdl")
 CONCATENATE_WDL = os.path.join(SCRIPTS_DIR, "concatenate.wdl")
 EDIT_DATASET_WDL = os.path.join(SCRIPTS_DIR, "permutect_edit_dataset.wdl")
+PERMUTECT_WDL = os.path.join(SCRIPTS_DIR, "permutect.wdl")
 
 # a stand-in for gatk SelectVariants: copy the -V input to the -O output and write an index
 FAKE_GATK = """#!/bin/bash
@@ -210,3 +213,63 @@ def test_concatenate_sorts_by_heading_and_creates_no_stray_files(tmp_path):
     assert result.returncode == 0, result.stderr.decode()
     assert {path.name for path in tmp_path.iterdir()} == {"zebra.txt", "Apple.txt", "TMP", "result.txt"}
     assert (tmp_path / "result.txt").read_text() == "Apple heading\nbody of Apple\n\nzebra heading\nbody of zebra\n\n"
+
+
+def fake_tool(exit_code: int = 0) -> str:
+    # a stand-in that records its name in calls.txt, writes a partial VCF to stdout, and exits with exit_code
+    return f'#!/bin/bash\necho "$(basename "$0")" >> calls.txt\necho "##fileformat=VCFv4.2"\nexit {exit_code}\n'
+
+
+def run_with_fake_tools(working_dir, command: str, fake_tools: dict) -> tuple[bool, list[str]]:
+    """
+    Run a task's command with the given fake tools on the PATH.
+    Returns whether the command succeeded and the names of the fake tools it called, in order.
+    """
+    bin_dir = working_dir / "bin"
+    bin_dir.mkdir()
+    for name, script in fake_tools.items():
+        (bin_dir / name).write_text(script)
+        (bin_dir / name).chmod(0o755)
+    env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ["PATH"])
+    result = subprocess.run(["bash", "-c", command], cwd=working_dir, env=env, capture_output=True)
+    calls_file = working_dir / "calls.txt"
+    calls = calls_file.read_text().split() if calls_file.exists() else []
+    return result.returncode == 0, calls
+
+
+@pytest.mark.parametrize("bcftools_exit_code, expected_calls", [(0, ["bcftools", "gatk", "gatk"]), (255, ["bcftools"])])
+def test_split_multiallelics_stops_when_bcftools_fails(tmp_path, bcftools_exit_code, expected_calls):
+    # eg bcftools norm exits with 255 at a REF mismatch after writing part of its output
+    inputs = {"ref_fasta": "ref.fasta", "input_vcf": "input.vcf", "command_mem": 3500}
+    command = fill_placeholders(task_command(PERMUTECT_WDL, "SplitMultiallelics"), inputs)
+    fake_tools = {"bcftools": fake_tool(bcftools_exit_code), "gatk": fake_tool()}
+    succeeded, calls = run_with_fake_tools(tmp_path, command, fake_tools)
+    assert succeeded == (bcftools_exit_code == 0)
+    assert calls == expected_calls
+
+
+@pytest.mark.parametrize(
+    "filter_variants_exit_code, expected_calls",
+    [(0, ["filter_variants", "tar", "bcftools", "bcftools"]), (1, ["filter_variants"])],
+)
+def test_permutect_filtering_stops_when_filter_variants_fails(tmp_path, filter_variants_exit_code, expected_calls):
+    (tmp_path / "mutect.stats").write_text("statistic\tvalue\ncallable\t60000000\n")
+    inputs = {
+        "mutect_stats": "mutect.stats",
+        "mutect2_vcf": "mutect2.vcf",
+        "test_dataset": "test.dataset",
+        "artifact_model": "model.pt",
+        "contigs_table": "contigs.table",
+        "batch_size": 64,
+        "num_workers": 2,
+        "num_spectrum_iterations": None,
+        "spectrum_learning_rate": None,
+        "maf_segments": None,
+        "normal_maf_segments": None,
+        "permutect_filtering_extra_args": None,
+    }
+    command = fill_placeholders(task_command(PERMUTECT_WDL, "PermutectFiltering"), inputs)
+    fake_tools = {"filter_variants": fake_tool(filter_variants_exit_code), "tar": fake_tool(), "bcftools": fake_tool()}
+    succeeded, calls = run_with_fake_tools(tmp_path, command, fake_tools)
+    assert succeeded == (filter_variants_exit_code == 0)
+    assert calls == expected_calls
