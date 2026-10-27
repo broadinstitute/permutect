@@ -56,3 +56,14 @@ def test_set_epoch_type_trains_only_the_chosen_parameter_sets(model):
     trainable = {id(p) for p in model.parameters() if p.requires_grad}
     chosen = list(ParameterSet.INFO.get_parameters(model)) + list(ParameterSet.REDUCER.get_parameters(model))
     assert trainable == {id(p) for p in chosen}
+
+
+def test_set_epoch_type_restores_training_mode_after_validation(model):
+    for trainable_params in [None, [ParameterSet.WHOLE_MODEL]]:
+        model.set_epoch_type(Epoch.TRAIN, trainable_params)
+        assert model.training
+        model.set_epoch_type(Epoch.VALID, trainable_params)
+        assert not model.training
+        model.set_epoch_type(Epoch.TRAIN, trainable_params)
+        assert model.training
+        assert all(module.training for module in model.modules())

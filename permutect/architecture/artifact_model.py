@@ -208,8 +208,8 @@ class ArtifactModel(torch.nn.Module):
 
     def set_epoch_type(self, epoch_type: Epoch, trainable_params: List[ParameterSet] = None):
         if epoch_type == Epoch.TRAIN:
+            self.train(True)
             if trainable_params is None:
-                self.train(True)
                 unfreeze(self.parameters())
             else:
                 freeze(self.parameters())
