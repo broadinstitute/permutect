@@ -60,6 +60,27 @@ def test_command_placeholders_start_with_a_tilde():
     assert not missing_tilde, f"command placeholders missing their ~: {missing_tilde}"
 
 
+def test_runtime_attributes_guard_optional_inputs():
+    # e.g. memory: mem + " GB" with Int? mem failed runtime evaluation in Cromwell whenever mem was not given
+    unguarded = []
+    for wdl in glob.glob(os.path.join(SCRIPTS_DIR, "*.wdl")):
+        with open(wdl) as file:
+            text = file.read()
+        for task in re.split(r"^(?=task |workflow )", text, flags=re.M):
+            runtime = re.search(r"runtime\s*\{(.*?)\}", task, re.S)
+            if not task.startswith("task ") or runtime is None:
+                continue
+            optional_names = re.findall(r"^\s*[\w\[\], ]+\?\s+(\w+)", task[: task.index("command")], re.M)
+            # the expressions after each 'key:', without string literals and with select_first([...]) and defined(...)
+            expressions = "\n".join(re.findall(r"^\s*\w+\s*:(.*)$", runtime.group(1), re.M))
+            expressions = re.sub(r'"[^"]*"|select_first\(\[[^\]]*\]\)|defined\(\w+\)', "", expressions)
+            for name in optional_names:
+                if re.search(r"\b" + name + r"\b", expressions):
+                    unguarded.append(f"{os.path.basename(wdl)} task {task.split()[1]}: {name}")
+
+    assert not unguarded, f"optional inputs used in runtime attributes without select_first or defined: {unguarded}"
+
+
 def task_command(wdl_path: str, task_name: str) -> str:
     with open(wdl_path) as file:
         wdl = file.read()

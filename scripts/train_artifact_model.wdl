@@ -73,6 +73,9 @@ task Train {
         Int? mem
     }
 
+    # Mem is in units of GB but our memory runtime value is in MB
+    Int machine_mem = if defined(mem) then mem * 1000 else 16000
+
     command <<<
         set -e
 
@@ -99,7 +102,7 @@ task Train {
     runtime {
         docker: permutect_docker
         bootDiskSizeGb: 12
-        memory: mem + " GB"
+        memory: machine_mem + " MB"
         disks: "local-disk " + select_first([disk_space, 100]) + " SSD"
         preemptible: select_first([preemptible, 0])
         maxRetries: select_first([max_retries, 0])
