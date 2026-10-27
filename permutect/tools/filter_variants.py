@@ -502,7 +502,7 @@ def apply_filtering_to_vcf(
             "ID": POST_PROB_INFO_KEY,
             "Description": "Mutect3 posterior probability of {" + ", ".join(all_types) + "}",
             "Type": "Float",
-            "Number": "A",
+            "Number": str(len(all_types)),
         }
     )
     unfiltered_vcf.add_info_to_header(
@@ -510,7 +510,7 @@ def apply_filtering_to_vcf(
             "ID": LOG_PRIOR_INFO_KEY,
             "Description": "Log priors of {" + ", ".join(all_types) + "}",
             "Type": "Float",
-            "Number": "A",
+            "Number": str(len(all_types)),
         }
     )
     unfiltered_vcf.add_info_to_header(
@@ -518,7 +518,7 @@ def apply_filtering_to_vcf(
             "ID": SPECTRA_LOG_LIKELIHOOD_INFO_KEY,
             "Description": "Log spectra likelihoods of {" + ", ".join(all_types) + "}",
             "Type": "Float",
-            "Number": "A",
+            "Number": str(len(all_types)),
         }
     )
     unfiltered_vcf.add_info_to_header(
@@ -526,7 +526,7 @@ def apply_filtering_to_vcf(
             "ID": NORMAL_LOG_LIKELIHOOD_INFO_KEY,
             "Description": "Log normal likelihoods of {" + ", ".join(all_types) + "}",
             "Type": "Float",
-            "Number": "A",
+            "Number": str(len(all_types)),
         }
     )
     unfiltered_vcf.add_info_to_header(
