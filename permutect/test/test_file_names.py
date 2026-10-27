@@ -23,7 +23,6 @@ SEQC2_WES_NORMAL_SEGMENTS = os.path.join(integration_test_dir, "seqc2-wes-normal
 
 ARTIFACT_MODEL_V_0_4_0 = os.path.join(integration_test_dir, "artifact-model-v0.4.0.pt")
 PERMUTECT_V0_9_2_ARTIFACT_MODEL = os.path.join(integration_test_dir, "permutect-v0.9.2-artifact-model.pt")
-EXPERIMENTAL_MODEL = os.path.join(integration_test_dir, "experimental-model.pt")
 
 MUTECT2_CHR20_FILTERED_VCF = os.path.join(integration_test_dir, "mutect2_chr20.vcf")
 MUTECT2_SEQC2_WES_VCF = os.path.join(integration_test_dir, "mutect2_seqc2_wes_chr20.vcf")
