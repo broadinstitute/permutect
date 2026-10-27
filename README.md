@@ -46,13 +46,13 @@ This workflow runs Mutect2 in a mode that generates both an unfiltered VCF and a
 # Building the Permutect Docker image
 First of all, I ought to say right now that all this engineering stuff is total voodoo to me copied from other people's example.  I have done my best to make it professional but I really have no idea what I'm doing.  Here is an overview of all the magical files in this repo that somehow work to make a docker image.
 
-## requirements.txt
-This is a list of required python packages along with the minimum and maximum version numbers that will work.  Some of these version constraints are frighteningly precise and frankly this file terrifies me.  I gave up on the memory-map-ninja package and so I have actually simply copied the code from their repo into this one rather than importing it as a dependency.  A better software engineer would not do this.
+## pyproject.toml
+This is a list of required python packages along with the versions that will work.  It also tells pip where to look for command line programs and what names to give them.  Thus, for example, the main() method of permutect.tools.train_artifact_model becomes the command line program train_artifact_model.  If you want to build Permutect locally, instead of within a Docker image, you can run the terminal command "pip install ." from the root of this repo.
 
-## setup.py
-If you want to build Permutect locally, instead of within a Docker image, you must run the terminal command "pip install --no-cache-dir -r /requirements.txt".  I believe that setup.py tells pip where to look for command line programs and what names to give them.  Thus, for example, the main() method of permutect.tools.train_model becomes the command line program train_model.
+## pixi.toml
+For development, this defines [pixi](https://pixi.sh) environments with locked dependencies and tasks such as "pixi run test-unit", which runs the tests that CI runs.
 
 ## Dockerfile
-Most of the commands here use requirements.txt and setup.py to install Permutect in a Docker image with the correct dependencies.  Like requirements.txt, I am afraid of this file.  The command on my laptop for building a Docker image and pushing it to the cloud is "tag='optional_tag'; docker build -t us.gcr.io/broad-dsde-methods/davidben/permutect:${tag} .; docker push us.gcr.io/broad-dsde-methods/davidben/permutect:${tag}".  This will not work for you because you don't have access to us.gcr.io/broad-dsde-methods/davidben/permutect, but I hope that you are more competent than me and understand this stuff.
+This installs bcftools and GATK, then uses pyproject.toml to install Permutect in a Docker image with the correct dependencies.  I am afraid of this file.  The command on my laptop for building a Docker image and pushing it to the cloud is "tag='optional_tag'; docker build -t us.gcr.io/broad-dsde-methods/davidben/permutect:${tag} .; docker push us.gcr.io/broad-dsde-methods/davidben/permutect:${tag}".  This will not work for you because you don't have access to us.gcr.io/broad-dsde-methods/davidben/permutect, but I hope that you are more competent than me and understand this stuff.
 
 In the future the Broad Institute will host a pre-built Permutect Docker image so that only advanced users who clone this repo and modify the code will ever have to build one.
