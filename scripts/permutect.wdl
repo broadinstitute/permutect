@@ -282,7 +282,7 @@ workflow Permutect {
     Int command_mem = machine_mem - 500
 
     command <<<
-        # set -e
+        set -euo pipefail
         genomic_span=`grep "callable" ~{mutect_stats} | while read name value; do echo $value; done`
 
         filter_variants --input ~{mutect2_vcf} --test_dataset ~{test_dataset} \
@@ -386,6 +386,7 @@ task SplitMultiallelics {
     Int command_mem = machine_mem - 500
 
     command <<<
+        set -euo pipefail
 
         bcftools norm -m -any -f ~{ref_fasta} ~{input_vcf} > split.vcf
 
@@ -394,9 +395,6 @@ task SplitMultiallelics {
         gatk --java-options "-Xmx~{command_mem}m" SelectVariants -V split.vcf -O output.vcf --lenient \
             -DGA DP -DGA AF -DGA F1R2 -DGA F2R1 -DGA FAD -DGA SB \
             -DA AS_FilterStatus -DA AS_SB_TABLE -DA ECNT -DA GERMQ -DA MBQ -DA MFRL -DA MMQ -DA MPOS
-
-        set -e
-
     >>>
 
     runtime {

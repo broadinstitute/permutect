@@ -151,7 +151,7 @@ def train_one_epoch(
         for downsampling_iteration in range(2):
             ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
             batch = DownsampledBatch(parent_batch, ref_fracs_b, alt_fracs_b)
-            output = model.compute_batch_output(batch, balancer)
+            output = model.compute_batch_output(batch, balancer, update_balancer=epoch_type == Epoch.TRAIN)
             losses = model.compute_batch_losses(output, batch)
             loss_recorder.record(output, losses, batch)
 
@@ -177,8 +177,8 @@ def train_one_epoch(
         balancer.make_plots(summary_writer, weight_prefix, epoch, PlotType.WEIGHTS)
         balancer.make_plots(summary_writer, count_prefix, epoch, PlotType.COUNTS)
 
-    print(f"performing evaluation on epoch {epoch}")
-    if epoch_type == Epoch.VALID:
+    if epoch_type == Epoch.VALID and generate_plots:
+        print(f"performing evaluation on epoch {epoch}")
         evaluate_model(
             model,
             epoch,
@@ -222,7 +222,7 @@ def collect_evaluation_data(
             for _ in range(3):
                 ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
                 batch = DownsampledBatch(parent_batch, ref_fracs_b=ref_fracs_b, alt_fracs_b=alt_fracs_b)
-                output = model.compute_batch_output(batch, balancer)
+                output = model.compute_batch_output(batch, balancer, update_balancer=False)
 
                 evaluation_metrics.record_batch(epoch_type, batch, logits=output.logits_b, weights=output.weights)
 

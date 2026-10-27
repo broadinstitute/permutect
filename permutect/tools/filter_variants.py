@@ -338,6 +338,9 @@ def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_
     # to get artifact logits, which we record in a dict keyed by variant strings.  These will later be added to PosteriorDatum objects.
     loader = dataset.make_data_loader(batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
 
+    # test-time adaptation leaves the model in training mode, which would turn on dropout and batch norm updates
+    model.train(False)
+
     print("creating posterior data...")
     batch: Batch
     for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
@@ -497,38 +500,21 @@ def apply_filtering_to_vcf(
 
     all_types = [call_type.name for call_type in Call]
     declare_format_dp(unfiltered_vcf)
-    unfiltered_vcf.add_info_to_header(
-        {
-            "ID": POST_PROB_INFO_KEY,
-            "Description": "Mutect3 posterior probability of {" + ", ".join(all_types) + "}",
-            "Type": "Float",
-            "Number": "A",
-        }
-    )
-    unfiltered_vcf.add_info_to_header(
-        {
-            "ID": LOG_PRIOR_INFO_KEY,
-            "Description": "Log priors of {" + ", ".join(all_types) + "}",
-            "Type": "Float",
-            "Number": "A",
-        }
-    )
-    unfiltered_vcf.add_info_to_header(
-        {
-            "ID": SPECTRA_LOG_LIKELIHOOD_INFO_KEY,
-            "Description": "Log spectra likelihoods of {" + ", ".join(all_types) + "}",
-            "Type": "Float",
-            "Number": "A",
-        }
-    )
-    unfiltered_vcf.add_info_to_header(
-        {
-            "ID": NORMAL_LOG_LIKELIHOOD_INFO_KEY,
-            "Description": "Log normal likelihoods of {" + ", ".join(all_types) + "}",
-            "Type": "Float",
-            "Number": "A",
-        }
-    )
+    # these have one value per Call type, not per alt allele
+    for info_key, description in (
+        (POST_PROB_INFO_KEY, "Mutect3 posterior probability of"),
+        (LOG_PRIOR_INFO_KEY, "Log priors of"),
+        (SPECTRA_LOG_LIKELIHOOD_INFO_KEY, "Log spectra likelihoods of"),
+        (NORMAL_LOG_LIKELIHOOD_INFO_KEY, "Log normal likelihoods of"),
+    ):
+        unfiltered_vcf.add_info_to_header(
+            {
+                "ID": info_key,
+                "Description": description + " {" + ", ".join(all_types) + "}",
+                "Type": "Float",
+                "Number": str(len(Call)),
+            }
+        )
     unfiltered_vcf.add_info_to_header(
         {
             "ID": ARTIFACT_LOD_INFO_KEY,

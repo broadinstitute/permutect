@@ -1,10 +1,19 @@
 import re
 
+import numpy as np
+import pytest
 import torch
+from matplotlib import pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 
+from permutect.data.batch import Batch
+from permutect.data.datum import RAW_READS_ARRAY_DTYPE
+from permutect.data.datum import Data
+from permutect.data.datum import Datum
 from permutect.metrics.evaluation_metrics import EmbeddingMetrics
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
+from permutect.utils.enums import Epoch
+from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
 
 
@@ -56,3 +65,45 @@ def test_mistake_histograms_with_no_mistakes(tmp_path):
     evaluation_metrics = EvaluationMetrics(num_sources=1, device=torch.device("cpu")).put_on_cpu()
     evaluation_metrics.make_mistake_histograms(summary_writer)
     summary_writer.close()
+
+
+class FigureTagRecorder:
+    # a stand-in for a SummaryWriter that records the tag of each figure
+    def __init__(self):
+        self.tags = []
+
+    def add_figure(self, tag, figure, global_step=None):
+        self.tags.append(tag)
+        plt.close(figure)
+
+
+def make_datum(label: Label, source: int) -> Datum:
+    datum = Datum(
+        int_array=np.zeros(Data.NUM_SCALAR_INT_ELEMENTS),
+        float_array=np.zeros(Data.NUM_SCALAR_FLOAT_ELEMENTS),
+        reads_re=np.zeros((3, 2), dtype=RAW_READS_ARRAY_DTYPE),
+    )
+    datum.set(Data.LABEL, label)
+    datum.set(Data.SOURCE, source)
+    datum.set(Data.REF_COUNT, 2)
+    datum.set(Data.ALT_COUNT, 1)
+    return datum
+
+
+@pytest.mark.parametrize("num_sources", [1, 2])
+def test_each_evaluation_figure_is_written_once(num_sources):
+    metrics = EvaluationMetrics(num_sources=num_sources, device=torch.device("cpu"))
+    data = [make_datum(label, source) for label in (Label.ARTIFACT, Label.VARIANT) for source in range(num_sources)]
+    epoch_types = [Epoch.TRAIN, Epoch.VALID]
+    for epoch_type in epoch_types:
+        metrics.record_batch(epoch_type, Batch(data), logits=torch.zeros(len(data)))
+    metrics.put_on_cpu()
+
+    summary_writer = FigureTagRecorder()
+    metrics.make_plots(summary_writer, epoch=1)
+    assert len(summary_writer.tags) == len(set(summary_writer.tags))
+
+    # for each epoch type, accuracy, calibration and ROC figures for each source and for all sources if there are
+    # several, then logit histograms
+    num_source_plots = num_sources if num_sources == 1 else num_sources + 1
+    assert len(summary_writer.tags) == len(epoch_types) * (3 * num_source_plots + 1)

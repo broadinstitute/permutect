@@ -90,6 +90,16 @@ class Balancer(Module):
             self.count_since_last_recomputation = 0
             # TODO: also attenuate counts -- multiply by an attenuation factor or something?
 
+        return self.compute_weights(batch, artifact_probs_b)
+
+    def compute_weights(self, batch: Batch, artifact_probs_b: Tensor):
+        # the weights from the current counts, without updating them, eg for validation data
+        idx = batch.batch_indices()
+        art_probs_b = artifact_probs_b.to(device=self.device)
+        unlabeled_mask = 1 - batch.get_is_labeled_mask()
+        artifact_labels = torch.tensor([Label.ARTIFACT], device=self.device).expand(batch.size())
+        nonartifact_labels = torch.tensor([Label.VARIANT], device=self.device).expand(batch.size())
+
         labeled_weights_b = idx.index_into_tensor(self.weights_slvra)
         pseudo_art_weights_b = idx.index_into_tensor(self.unlabeled_weights_slvra, labels=artifact_labels)
         pseudo_nonart_weights_b = idx.index_into_tensor(self.unlabeled_weights_slvra, labels=nonartifact_labels)

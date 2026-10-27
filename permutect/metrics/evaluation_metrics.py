@@ -1,6 +1,5 @@
 import math
 from collections import defaultdict
-from itertools import chain
 from typing import List
 
 import numpy as np
@@ -163,9 +162,12 @@ class EvaluationMetrics:
         ref_count_names = [ref_count_bin_name(bin_idx) for bin_idx in range(NUM_REF_COUNT_BINS)] + ["ALL"]
         alt_count_names = [alt_count_bin_name(bin_idx) for bin_idx in range(NUM_ALT_COUNT_BINS)] + ["ALL"]
 
+        # None means all sources, which is the same as source 0 when there is only one
+        sources = list(range(num_sources)) + ([None] if num_sources > 1 else [])
+
         accuracy_metrics: AccuracyMetrics
         for epoch_type, accuracy_metrics in self.accuracy_metrics_by_epoch_type.items():
-            for source in chain(range(num_sources), [None]):
+            for source in sources:
                 acc_fig, acc_axes = plt.subplots(
                     2,
                     len(Variation),

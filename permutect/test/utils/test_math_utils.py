@@ -20,7 +20,8 @@ def test_add_in_log_space():
     logx, logy = torch.log(x), torch.log(y)
     exact = x + y
     calc = torch.exp(add_in_log_space(logx, logy))
-    assert torch.sum(torch.abs(exact - calc)).item() < 10 ** (-6)
+    # elementwise, within float32 precision; the error summed over all elements often exceeded 10^(-6)
+    torch.testing.assert_close(calc, exact)
 
 
 def test_subtract_in_log_space():
