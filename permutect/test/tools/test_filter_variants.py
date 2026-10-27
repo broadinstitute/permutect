@@ -124,6 +124,21 @@ def test_filtering_on_seqc2_wes_chr20():
 
     filter_variants.main_without_parsing(filtering_args)
 
+    # these INFO fields have one value per Call type, which the header must declare for allele-aware tools
+    per_call_info_keys = [
+        filter_variants.POST_PROB_INFO_KEY,
+        filter_variants.LOG_PRIOR_INFO_KEY,
+        filter_variants.SPECTRA_LOG_LIKELIHOOD_INFO_KEY,
+        filter_variants.NORMAL_LOG_LIKELIHOOD_INFO_KEY,
+    ]
+    output_vcf = cyvcf2.VCF(permutect_vcf.name)
+    for info_key in per_call_info_keys:
+        assert output_vcf.get_header_type(info_key)["Number"] == str(len(Call))
+    for v in output_vcf:
+        for info_key in per_call_info_keys:
+            values = v.INFO.get(info_key)
+            assert values is None or len(values) == len(Call)
+
     # variants with trusted non-artifact filters are output unchanged, while variants with trusted artifact filters
     # keep them and are seen by the posterior model as definite artifacts or normal artifacts
     input_records = {(v.CHROM, v.POS, v.REF, v.ALT[0]): str(v) for v in cyvcf2.VCF(pre_filtered_vcf.name)}
