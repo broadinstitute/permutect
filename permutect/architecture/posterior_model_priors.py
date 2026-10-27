@@ -56,10 +56,10 @@ class PosteriorModelPriors(nn.Module):
     """
     Important technical point: the priors here really only apply to somatic variants, artifacts, and
     normal artifacts.
-    The prior for germline variants depends not on this Module but on the population allele frequency of each
-    particular variant.  Therefore the germline prior is actually implemented within the germline_log_likelihoods
-    function of the PosteriorModelSpectra class.  In this model the log germline prior is set to zero (except in
-    no_germline mode, where it is set to -9999 to effectively turn off germline calls) in order to have no effect.
+    The prior for germline variants is not learned but depends on the population allele frequency of each
+    particular variant.  Therefore the stored log germline prior is set to zero (except in no_germline mode, where it
+    is set to -9999 to effectively turn off germline calls) and is replaced in log_priors_bc by the per-variant log
+    probability of not being hom ref.
     The sequencing error log prior is also set to zero because sequencing error essentially *always* happens!  More
     precisely, the sequencing error *generative process* of the sequencer having some stochastic process of misread
     bases is always occurring.  Usually this process does not cause error.  The question is not whether sequencing error
@@ -128,15 +128,17 @@ class PosteriorModelPriors(nn.Module):
 
     def log_priors_bc(self, batch: Batch) -> torch.Tensor:
         variant_types_b = batch.get(Data.VARIANT_TYPE).long()
-        allele_frequencies_b = batch.get(Data.ALLELE_FREQUENCY)
+        log_allele_frequencies_b = batch.get(Data.LOG_ALLELE_FREQUENCY)
         is_snv_b = (variant_types_b == Variation.SNV).float()
 
         # seq error and germline initialized to 0 or -9999 as discussed above
         log_priors_bc = self.log_priors_vc[variant_types_b.long(), :]
         log_priors_bc[:, Call.SEQ_ERROR] = 0
         log_priors_bc[:, Call.GERMLINE] = (
-            -9999 if self.no_germline_mode else torch.log(1 - torch.square(1 - allele_frequencies_b))
-        )  # 1 minus hom ref probability
+            -9999
+            if self.no_germline_mode
+            else log_allele_frequencies_b + torch.log(2 - torch.exp(log_allele_frequencies_b))
+        )  # 1 minus hom ref probability: 1 - (1 - AF)^2 = AF (2 - AF)
 
         if self.use_context_dependent_snv_priors:
             log_priors_bc[:, Call.SOMATIC] = (

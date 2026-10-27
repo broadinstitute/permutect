@@ -66,11 +66,12 @@ class Data(enum.Enum):
     # after this, at the end of the int16 array comes the sub-array containing the ref sequence haplotype
 
     # float array elements
-    # allele frequency, maf, normal maf, and cached artifact logit are not used until the posterior model
+    # log allele frequency, maf, normal maf, and cached artifact logit are not used until the posterior model
     # are are set to
+    # allele frequency is stored as its natural log because population allele frequencies can be too small for float16
     SEQ_ERROR_LOG_LK = (FLOAT_DTYPE, 0)
     NORMAL_SEQ_ERROR_LOG_LK = (FLOAT_DTYPE, 1)
-    ALLELE_FREQUENCY = (FLOAT_DTYPE, 2)
+    LOG_ALLELE_FREQUENCY = (FLOAT_DTYPE, 2)
     MAF = (FLOAT_DTYPE, 3)
     NORMAL_MAF = (FLOAT_DTYPE, 4)
     CACHED_ARTIFACT_LOGIT = (FLOAT_DTYPE, 5)  # +inf marks a known artifact, eg from a trusted upstream filter
@@ -177,7 +178,7 @@ class Datum:
             Data.NORMAL_SEQ_ERROR_LOG_LK, normal_seq_error_log_lk
         )  # this is -log10ToLog(NALOD) - log(normalDepth + 1)
 
-        result.set(Data.ALLELE_FREQUENCY, np.nan)
+        result.set(Data.LOG_ALLELE_FREQUENCY, np.nan)
         result.set(Data.MAF, np.nan)
         result.set(Data.NORMAL_MAF, np.nan)
         result.set(Data.CACHED_ARTIFACT_LOGIT, np.nan)
