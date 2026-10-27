@@ -117,6 +117,9 @@ def consolidate_adjacent_stacks(structures, contig: str, start_position: int, se
 
 
 def fold_sequence(sequence: str, contig: str, start_position: int) -> list[StemLoop]:
+    # seqfold raises an error on N and other IUPAC codes, so skip windows that contain them, eg near assembly gaps
+    if not set(sequence.upper()) <= set("ACGT"):
+        return []
     structures = seqfold.fold(sequence, temp=70)
     return consolidate_adjacent_stacks(structures, contig, start_position, sequence)
 

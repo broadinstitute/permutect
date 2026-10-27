@@ -132,6 +132,7 @@ workflow Permutect {
                 dragstr_model = dragstr_model_hack,
                 run_orientation_bias_mixture_model_filter = run_orientation_bias_mixture_model_filter,
                 m2_extra_args = m2_extra_args,
+                split_intervals_extra_args = split_intervals_extra_args,
                 common_hets_for_segmentation = common_hets_for_segmentation_hack,
                 collect_allelic_counts_extra_args = collect_allelic_counts_extra_args,
                 model_segments_min_total_allele_count = model_segments_min_total_allele_count,

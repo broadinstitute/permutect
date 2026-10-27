@@ -19,7 +19,7 @@ task concatenate {
 	}
 
 	command <<<
-        touch TMP   $ first column is the heading word, second column is the file name
+        touch TMP   # first column is the heading word, second column is the file name
 
         for file in ~{sep=' ' inputs}; do
             echo "file is" $file

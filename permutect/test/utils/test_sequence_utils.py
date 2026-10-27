@@ -127,3 +127,36 @@ def test_sequences_fold_into_stem_loops():
     ]
     assert contains_near_stem_loop(stem_loops_with_final_g, "chr20", final_g_position)
     assert not contains_near_stem_loop(stem_loops_with_final_g, "chr20", final_g_position, max_energy=0.5)
+
+
+def test_fold_sequence_skips_non_acgt_bases():
+    # seqfold raises on N and IUPAC codes, which used to abort pre_permutect_filtering
+    assert fold_sequence("TTATCTCCTAAGNTATGGCTTAGATT", contig="chr1", start_position=0) == []
+    assert fold_sequence("TTATCTCCTAAGRTATGGCTTAGATT", contig="chr1", start_position=0) == []
+    assert fold_sequence("ttatctcctaagntatggcttagatt", contig="chr1", start_position=0) == []
+    assert fold_sequence("N" * 25, contig="chr1", start_position=0) == []
+
+    # soft-masked (lowercase) bases are still folded
+    assert fold_sequence("ttatctcctaagctatggcttagatt", contig="chr1", start_position=0)
+
+
+def test_find_near_stem_loop_next_to_n_gap():
+    class Reference:
+        def __init__(self, sequence):
+            self.sequence = sequence
+
+        def get_reference_length(self, contig):
+            return len(self.sequence)
+
+        def fetch(self, contig, start, end):
+            return self.sequence[start:end]
+
+    # the downstream window [17, 42) overlaps the N gap but the upstream window [32, 57) is foldable
+    reference = Reference("N" * 30 + "TTATCTCCTAAGCTATGGCTTAGATT" + "ACGTACGTAC")
+    result = find_near_stem_loop(reference, "chr1", 37)
+    assert result is not None
+    stem_loop, distance = result
+    assert stem_loop.start_position == 32
+    assert distance == 0
+
+    assert find_near_stem_loop(Reference("N" * 100), "chr1", 50) is None

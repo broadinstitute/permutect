@@ -72,6 +72,10 @@ class EvaluationMetrics:
 
     def make_mistake_histograms(self, summary_writer: SummaryWriter):
         assert self.has_been_sent_to_cpu, "Can't make plots before sending to CPU"
+        # if every labeled site was called correctly there is nothing to plot, and plt.subplots(0, ...) would fail
+        if not self.mistakes:
+            return
+
         # indexed by call then var_type, inner is a list of posterior results with that call and var type
         posterior_result_mistakes_by_call_and_var_type = defaultdict(lambda: defaultdict(list))
         for posterior_result, call in self.mistakes:
