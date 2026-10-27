@@ -18,6 +18,8 @@ from intervaltree import IntervalTree
 from tqdm import tqdm
 
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
+from permutect.data.datum import FLOAT_DTYPE
+from permutect.data.datum import INTEGER_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.misc_utils import Timer
@@ -31,6 +33,24 @@ SUFFIX_FOR_INT_MMAP = ".int_mmap.npy"
 SUFFIX_FOR_FLOAT_MMAP = ".float_mmap.npy"
 SUFFIX_FOR_READS_MMAP = ".reads_mmap.npy"
 SUFFIX_FOR_METADATA = ".metadata.npy"
+
+
+def grown_memory_map(old_mmap, required_rows: int, estimated_rows: int, row_shape: tuple, dtype, suffix: str):
+    """
+    Create a larger memory map and copy the old one's data into it, like the amortized O(N) append operation on lists.
+    The first capacity is the estimate and later ones double, but capacity is always at least required_rows, even if
+    the estimate is 0 or a single Datum has more reads than doubling makes room for.
+
+    :return: the new memory map and its temporary file, which callers must keep because the file is deleted when it is
+        garbage collected
+    """
+    old_capacity = 0 if old_mmap is None else len(old_mmap)
+    capacity = max(required_rows, estimated_rows if old_mmap is None else 2 * old_capacity)
+    new_file = NamedTemporaryFile(suffix=suffix)
+    new_mmap = np.memmap(new_file.name, dtype=dtype, mode="w+", shape=(capacity,) + tuple(row_shape))
+    if old_mmap is not None:
+        new_mmap[:old_capacity] = old_mmap
+    return new_mmap, new_file
 
 
 class MemoryMappedData:
@@ -114,7 +134,7 @@ class MemoryMappedData:
             total += 1
             labeled_count += 1 if datum.is_labeled() else 0
 
-        labeled_proportion = labeled_count / total
+        labeled_proportion = labeled_count / total if total > 0 else 0
         fudge_factor = 1.1
         estimated_num_reads = int(self.num_reads * labeled_proportion * fudge_factor)
         estimated_num_data = int(self.num_data * labeled_proportion * fudge_factor)
@@ -307,8 +327,8 @@ class MemoryMappedData:
         :return:
         """
         num_data, num_reads = 0, 0
-        data_capacity, reads_capacity = 0, 0
         int_mmap, float_mmap, reads_mmap = None, None, None
+        int_file, float_file, reads_file = None, None, None
 
         datum: Datum
         for datum in reads_datum_source:
@@ -319,30 +339,30 @@ class MemoryMappedData:
             num_data += 1
             num_reads += len(reads_array)
 
-            # double capacity or set to initial estimate, create new file and mmap, copy old data
-            if num_data > data_capacity:
-                data_capacity = estimated_num_data if data_capacity == 0 else data_capacity * 2
-                int_file, float_file = (
-                    NamedTemporaryFile(suffix=SUFFIX_FOR_INT_MMAP),
-                    NamedTemporaryFile(suffix=SUFFIX_FOR_FLOAT_MMAP),
+            # set capacity to initial estimate or grow it, create new file and mmap, copy old data
+            if num_data > (0 if int_mmap is None else len(int_mmap)):
+                int_mmap, int_file = grown_memory_map(
+                    int_mmap, num_data, estimated_num_data, int_array.shape, int_array.dtype, SUFFIX_FOR_INT_MMAP
                 )
-                old_int_mmap, old_float_mmap = int_mmap, float_mmap
-                int_shape, float_shape = (data_capacity, int_array.shape[-1]), (data_capacity, float_array.shape[-1])
-                int_mmap = np.memmap(int_file.name, dtype=int_array.dtype, mode="w+", shape=int_shape)
-                float_mmap = np.memmap(float_file.name, dtype=float_array.dtype, mode="w+", shape=float_shape)
-                if old_int_mmap is not None:
-                    int_mmap[: len(old_int_mmap)] = old_int_mmap
-                    float_mmap[: len(old_float_mmap)] = old_float_mmap
+                float_mmap, float_file = grown_memory_map(
+                    float_mmap,
+                    num_data,
+                    estimated_num_data,
+                    float_array.shape,
+                    float_array.dtype,
+                    SUFFIX_FOR_FLOAT_MMAP,
+                )
 
             # likewise for reads
-            if num_reads > reads_capacity:
-                reads_capacity = estimated_num_reads if reads_capacity == 0 else reads_capacity * 2
-                reads_file = NamedTemporaryFile(suffix=SUFFIX_FOR_READS_MMAP)
-                old_reads_mmap = reads_mmap
-                reads_shape = (reads_capacity, reads_array.shape[-1])
-                reads_mmap = np.memmap(reads_file.name, dtype=reads_array.dtype, mode="w+", shape=reads_shape)
-                if old_reads_mmap is not None:
-                    reads_mmap[: len(old_reads_mmap)] = old_reads_mmap
+            if num_reads > (0 if reads_mmap is None else len(reads_mmap)):
+                reads_mmap, reads_file = grown_memory_map(
+                    reads_mmap,
+                    num_reads,
+                    estimated_num_reads,
+                    reads_array.shape[1:],
+                    reads_array.dtype,
+                    SUFFIX_FOR_READS_MMAP,
+                )
 
             # write new data
             int_mmap[num_data - 1] = int_array
@@ -355,8 +375,12 @@ class MemoryMappedData:
                 memmap.flush()
 
         # re-open new mmap objects in 'r' (read-only) mode for faster access
-        int_mmap = np.memmap(int_mmap.filename, dtype=int_mmap.dtype, mode="r", shape=int_mmap.shape)
-        float_mmap = np.memmap(float_mmap.filename, dtype=float_mmap.dtype, mode="r", shape=float_mmap.shape)
+        if num_data == 0:
+            # with no Datum the array widths are unknown, and an empty file can't be memory-mapped
+            int_mmap, float_mmap = np.zeros((0, 0), dtype=INTEGER_DTYPE), np.zeros((0, 0), dtype=FLOAT_DTYPE)
+        else:
+            int_mmap = np.memmap(int_mmap.filename, dtype=int_mmap.dtype, mode="r", shape=int_mmap.shape)
+            float_mmap = np.memmap(float_mmap.filename, dtype=float_mmap.dtype, mode="r", shape=float_mmap.shape)
         if reads_mmap is not None:
             reads_mmap = np.memmap(reads_mmap.filename, dtype=reads_mmap.dtype, mode="r", shape=reads_mmap.shape)
 
