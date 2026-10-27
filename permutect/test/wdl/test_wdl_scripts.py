@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tarfile
 
 import pytest
 
@@ -107,6 +108,18 @@ def task_command(wdl_path: str, task_name: str) -> str:
     task_start = wdl.index("task " + task_name + " {")
     command_start = wdl.index("command <<<", task_start) + len("command <<<")
     return wdl[command_start : wdl.index(">>>", command_start)]
+
+
+def task_output_files(wdl_path: str, task_name: str) -> dict:
+    """
+    The file names of a task's file outputs, eg File? maf_segments = "maf_segments.seg", by output name
+    """
+    with open(wdl_path) as file:
+        wdl = file.read()
+    task_start = wdl.index("task " + task_name + " {")
+    output_start = wdl.index("output {", task_start)
+    outputs = wdl[output_start : wdl.index("}", output_start)]
+    return dict(re.findall(r'File\??\s+(\w+)\s*=\s*"([^"]+)"', outputs))
 
 
 def fill_placeholders(command: str, inputs: dict) -> str:
@@ -273,3 +286,53 @@ def test_permutect_filtering_stops_when_filter_variants_fails(tmp_path, filter_v
     succeeded, calls = run_with_fake_tools(tmp_path, command, fake_tools)
     assert succeeded == (filter_variants_exit_code == 0)
     assert calls == expected_calls
+
+
+@pytest.mark.parametrize("with_segments", [True, False])
+def test_archive_and_extract_m2_outputs(tmp_path, with_segments):
+    # Mutect2 outputs with distinct contents, named as Mutect2 names them
+    m2_dir, archive_dir, extract_dir = tmp_path / "mutect2", tmp_path / "archive", tmp_path / "extract"
+    for directory in (m2_dir, archive_dir, extract_dir):
+        directory.mkdir()
+    m2_file_names = {
+        "test_dataset": "test-dataset.txt",
+        "mutect2_vcf": "merged.vcf",
+        "mutect2_vcf_idx": "merged.vcf.idx",
+        "contigs_table": "contigs.table",
+        "mutect_stats": "merged.stats",
+        "maf_segments": "tumor.modelFinal.seg",
+        "normal_maf_segments": "normal.modelFinal.seg",
+    }
+    m2_outputs = {}
+    for name, file_name in m2_file_names.items():
+        if with_segments or not name.endswith("maf_segments"):
+            (m2_dir / file_name).write_text(f"contents of {name}\n")
+            m2_outputs[name] = str(m2_dir / file_name)
+        else:
+            m2_outputs[name] = None
+
+    archive_command = fill_placeholders(task_command(PERMUTECT_WDL, "ArchiveM2Outputs"), m2_outputs)
+    result = subprocess.run(["bash", "-c", archive_command], cwd=archive_dir, capture_output=True)
+    assert result.returncode == 0, result.stderr.decode()
+    archive = archive_dir / task_output_files(PERMUTECT_WDL, "ArchiveM2Outputs")["m2_outputs"]
+
+    # an uncompressed archive of the files themselves, not of links to them
+    with tarfile.open(archive, mode="r:") as tar:
+        assert all(member.isfile() or member.isdir() for member in tar.getmembers())
+
+    extract_command = fill_placeholders(task_command(PERMUTECT_WDL, "ExtractM2Outputs"), {"cached_m2_outputs": archive})
+    result = subprocess.run(["bash", "-c", extract_command], cwd=extract_dir, capture_output=True)
+    assert result.returncode == 0, result.stderr.decode()
+
+    # each archived Mutect2 output is extracted as the ExtractM2Outputs output of the same name
+    extracted_file_names = task_output_files(PERMUTECT_WDL, "ExtractM2Outputs")
+    assert extracted_file_names.keys() == m2_outputs.keys()
+    for name, file_name in extracted_file_names.items():
+        extracted = extract_dir / file_name
+        if m2_outputs[name] is None:
+            assert not extracted.exists()
+        else:
+            assert extracted.read_text() == f"contents of {name}\n"
+
+    # GATK finds the VCF index by its name
+    assert extracted_file_names["mutect2_vcf_idx"] == extracted_file_names["mutect2_vcf"] + ".idx"
