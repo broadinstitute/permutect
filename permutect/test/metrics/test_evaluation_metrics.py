@@ -4,6 +4,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from permutect.metrics.evaluation_metrics import EmbeddingMetrics
+from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.utils.enums import Variation
 
 
@@ -47,3 +48,11 @@ def test_embeddings_skip_variant_types_without_data(tmp_path):
     for variant_type in Variation:
         if variant_type != Variation.SNV:
             assert not any(variant_type.name in tag for tag in tags)
+
+
+def test_mistake_histograms_with_no_mistakes(tmp_path):
+    # filter_variants with a truth VCF where every labeled site is called correctly used to crash here
+    summary_writer = SummaryWriter(log_dir=str(tmp_path))
+    evaluation_metrics = EvaluationMetrics(num_sources=1, device=torch.device("cpu")).put_on_cpu()
+    evaluation_metrics.make_mistake_histograms(summary_writer)
+    summary_writer.close()
