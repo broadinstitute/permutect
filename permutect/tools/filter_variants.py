@@ -43,7 +43,7 @@ from permutect.utils.enums import Call
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
-from permutect.utils.math_utils import inverse_sigmoid
+from permutect.utils.math_utils import LOGIT_EPS
 from permutect.utils.math_utils import prob_to_logit
 
 # Trusted filters in the input VCF come from Mutect2, except for hairpin, which comes from pre_permutect_filtering.
@@ -439,8 +439,8 @@ def apply_filtering_to_vcf(
         )
 
         posterior_probs_bc = torch.nn.functional.softmax(log_posteriors_bc, dim=1)
-        error_probs_b = 1 - posterior_probs_bc[:, passing_call_type]
-        error_logits_b = inverse_sigmoid(error_probs_b)
+        error_probs_b = posterior_model.error_probabilities_from_posteriors_b(posterior_probs_bc, germline_mode)
+        error_logits_b = torch.logit(error_probs_b, eps=LOGIT_EPS)
         # this does nothing if the test dataset was generated without a truth VCF and thus has no labels
         # note that here we use error logits, not artifact logits
         # TODO: maybe also have an option to record relative to the computed probability thresholds.
@@ -464,9 +464,10 @@ def apply_filtering_to_vcf(
         ]
         # NOTE: for posterior data, batch.get_info_be actually gets the embedding array!!!!!
         # TODO: perhaps make this safer
-        for datum, post_probs, logit, log_prior, log_spec, log_normal, embedding in zip(
+        for datum, post_probs, error_prob, logit, log_prior, log_spec, log_normal, embedding in zip(
             data,
             posterior_probs_bc,
+            error_probs_b.tolist(),
             artifact_logits,
             log_priors_bc,
             spectra_log_lks_bc,
@@ -477,6 +478,7 @@ def apply_filtering_to_vcf(
             encoding_to_posterior_results[encoding] = PosteriorResult(
                 artifact_logit=logit,
                 posterior_probabilities=post_probs.tolist(),
+                error_probability=error_prob,
                 log_priors=log_prior,
                 spectra_lls=log_spec,
                 normal_lls=log_normal,
@@ -553,9 +555,8 @@ def apply_filtering_to_vcf(
             )
 
             label = Label(posterior_result.label)  # this is the Label enum, might be UNLABELED
-            error_prob = 1 - post_probs[passing_call_type]
             variant_type = find_variant_type(v)
-            called_as_error = error_prob > error_probability_thresholds[variant_type]
+            called_as_error = posterior_result.error_probability > error_probability_thresholds[variant_type]
 
             error_call = None
 
@@ -571,7 +572,6 @@ def apply_filtering_to_vcf(
             correctness_label = EmbeddingMetrics.UNKNOWN
             if label != Label.UNLABELED:
                 labeled_truth = True
-                clipped_error_prob = 0.5 + 0.9999999 * (error_prob - 0.5)  # noqa: F841
 
                 # TODO: this is sloppy -- it only works because when we label the posterior dataset (if truth is available)
                 # TODO: we stretch the definitions so that "Label.ARTIFACT" simply means "something we shouldn't call", including

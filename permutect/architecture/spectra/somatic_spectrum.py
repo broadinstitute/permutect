@@ -10,7 +10,6 @@ from permutect.architecture.parameterizations import LogWeights
 from permutect.architecture.spectra.spectrum import Spectrum
 from permutect.architecture.spectra.spectrum import allele_fraction_grid
 from permutect.architecture.spectra.spectrum import smeared_densities
-from permutect.utils.math_utils import add_in_log_space
 from permutect.utils.stats_utils import beta_binomial_log_lk
 from permutect.utils.stats_utils import uniform_binomial_log_lk
 
@@ -88,7 +87,7 @@ class SomaticSpectrum(Spectrum):
             n=depths_b, k=alt_counts_b, alpha=self.background_alpha, beta=self.background_beta
         )
 
-        result_b = add_in_log_space(
+        result_b = torch.logaddexp(
             self.log_non_background_weight + non_background_log_lks_b,
             self.log_background_weight + background_log_lks_b,
         )

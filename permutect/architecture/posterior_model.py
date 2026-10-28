@@ -24,8 +24,8 @@ from permutect.misc_utils import resolve_device
 from permutect.utils.enums import Call
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
+from permutect.utils.math_utils import LOGIT_EPS
 from permutect.utils.math_utils import f_score
-from permutect.utils.math_utils import inverse_sigmoid
 from permutect.utils.math_utils import prob_to_logit
 
 
@@ -93,10 +93,16 @@ class PosteriorModel(torch.nn.Module):
         :param batch:
         :return: non-log error probabilities as a 1D tensor with length batch size
         """
+        return self.error_probabilities_from_posteriors_b(self.posterior_probabilities_bc(batch), germline_mode)
+
+    def error_probabilities_from_posteriors_b(self, posterior_probs_bc: Tensor, germline_mode: bool = False) -> Tensor:
+        """
+        :param posterior_probs_bc: non-log posterior probabilities, as from posterior_probabilities_bc
+        :param germline_mode: if True, germline classification is not considered an error mode
+        :return: non-log error probabilities as a 1D tensor with length batch size
+        """
         assert not (germline_mode and self.no_germline_mode), "germline mode and no-germline mode are incompatible"
-        return (
-            1 - self.posterior_probabilities_bc(batch)[:, Call.GERMLINE if germline_mode else Call.SOMATIC]
-        )  # 0th column is variant
+        return 1 - posterior_probs_bc[:, Call.GERMLINE if germline_mode else Call.SOMATIC]  # 0th column is variant
 
     def log_posterior_and_ingredients(self, batch: Batch) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """
@@ -266,7 +272,7 @@ class PosteriorModel(torch.nn.Module):
                 ref_counts=torch.zeros_like(var_types_b),
                 alt_counts=batch.get(Data.ALT_COUNT).cpu(),
             )
-            error_logits_b = inverse_sigmoid(error_probs_b)
+            error_logits_b = torch.logit(error_probs_b, eps=LOGIT_EPS)
             indices.increment_tensor(theoretical_metrics, values=1 - error_probs_b, logits=error_logits_b)
             artifact_labels_b = torch.full_like(var_types_b, Label.ARTIFACT)
             indices.increment_tensor(
