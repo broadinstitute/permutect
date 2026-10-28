@@ -3,12 +3,12 @@ import math
 import torch
 from matplotlib import pyplot as plt
 from torch import IntTensor
-from torch import nn
 from torch.distributions import Beta
 from torch.nn.utils import parametrize
 
 from permutect.architecture.parameterizations import PositiveNumber
-from permutect.metrics.plotting import simple_plot
+from permutect.architecture.spectra.spectrum import Spectrum
+from permutect.architecture.spectra.spectrum import allele_fraction_grid
 from permutect.utils.array_utils import index_tensor
 from permutect.utils.enums import Variation
 from permutect.utils.stats_utils import beta_binomial_log_lk
@@ -23,7 +23,7 @@ def depths_to_depth_bins(depths_b: IntTensor):
     return (depths_b >= DEPTH_CUTOFFS[0]).long() + (depths_b >= DEPTH_CUTOFFS[1]).long()
 
 
-class ArtifactSpectra(nn.Module):
+class ArtifactSpectra(Spectrum):
     """
     a beta-binomial distributions for each variant type
     """
@@ -59,7 +59,7 @@ class ArtifactSpectra(nn.Module):
 
     def spectrum_density_vs_fraction(self, variant_type: Variation, depth: int):
         depth_bin = depths_to_depth_bins(torch.tensor(depth)).item()
-        fractions_f = torch.arange(0.01, 0.99, 0.001)  # 1D tensor
+        fractions_f = allele_fraction_grid()
 
         # scalar tensors
         alpha, beta = self.alpha_dv[depth_bin, variant_type], self.beta_dv[depth_bin, variant_type]
@@ -84,11 +84,3 @@ class ArtifactSpectra(nn.Module):
         for ax in art_spectra_fig.get_axes():
             ax.label_outer()
         return art_spectra_fig, art_spectra_axs
-
-    """
-    here x is a 1D tensor, a single datum/row of the 2D tensors as above
-    """
-
-    def plot_spectrum(self, variant_type: Variation, title, depth: int):
-        fractions, densities = self.spectrum_density_vs_fraction(variant_type, depth)
-        return simple_plot([(fractions.numpy(), densities.numpy(), " ")], "AF", "density", title)

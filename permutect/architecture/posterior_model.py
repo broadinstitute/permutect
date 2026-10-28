@@ -217,10 +217,7 @@ class PosteriorModel(torch.nn.Module):
                 # normal_artifact_spectra_fig, normal_artifact_spectra_axs = plot_artifact_spectra(self.normal_artifact_spectra)
                 # summary_writer.add_figure("Normal Artifact AF Spectra", normal_artifact_spectra_fig, epoch)
 
-                var_spectra_fig, var_spectra_axs = plt.subplots()
-                frac, dens = self.spectra.somatic_spectrum.spectrum_density_vs_fraction()
-                var_spectra_axs.plot(frac.detach().numpy(), dens.detach().numpy(), label="spectrum")
-                var_spectra_axs.set_title("Variant AF Spectrum")
+                var_spectra_fig, _ = self.spectra.somatic_spectrum.plot_spectrum("Variant AF Spectrum")
                 summary_writer.add_figure("Variant AF Spectra", var_spectra_fig, epoch)
 
                 prior_fig, prior_ax = self.priors.make_priors_bar_plot(snv_context_totals_rrra)

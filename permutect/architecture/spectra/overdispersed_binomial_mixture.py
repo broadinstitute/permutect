@@ -1,23 +1,22 @@
-import math
 
 import torch
 from torch import IntTensor
 from torch import exp
 from torch import logsumexp
-from torch import nn
 from torch.nn.utils import parametrize
 
 from permutect.architecture.parameterizations import BoundedNumber
 from permutect.architecture.parameterizations import LogWeights
-from permutect.metrics.plotting import simple_plot
-from permutect.misc_utils import backpropagate
+from permutect.architecture.spectra.spectrum import Spectrum
+from permutect.architecture.spectra.spectrum import allele_fraction_grid
+from permutect.architecture.spectra.spectrum import smeared_densities
 from permutect.utils.enums import Variation
 from permutect.utils.stats_utils import beta_binomial_log_lk
 from permutect.utils.stats_utils import binomial_log_lk
 from permutect.utils.stats_utils import gamma_binomial_log_lk
 
 
-class OverdispersedBinomialMixture(nn.Module):
+class OverdispersedBinomialMixture(Spectrum):
     """
     This model takes in 1D tensor inputs (variant type indices by batch) and as a function of input has a Beta OR Gamma mixture model.  That is, it computes for each input
     vector 1) a vector of mixture component weights 2) a vector of the alpha shape parameters of each component and 3) a
@@ -175,16 +174,7 @@ class OverdispersedBinomialMixture(nn.Module):
         alt_counts_b: IntTensor,
         batch_size: int = 64,
     ):
-        optimizer = torch.optim.Adam(self.parameters())
-        num_batches = math.ceil(len(alt_counts_b) / batch_size)
-
-        for epoch in range(num_epochs):
-            for batch in range(num_batches):
-                batch_start = batch * batch_size
-                batch_end = min(batch_start + batch_size, len(alt_counts_b))
-                batch_slice = slice(batch_start, batch_end)
-                loss = -torch.mean(self.forward(types_b[batch_slice], depths_b[batch_slice], alt_counts_b[batch_slice]))
-                backpropagate(optimizer, loss)
+        self.fit_to_data(num_epochs, (types_b, depths_b, alt_counts_b), batch_size)
 
     """
     get raw data for a spectrum plot of probability density vs allele fraction.
@@ -192,20 +182,14 @@ class OverdispersedBinomialMixture(nn.Module):
     """
 
     def spectrum_density_vs_fraction(self, variant_type: Variation, depth: int):
-        fractions = torch.arange(0.01, 0.99, 0.001)  # 1D tensor on CPU
+        fractions = allele_fraction_grid()
 
         log_weights_k = self.log_weights_vk[variant_type].detach().cpu()
         means_k = self.max_mean * self.mean_vk[variant_type].detach().cpu()
 
         # now we're on CPU
         if self.mode == "none":
-            # this is copied from the beta case below -- basically we smear each delta function / discrete binomial
-            # into a narrow Gaussian
-            dist = torch.distributions.normal.Normal(means_k, 0.01 * torch.ones_like(means_k))
-            densities = exp(
-                torch.logsumexp(log_weights_k + dist.log_prob(fractions.unsqueeze(dim=1)), dim=1, keepdim=False)
-            )  # 1D tensor
-            return fractions, densities
+            return fractions, smeared_densities(means_k, log_weights_k, fractions)
         else:
             concentrations_k = self.max_concentration.cpu() * self.concentration_vk[variant_type].detach().cpu()
             alphas_k = means_k * concentrations_k
@@ -224,11 +208,3 @@ class OverdispersedBinomialMixture(nn.Module):
             )  # 1D tensor
 
             return fractions, densities
-
-    """
-    here x is a 1D tensor, a single datum/row of the 2D tensors as above
-    """
-
-    def plot_spectrum(self, x, title, depth: int):
-        fractions, densities = self.spectrum_density_vs_fraction(x, depth)
-        return simple_plot([(fractions.numpy(), densities.numpy(), " ")], "AF", "density", title)
