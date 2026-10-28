@@ -10,18 +10,51 @@ from tqdm.autonotebook import trange
 from permutect.architecture.posterior_model_priors import PosteriorModelPriors
 from permutect.architecture.spectra.posterior_model_spectra import PosteriorModelSpectra
 from permutect.data.batch import Batch
+from permutect.data.batch import BatchIndices
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
-from permutect.data.count_binning import alt_count_bin_index
 from permutect.data.count_binning import count_from_alt_bin_index
 from permutect.data.datum import Data
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.metrics import plotting
+from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.misc_utils import StreamingAverage
 from permutect.misc_utils import backpropagate
 from permutect.misc_utils import float_dtype
 from permutect.misc_utils import resolve_device
 from permutect.utils.enums import Call
+from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
+from permutect.utils.math_utils import f_score
+from permutect.utils.math_utils import inverse_sigmoid
+from permutect.utils.math_utils import prob_to_logit
+
+
+def best_error_probability_threshold(error_probs, recall_weight: float = 1.0) -> float:
+    """
+    The error probability threshold that maximizes the expected F score if the error probabilities are calibrated.
+    Variants pass if their error probability is at most the threshold, and recall_weight is the beta of the F_beta
+    score, the importance of recall (sensitivity) relative to precision.
+    """
+    sorted_probs = sorted(error_probs)  # from least to greatest error probability
+    total_error = sum(sorted_probs) + 0.0001
+    total_non_error = len(sorted_probs) - total_error + 0.0002
+
+    # start at threshold = 0; that is, everything fails, and pass one variant at a time by increasing the threshold
+    error_found, non_error_found = total_error, 0
+    best_threshold, best_f_score = 0, 0
+    for prob in sorted_probs:
+        error_found -= prob  # lose a fractional error
+        non_error_found += 1 - prob  # gain a fractional non-error
+
+        tp = non_error_found  # non-errors that pass the threshold are true positives
+        fp = total_error - error_found  # errors that pass the threshold are false positives
+        sensitivity = tp / total_non_error
+        precision = tp / (tp + fp)
+
+        score = f_score(precision, sensitivity, beta=recall_weight)
+        if score > best_f_score:
+            best_f_score, best_threshold = score, prob
+    return best_threshold
 
 
 class PosteriorModel(torch.nn.Module):
@@ -215,41 +248,59 @@ class PosteriorModel(torch.nn.Module):
         self.train(False)
         error_probs_by_type = {var_type: [] for var_type in Variation}  # includes both artifact and seq errors
 
-        error_probs_by_type_by_cnt = {var_type: [[] for _ in range(NUM_ALT_COUNT_BINS)] for var_type in Variation}
+        # expected counts for the theoretical ROC curves, ie the ROC curves if the error probabilities were perfectly
+        # calibrated: a variant with error probability p counts as 1 - p non-errors (VARIANT) and p errors (ARTIFACT)
+        theoretical_metrics = AccuracyMetrics.create(num_sources=1, device=torch.device("cpu"))
 
-        # TODO: use the EvaluationMetrics class to generate the theoretical ROC curve
-        # TODO: then delete plotting.plot_theoretical_roc_on_axis
         batch: Batch
         batches = prefetch_generator(posterior_loader, device=self._device)
         for batch in tqdm(batches, mininterval=10, total=len(posterior_loader)):
-            # TODO: should this be the original alt counts instead?
-            alt_counts_b = batch.get(Data.ALT_COUNT).cpu().tolist()
             # 0th column is true variant, subtract it from 1 to get error prob
-            error_probs_b = self.error_probabilities_b(batch, germline_mode).cpu().tolist()
-
-            for var_type, alt_count, error_prob in zip(
-                batch.get(Data.VARIANT_TYPE).cpu().tolist(), alt_counts_b, error_probs_b
-            ):
+            error_probs_b = self.error_probabilities_b(batch, germline_mode).cpu()
+            var_types_b = batch.get(Data.VARIANT_TYPE).cpu()
+            for var_type, error_prob in zip(var_types_b.tolist(), error_probs_b.tolist()):
                 error_probs_by_type[var_type].append(error_prob)
-                error_probs_by_type_by_cnt[var_type][alt_count_bin_index(alt_count)].append(error_prob)
 
-        thresholds_by_type = {}
+            # TODO: should this be the original alt counts instead?
+            indices = BatchIndices(
+                sources=torch.zeros_like(var_types_b),
+                labels=torch.full_like(var_types_b, Label.VARIANT),
+                var_types=var_types_b,
+                ref_counts=torch.zeros_like(var_types_b),
+                alt_counts=batch.get(Data.ALT_COUNT).cpu(),
+            )
+            error_logits_b = inverse_sigmoid(error_probs_b)
+            indices.increment_tensor(theoretical_metrics, values=1 - error_probs_b, logits=error_logits_b)
+            artifact_labels_b = torch.full_like(var_types_b, Label.ARTIFACT)
+            indices.increment_tensor(
+                theoretical_metrics, values=error_probs_b, labels=artifact_labels_b, logits=error_logits_b
+            )
+
+        thresholds_by_type = {
+            var_type: best_error_probability_threshold(error_probs_by_type[var_type], recall_weight)
+            for var_type in Variation
+        }
         roc_fig, roc_axes = plt.subplots(1, len(Variation), sharex="all", sharey="all", squeeze=False)
         roc_by_cnt_fig, roc_by_cnt_axes = plt.subplots(
             1, len(Variation), sharex="all", sharey="all", squeeze=False, figsize=(10, 6), dpi=100
         )
+        count_bin_labels = [str(count_from_alt_bin_index(count_bin)) for count_bin in range(NUM_ALT_COUNT_BINS)]
         for var_type in Variation:
-            # plot all count ROC curves for this variant type
-            count_bin_labels = [str(count_from_alt_bin_index(count_bin)) for count_bin in range(NUM_ALT_COUNT_BINS)]
-            _ = plotting.plot_theoretical_roc_on_axis(
-                error_probs_by_type_by_cnt[var_type], count_bin_labels, roc_by_cnt_axes[0, var_type]
-            )
-            best_threshold = plotting.plot_theoretical_roc_on_axis(
-                [error_probs_by_type[var_type]], [""], roc_axes[0, var_type], recall_weight=recall_weight
-            )[0][0]
+            # every curve marks the chosen threshold, and the default error probability of 0.5 (logit 0)
+            threshold_logit = prob_to_logit(thresholds_by_type[var_type])
 
-            # TODO: the theoretical ROC might need to return the best threshold for this
-            thresholds_by_type[var_type] = best_threshold
+            # plot all count ROC curves for this variant type
+            roc_data_by_count = [
+                theoretical_metrics.make_roc_data(None, count_bin, None, var_type, sens_prec=True)
+                for count_bin in range(NUM_ALT_COUNT_BINS)
+            ]
+            thresholds = [threshold_logit] * NUM_ALT_COUNT_BINS
+            plotting.plot_roc_on_axis(
+                roc_data_by_count, count_bin_labels, roc_by_cnt_axes[0, var_type], True, thresholds
+            )
+
+            roc_data = theoretical_metrics.make_roc_data(None, None, None, var_type, sens_prec=True)
+            plotting.plot_roc_on_axis([roc_data], [""], roc_axes[0, var_type], True, [threshold_logit])
 
         variation_types = [var_type.name for var_type in Variation]
         plotting.tidy_subplots(

@@ -32,9 +32,13 @@ def log_binomial_coefficient(n: Tensor, k: Tensor):
     return (n + 1).lgamma() - (k + 1).lgamma() - ((n - k) + 1).lgamma()
 
 
-def f_score(tp, fp, total_true):
-    fn = total_true - tp
-    return tp / (tp + (fp + fn) / 2)
+def f_score(precision, recall, beta: float = 1.0):
+    """
+    The F_beta score, the weighted harmonic mean of precision and recall in which recall is beta times as important as
+    precision.  The 0.0001 avoids dividing by zero when both are zero.
+    """
+    beta_sqr = beta**2
+    return (1 + beta_sqr) * recall * precision / (recall + (beta_sqr * precision) + 0.0001)
 
 
 def add_in_log_space(x: Tensor, y: Tensor):
