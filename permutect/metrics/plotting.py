@@ -1,11 +1,19 @@
+import itertools
 import warnings
 from typing import List
 
+import numpy as np
+import torch
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
+from torch import Tensor
 
 # one or more simple plots of y data vs x data on shared axes
+from permutect.data.count_binning import ALT_COUNT_BIN_BOUNDS
 from permutect.data.count_binning import LOGIT_BIN_SKIP
+from permutect.data.count_binning import REF_COUNT_BIN_BOUNDS
+from permutect.utils.enums import Label
+from permutect.utils.enums import Variation
 
 # Filter the specific warning
 warnings.filterwarnings(
@@ -53,6 +61,36 @@ def color_plot_2d_on_axis(ax, x_bounds, y_bounds, values, x_label, y_label, vmin
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     return mesh
+
+
+def count_plot_on_axis(ax, counts_lra: Tensor, label: Label):
+    """
+    color plot vs alt count (x) and ref count (y) bins of the counts of one label, given counts indexed by label 'l',
+    ref count bin 'r' and alt count bin 'a'.  Since counts span orders of magnitude the color scale is the log of the
+    counts relative to the greatest count of any label.
+    """
+    vmin, vmax = -10, 0
+    normalized_counts_ra = counts_lra[label] / torch.max(counts_lra) + 0.0001
+    log_counts_ra = torch.clip(torch.log(normalized_counts_ra), min=vmin, max=vmax)
+    x_bounds, y_bounds = np.array(ALT_COUNT_BIN_BOUNDS), np.array(REF_COUNT_BIN_BOUNDS)
+    return color_plot_2d_on_axis(ax, x_bounds, y_bounds, log_counts_ra, None, None, vmin=vmin, vmax=vmax)
+
+
+def label_and_variant_type_figure(plot_on_axis) -> Figure:
+    """
+    figure with a row of subplots for each Label and a column for each Variation, each made by
+    plot_on_axis(label, var_type, axis) as a color plot vs alt count (x) and ref count (y) bins with a shared color bar
+    """
+    figsize = (2.5 * len(Variation), 2.5 * len(Label))
+    fig, axes = plt.subplots(len(Label), len(Variation), sharex="all", sharey="all", squeeze=False, figsize=figsize)
+    common_colormesh = None
+    for label, var_type in itertools.product(Label, Variation):
+        common_colormesh = plot_on_axis(label, var_type, axes[label, var_type])
+    fig.colorbar(common_colormesh)
+
+    row_labels, col_labels = [label.name for label in Label], [var_type.name for var_type in Variation]
+    tidy_subplots(fig, axes, x_label="alt count", y_label="ref count", row_labels=row_labels, col_labels=col_labels)
+    return fig
 
 
 def simple_histograms_on_axis(ax, list_of_histogram_data, list_of_labels, num_bins):

@@ -48,6 +48,7 @@ from permutect.data.datum import NUMBER_OF_BYTES_IN_PACKED_READ
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.data.memory_mapped_data import MemoryMappedData
+from permutect.data.memory_mapped_data import stacked_read_offsets
 from permutect.misc_utils import ConsistentValue
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
@@ -207,7 +208,7 @@ def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Datu
     int_mmap_ve = raw_mmap_data.int_mmap
     float_mmap_ve = raw_mmap_data.float_mmap
     reads_mmap_re = raw_mmap_data.reads_mmap
-    read_end_indices = raw_mmap_data.read_end_indices
+    read_offsets = raw_mmap_data.read_offsets
 
     num_chunks = math.ceil(raw_mmap_data.num_data / NUM_RAW_DATA_TO_NORMALIZE_AT_ONCE)
     data_per_chunk = raw_mmap_data.num_data // num_chunks
@@ -216,18 +217,18 @@ def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Datu
         start_idx = chunk * data_per_chunk
         end_idx = raw_mmap_data.num_data if (chunk == num_chunks - 1) else (start_idx + data_per_chunk)
 
-        read_start_idx = 0 if start_idx == 0 else read_end_indices[start_idx - 1]
+        read_start_idx = read_offsets[start_idx]
 
         read_quantile_transform = make_read_quantile_transform(
-            read_end_indices=(read_end_indices[start_idx:end_idx] - read_start_idx),
+            read_offsets=(read_offsets[start_idx : end_idx + 1] - read_start_idx),
             int_array_ve=int_mmap_ve[start_idx:end_idx],
             float_array_ve=float_mmap_ve[start_idx:end_idx],
-            reads_re=reads_mmap_re[read_start_idx : read_end_indices[end_idx - 1]],
+            reads_re=reads_mmap_re[read_start_idx : read_offsets[end_idx]],
         )
 
         raw_data_list = []
         for idx in range(start_idx, end_idx):
-            reads = reads_mmap_re[0 if idx == 0 else read_end_indices[idx - 1] : read_end_indices[idx]]
+            reads = reads_mmap_re[read_offsets[idx] : read_offsets[idx + 1]]
             raw_datum = Datum(int_array=int_mmap_ve[idx], float_array=float_mmap_ve[idx], reads_re=reads)
             raw_data_list.append(raw_datum)
 
@@ -236,15 +237,13 @@ def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Datu
             yield datum
 
 
-def make_read_quantile_transform(read_end_indices, int_array_ve, float_array_ve, reads_re):
+def make_read_quantile_transform(read_offsets, int_array_ve, float_array_ve, reads_re):
     # indices_for_normalization = get_normalization_set(data_ve)
     # revert to old behavior: use all ref data for normalization
     indices_for_normalization = list(range(len(int_array_ve)))
 
     # define ref read ranges for each datum in the normalization set
-    normalization_read_start_indices = [
-        0 if idx == 0 else read_end_indices[idx - 1] for idx in indices_for_normalization
-    ]
+    normalization_read_start_indices = [read_offsets[idx] for idx in indices_for_normalization]
     normalization_ref_counts = [
         Datum(int_array=int_array_ve[idx], float_array=float_array_ve[idx]).get(Data.REF_COUNT)
         for idx in indices_for_normalization
@@ -403,7 +402,7 @@ def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> Lis
     # TODO: double-check in Mutect2 that these included soft-clipped bases
 
     read_counts = np.array([len(datum.reads_re) for datum in buffer])
-    read_index_ranges = np.cumsum(read_counts)
+    read_offsets = stacked_read_offsets(read_counts)
 
     map_qual_column = all_reads_re[:, 0]
     map_qual_boolean = np.full((len(all_reads_re), 4), True, dtype=bool)
@@ -452,8 +451,8 @@ def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> Lis
     normalized_result = []
     raw_datum: Datum
     for n, raw_datum in enumerate(buffer):
-        ref_start_index = 0 if n == 0 else read_index_ranges[n - 1]  # first index of this datum's reads
-        alt_end_index = read_index_ranges[n]
+        ref_start_index = read_offsets[n]  # first index of this datum's reads
+        alt_end_index = read_offsets[n + 1]
         alt_start_index = ref_start_index + raw_datum.get(Data.REF_COUNT)
 
         # TODO: maybe we could also have columnwise nonparametric test statistics, like for example we record the

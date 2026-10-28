@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 from enum import IntEnum
 from random import randint
 from typing import List
@@ -213,7 +214,7 @@ class BatchIndices:
         # product of all the *other* dimensionalities.  Thus we can set the zeroth dimension to anything we want!
         # Just to make sure that this doesn't cause a silent error, we set it to None so that things will blow up
         # if my little analysis here is wrong
-        dims = (None, len(Label), len(Variation), NUM_REF_COUNT_BINS, NUM_ALT_COUNT_BINS)
+        dims = BatchIndexedTensor.shape_without_logits(num_sources=None)
         idx = (self.sources, self.labels, self.var_types, self.ref_count_bins, self.alt_count_bins)
         self.flattened_idx = flattened_indices(dims, idx)
 
@@ -224,11 +225,10 @@ class BatchIndices:
         of imputed unlabeled data.
 
         The stride from one label to the next is the product of all successive dimensionalities, i.e.
-        len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS, so we simply add the product of this
+        BatchIndexedTensor.property_stride(BatchProperty.LABEL), so we simply add the product of this
         stride length with the difference between pseudolabels and actual labels.
 
-        A source_override works similarly, but with stride length equal to
-        len(Label) * len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS
+        A source_override works similarly, but with the stride of the source dimension
 
         If using logits, we use the fact that logits are the last indexed dimnension.  Every flattened index
         without logits corresponds to NUM_LOGIT_BINS bins with logits, so the flattened index with logits
@@ -238,13 +238,13 @@ class BatchIndices:
 
         if source_override is not None:
             assert len(source_override) == len(self.sources)
-            stride_length = len(Label) * len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS
+            stride_length = BatchIndexedTensor.property_stride(BatchProperty.SOURCE)
             diff = source_override - self.sources
             flattened_indices = flattened_indices + (stride_length * diff)
 
         if pseudolabels is not None:
             assert len(pseudolabels) == len(self.labels)
-            stride_length = len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS
+            stride_length = BatchIndexedTensor.property_stride(BatchProperty.LABEL)
             diff = pseudolabels - self.labels
             flattened_indices = flattened_indices + (stride_length * diff)
 
@@ -318,6 +318,11 @@ class BatchIndexedTensor(Tensor):
     @classmethod
     def shape_without_logits(cls, num_sources: int):
         return (num_sources, len(Label), len(Variation), NUM_REF_COUNT_BINS, NUM_ALT_COUNT_BINS)
+
+    @classmethod
+    def property_stride(cls, batch_property: BatchProperty) -> int:
+        # the flattened index distance between consecutive values of a property: the product of all later dimensions
+        return math.prod(cls.shape_without_logits(num_sources=None)[batch_property + 1 :])
 
     @classmethod
     def shape_for(cls, num_sources: int, include_logits: bool = False):

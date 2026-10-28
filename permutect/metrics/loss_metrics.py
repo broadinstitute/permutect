@@ -125,26 +125,12 @@ class LossMetrics:
         :return:
         """
         assert self.has_been_sent_to_cpu, "Can't make plots before sending to CPU"
-        max_for_this_source_and_variant_type = torch.max(self.counts_slvra[source, :, var_type])
         # TODO: only if include logits
         sum_dims = (BatchProperty.SOURCE,) if source is None else ()
-        selection = ({} if source is None else {BatchProperty.SOURCE: source}) | {
-            BatchProperty.VARIANT_TYPE: var_type,
-            BatchProperty.LABEL: label,
-        }
+        selection = ({} if source is None else {BatchProperty.SOURCE: source}) | {BatchProperty.VARIANT_TYPE: var_type}
 
-        counts_ra = select_and_sum(self.counts_slvra, select=selection, sum=sum_dims)
-        normalized_counts_ra = counts_ra / max_for_this_source_and_variant_type
-        return plotting.color_plot_2d_on_axis(
-            axis,
-            np.array(ALT_COUNT_BIN_BOUNDS),
-            np.array(REF_COUNT_BIN_BOUNDS),
-            normalized_counts_ra,
-            None,
-            None,
-            vmin=0,
-            vmax=1,
-        )
+        counts_lra = select_and_sum(self.counts_slvra, select=selection, sum=sum_dims)
+        return plotting.count_plot_on_axis(axis, counts_lra, label)
 
     def make_plots(
         self,
@@ -155,33 +141,11 @@ class LossMetrics:
         plot_type: str = "loss",
     ):
         assert self.has_been_sent_to_cpu, "Can't make plots before sending to CPU"
+        plot_on_axis = {"loss": self.plot_losses, "counts": self.plot_counts}[plot_type]
 
         for source in range(self.num_sources):
-            fig, axes = plt.subplots(
-                len(Label),
-                len(Variation),
-                sharex="all",
-                sharey="all",
-                squeeze=False,
-                figsize=(2.5 * len(Variation), 2.5 * len(Label)),
-            )
-            row_names = [label.name for label in Label]
-            variation_types = [var_type.name for var_type in Variation]
-            common_colormesh = None
-            for label in Label:
-                for var_type in Variation:
-                    if plot_type == "loss":
-                        common_colormesh = self.plot_losses(label, var_type, axes[label, var_type], source)
-                    elif plot_type == "counts":
-                        common_colormesh = self.plot_counts(label, var_type, axes[label, var_type], source)
-            fig.colorbar(common_colormesh)
-            plotting.tidy_subplots(
-                fig,
-                axes,
-                x_label="alt count",
-                y_label="ref count",
-                row_labels=row_names,
-                col_labels=variation_types,
+            fig = plotting.label_and_variant_type_figure(
+                lambda label, var_type, axis: plot_on_axis(label, var_type, axis, source)
             )
             source_suffix = (
                 "" if self.num_sources == 1 else (", all sources" if source is None else f", source {source}")

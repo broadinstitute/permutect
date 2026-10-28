@@ -1,10 +1,8 @@
 import enum
-import itertools
 import math
 
 import numpy as np
 import torch
-from matplotlib import pyplot as plt
 from torch import Tensor
 from torch.nn import Module
 from torch.nn.parameter import Buffer
@@ -108,18 +106,13 @@ class Balancer(Module):
 
         return weights_b
 
-    # TODO: lots of code duplication with the plotting in loss_metrics.py
     def make_plot(self, label: Label, var_type: Variation, axis, source: int, plot_type: PlotType):
         if plot_type == PlotType.WEIGHTS:
             vmin, vmax = -4, 4
             weights_ra = self.weights_slvra[source, label, var_type].cpu()
             plot_data_ra = torch.clip(torch.log(weights_ra), min=vmin, max=vmax)
         elif plot_type == PlotType.COUNTS:
-            vmin, vmax = -10, 0
-            counts_lra = self.counts_slvra[source, :, var_type].cpu()
-            max_count = torch.max(counts_lra)
-            normalized_counts_ra = (counts_lra / max_count)[label] + 0.0001
-            plot_data_ra = torch.clip(torch.log(normalized_counts_ra), -10, 0)
+            return plotting.count_plot_on_axis(axis, self.counts_slvra[source, :, var_type].cpu(), label)
         else:
             raise ValueError(f"Unknown type_of_plot: {plot_type.name}.")
         xbounds, ybounds = np.array(ALT_COUNT_BIN_BOUNDS), np.array(REF_COUNT_BIN_BOUNDS)
@@ -129,19 +122,9 @@ class Balancer(Module):
 
     def make_plots(self, summary_writer: SummaryWriter, prefix: str, epoch: int, plot_type: PlotType):
         for source in range(self.num_sources):
-            figsize = (2.5 * len(Variation), 2.5 * len(Label))
-            subplots_kwargs = {"sharex": "all", "sharey": "all", "squeeze": False, "figsize": figsize}
-            fig, axes = plt.subplots(len(Label), len(Variation), **subplots_kwargs)
-
-            row_names = [label.name for label in Label]
-            col_names = [var_type.name for var_type in Variation]
-            common_colormesh = None
-            for label, var_type in itertools.product(Label, Variation):
-                common_colormesh = self.make_plot(label, var_type, axes[label, var_type], source, plot_type)
-
-            fig.colorbar(common_colormesh)
-            tidy_kwargs = {"x_label": "N_alt", "y_label": "N_ref", "row_labels": row_names, "col_labels": col_names}
-            plotting.tidy_subplots(fig, axes, **tidy_kwargs)
+            fig = plotting.label_and_variant_type_figure(
+                lambda label, var_type, axis: self.make_plot(label, var_type, axis, source, plot_type)
+            )
             multi_source_suffix = ", all sources" if source is None else f", source {source}"
             source_suffix = "" if self.num_sources == 1 else multi_source_suffix
             summary_writer.add_figure(prefix + source_suffix, fig, global_step=epoch)

@@ -4,10 +4,14 @@ import torch
 
 from permutect.data.batch import Batch
 from permutect.data.batch import BatchIndexedTensor
+from permutect.data.batch import BatchIndices
 from permutect.data.batch import DownsampledBatch
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import NUM_LOGIT_BINS
 from permutect.data.count_binning import NUM_REF_COUNT_BINS
+from permutect.data.count_binning import alt_count_bin_index
+from permutect.data.count_binning import logit_bin_indices
+from permutect.data.count_binning import ref_count_bin_index
 from permutect.data.datum import RAW_READS_ARRAY_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
@@ -90,6 +94,32 @@ def test_batch_get_matches_datum_get_for_every_field():
             values = batch_to_check.get(data_field)
             assert isinstance(values, torch.Tensor) and values.shape == (len(data),), data_field
             assert torch.equal(values.double(), expected), data_field
+
+
+@pytest.mark.parametrize("include_logits", [False, True])
+def test_batch_indices_follow_the_batch_indexed_tensor_layout(include_logits):
+    # flattened indices, including those with overridden sources and labels, pick the same elements as plain indexing
+    generator = torch.Generator().manual_seed(0)
+    num_sources, size = 3, 50
+    sources, override_sources = torch.randint(num_sources, (2, size), generator=generator)
+    labels, override_labels = torch.randint(len(Label), (2, size), generator=generator)
+    var_types = torch.randint(len(Variation), (size,), generator=generator)
+    ref_counts, alt_counts = torch.randint(1, 20, (2, size), generator=generator)
+    logits = 5 * torch.randn(size, generator=generator) if include_logits else None
+    indices = BatchIndices(sources, labels, var_types, ref_counts, alt_counts)
+
+    plain_index = (override_sources, override_labels, var_types)
+    plain_index += (ref_count_bin_index(ref_counts), alt_count_bin_index(alt_counts))
+    plain_index += (logit_bin_indices(logits),) if include_logits else ()
+    shape = BatchIndexedTensor.shape_for(num_sources, include_logits)
+
+    values = torch.rand(shape, generator=generator)
+    picked = indices.index_into_tensor(BatchIndexedTensor(values), override_sources, override_labels, logits)
+    assert torch.equal(picked, values[plain_index])
+
+    totals = BatchIndexedTensor.zeros(num_sources, include_logits, device=torch.device("cpu"))
+    indices.increment_tensor(totals, torch.ones(size), override_sources, override_labels, logits)
+    assert torch.equal(totals, torch.zeros(shape).index_put_(plain_index, torch.ones(size), accumulate=True))
 
 
 @pytest.mark.parametrize("include_logits", [False, True])

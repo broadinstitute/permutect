@@ -1,6 +1,8 @@
 from collections import defaultdict
+from types import SimpleNamespace
 
 import numpy as np
+import psutil
 import pytest
 from intervaltree import IntervalTree
 
@@ -10,6 +12,7 @@ from permutect.data.datum import NUMBER_OF_BYTES_IN_PACKED_READ
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.data.memory_mapped_data import MemoryMappedData
+from permutect.data.reads_dataset import ReadsDataset
 from permutect.test.test_misc_utils import VCF_HEADER
 from permutect.test.test_misc_utils import make_datum as make_datum_with_alleles
 from permutect.test.test_misc_utils import vcf_line
@@ -57,6 +60,40 @@ def test_capacity_grows_to_fit(estimated_num_data, estimated_num_reads):
     data = [make_datum(index, num_reads) for index, num_reads in enumerate(read_counts)]
     memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data, estimated_num_reads)
     assert_same_data(memory_mapped_data, data)
+
+
+def test_reads_must_match_counts():
+    # the reads of each datum are located by its ref and alt counts, so a datum whose reads didn't match its counts
+    # used to misalign the reads of every later datum without an error
+    too_many_reads = make_datum(1, num_reads=3)
+    too_many_reads.set(Data.ALT_COUNT, 2)
+    with pytest.raises(ValueError):
+        MemoryMappedData.from_generator([make_datum(0, 2), too_many_reads, make_datum(2, 4)], 3, 9)
+
+    readless = make_datum(1, num_reads=0)
+    readless.set(Data.ALT_COUNT, 5)
+    with pytest.raises(ValueError):
+        MemoryMappedData.from_generator([make_datum(0, 2), readless, make_datum(2, 4)], 3, 6)
+
+    # data without any reads, like the posterior data of filter_variants, keep their counts
+    memory_mapped_data = MemoryMappedData.from_generator(
+        [readless, readless], estimated_num_data=2, estimated_num_reads=0
+    )
+    generated = list(memory_mapped_data.generate())
+    assert [datum.get(Data.ALT_COUNT) for datum in generated] == [5, 5]
+    assert all(len(datum.reads_re) == 0 for datum in generated)
+
+
+def test_reads_dataset_gives_each_datum_its_reads(monkeypatch):
+    read_counts = [2, 0, 3, 1, 4, 2, 1]
+    data = [make_datum(index, num_reads) for index, num_reads in enumerate(read_counts)]
+    dataset = ReadsDataset(MemoryMappedData.from_generator(data, estimated_num_data=7, estimated_num_reads=13))
+    # load the data into RAM in three chunks, as when they don't all fit
+    memory = SimpleNamespace(available=4 * dataset.memory_mapped_data.num_bytes(), percent=50.0)
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: memory)
+
+    iterated = sorted(dataset, key=lambda datum: datum.get(Data.POSITION))
+    assert_same_data(MemoryMappedData.from_generator(iterated, 7, 13), data)
 
 
 def test_restrict_to_labeled_only_when_first_data_are_unlabeled():

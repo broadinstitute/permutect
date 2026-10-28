@@ -53,6 +53,18 @@ def grown_memory_map(old_mmap, required_rows: int, estimated_rows: int, row_shap
     return new_mmap, new_file
 
 
+def stacked_read_offsets(read_counts) -> np.ndarray:
+    """
+    Offsets into a stacked reads array whose rows are the reads of the 0th datum, the reads of the 1st datum etc: the
+    reads of data start, start + 1. . . end - 1 are the rows offsets[start]:offsets[end].  In particular, the reads of
+    datum n are the rows offsets[n]:offsets[n + 1].
+    """
+    # note: this can hold indices up to a bit over 4 billion, which is probably bigger than any training dataset we'll need
+    offsets = np.zeros(shape=(len(read_counts) + 1,), dtype=np.uint32)
+    offsets[1:] = np.cumsum(read_counts)
+    return offsets
+
+
 class MemoryMappedData:
     """
     wrapper for
@@ -71,12 +83,14 @@ class MemoryMappedData:
         self.num_data = num_data
         self.num_reads = num_reads
 
-        # note: this can hold indices up to a bit over 4 billion, which is probably bigger than any training dataset we'll need
-        self.read_end_indices = np.zeros(shape=(num_data,), dtype=np.uint32)
-        idx = 0
-        for n in range(num_data):
-            idx += int(Datum(self.int_mmap[n], self.float_mmap[n]).get_read_count())
-            self.read_end_indices[n] = idx
+        # each datum's reads, if there are any, are as many as its ref and alt counts
+        read_counts = [
+            0 if reads_mmap is None else int(Datum(self.int_mmap[n], self.float_mmap[n]).get_read_count())
+            for n in range(num_data)
+        ]
+        self.read_offsets = stacked_read_offsets(read_counts)
+        if self.read_offsets[-1] != num_reads:
+            raise ValueError(f"The data's ref and alt counts add up to {self.read_offsets[-1]} reads, not {num_reads}.")
 
     def __len__(self):
         return self.num_data
@@ -99,7 +113,7 @@ class MemoryMappedData:
                 reads_arr = (
                     np.zeros((0, 0), dtype=COMPRESSED_READS_ARRAY_DTYPE)
                     if self.reads_mmap is None
-                    else self.reads_mmap[0 if idx == 0 else self.read_end_indices[idx - 1] : self.read_end_indices[idx]]
+                    else self.reads_mmap[self.read_offsets[idx] : self.read_offsets[idx + 1]]
                 )
                 is_compressed = reads_arr.dtype == COMPRESSED_READS_ARRAY_DTYPE
                 datum = Datum(int_array=int_arr, float_array=float_arr, reads_re=reads_arr, compressed=is_compressed)
@@ -341,6 +355,10 @@ class MemoryMappedData:
             int_array = datum.get_int_array()
             float_array = datum.get_float_array()
             reads_array = datum.get_reads_array_re()  # this works both for raw data and compressed reads
+            if len(reads_array) not in (0, datum.get_read_count()):
+                raise ValueError(
+                    f"A datum has {len(reads_array)} reads but ref and alt counts of {datum.get_read_count()}."
+                )
 
             num_data += 1
             num_reads += len(reads_array)
