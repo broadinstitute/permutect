@@ -15,8 +15,6 @@ from permutect.architecture.artifact_model import load_model
 from permutect.architecture.posterior_model import PosteriorModel
 from permutect.data import plain_text_data
 from permutect.data.batch import Batch
-from permutect.data.count_binning import alt_count_bin_index
-from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
@@ -574,16 +572,7 @@ def apply_filtering_to_vcf(
                 error_call = list(Call)[highest_prob_index]
                 filters.add(FILTER_NAMES[highest_prob_index])
 
-            # note that this excludes the correctness part of embedding metrics, which is below
-            embedding_metrics.label_metadata.append(label.name)
-            embedding_metrics.type_metadata.append(variant_type.name)
-            embedding_metrics.truncated_count_metadata.append(
-                alt_count_bin_name(alt_count_bin_index(posterior_result.alt_count))
-            )
-            embedding_metrics.features.append(posterior_result.embedding)
-            # TODO: we don't yet record ref features but we could eventually. . .
-
-            correctness_label = "unknown"
+            correctness_label = EmbeddingMetrics.UNKNOWN
             if label != Label.UNLABELED:
                 labeled_truth = True
                 clipped_error_prob = 0.5 + 0.9999999 * (error_prob - 0.5)  # noqa: F841
@@ -613,7 +602,15 @@ def apply_filtering_to_vcf(
                     # TODO: this is only right for somatic calling
                     bad_call = error_call if called_as_error else Call.SOMATIC
                     evaluation_metrics.record_mistake(posterior_result, bad_call)
-            embedding_metrics.correct_metadata.append(correctness_label)
+
+            # TODO: we don't yet record ref features but we could eventually. . .
+            embedding_metrics.record_batch(
+                [label],
+                [variant_type],
+                [posterior_result.alt_count],
+                posterior_result.embedding,
+                correctness=[correctness_label],
+            )
         else:
             # It is possible due to various quirks of Mutect2 assembly and flags such as --genotype-germline-sites etc
             # that a site with zero alt depth can end up in the output VCF.  However, Permutect exludes such sites from

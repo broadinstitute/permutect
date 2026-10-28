@@ -15,8 +15,6 @@ from permutect.architecture.gated_mlp import GatedRefAltMLP
 from permutect.architecture.mlp import MLP
 from permutect.data.batch import Batch
 from permutect.data.count_binning import MAX_ALT_COUNT
-from permutect.data.count_binning import alt_count_bin_index
-from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.datum import DEFAULT_CPU_FLOAT
 from permutect.data.datum import DEFAULT_GPU_FLOAT
 from permutect.data.datum import Data
@@ -31,7 +29,6 @@ from permutect.sets.ragged_sets import RaggedSets
 from permutect.training.balancer import Balancer
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import ParameterSet
-from permutect.utils.enums import Variation
 
 MAX_OUTLIER_LOGIT = 10
 BCE = nn.BCEWithLogitsLoss(
@@ -357,23 +354,10 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
         ref_means_be = ref_bre.means_over_sets().cpu()
         ref_alt_seq_embeddings_be = ref_alt_seq_embeddings_be.cpu()
 
-        labels = [
-            ("artifact" if label > 0.5 else "non-artifact") if is_labeled > 0.5 else "unlabeled"
-            for (label, is_labeled) in zip(batch.get_training_labels().tolist(), batch.get_is_labeled_mask().tolist())
-        ]
-        for metrics, embeddings, ref_features_be in [
-            (embedding_metrics, alt_means_be, ref_means_be),
-            (ref_alt_seq_metrics, ref_alt_seq_embeddings_be, None),
-        ]:
-            metrics.label_metadata.extend(labels)
-            metrics.correct_metadata.extend(["unknown"] * batch.size())
-            metrics.type_metadata.extend([Variation(idx).name for idx in batch.get(Data.VARIANT_TYPE).tolist()])
-            alt_count_strings = [
-                alt_count_bin_name(alt_count_bin_index(ac)) for ac in batch.get(Data.ALT_COUNT).tolist()
-            ]
-            metrics.truncated_count_metadata.extend(alt_count_strings)
-            metrics.features.append(embeddings)
-            if ref_features_be is not None:
-                metrics.ref_features.append(ref_features_be)
+        labels = batch.get(Data.LABEL).tolist()
+        variant_types = batch.get(Data.VARIANT_TYPE).tolist()
+        alt_counts = batch.get(Data.ALT_COUNT).tolist()
+        embedding_metrics.record_batch(labels, variant_types, alt_counts, alt_means_be, ref_features_be=ref_means_be)
+        ref_alt_seq_metrics.record_batch(labels, variant_types, alt_counts, ref_alt_seq_embeddings_be)
     embedding_metrics.output_to_summary_writer(summary_writer)
     ref_alt_seq_metrics.output_to_summary_writer(summary_writer, prefix="ref and alt allele context")

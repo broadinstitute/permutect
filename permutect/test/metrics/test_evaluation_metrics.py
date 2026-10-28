@@ -6,7 +6,10 @@ import torch
 from matplotlib import pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 
+from permutect.architecture.artifact_model import record_embeddings
 from permutect.data.batch import Batch
+from permutect.data.count_binning import NUM_ALT_COUNT_BINS
+from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.datum import RAW_READS_ARRAY_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
@@ -107,3 +110,57 @@ def test_each_evaluation_figure_is_written_once(num_sources):
     # several, then logit histograms
     num_source_plots = num_sources if num_sources == 1 else num_sources + 1
     assert len(summary_writer.tags) == len(epoch_types) * (3 * num_source_plots + 1)
+
+
+def test_record_batch_metadata():
+    metrics = EmbeddingMetrics()
+    labels = [Label.ARTIFACT, Label.VARIANT, Label.UNLABELED.value]  # enums or their int values
+    variant_types = [Variation.SNV, Variation.INSERTION.value, Variation.DELETION]
+    metrics.record_batch(labels, variant_types, [0, 4, 100], features_be=torch.randn(3, 4))
+    metrics.record_batch(
+        [Label.VARIANT], [Variation.SNV], [2], torch.randn(4), correctness=[EmbeddingMetrics.FALSE_POSITIVE]
+    )
+
+    assert metrics.label_metadata == ["ARTIFACT", "VARIANT", "UNLABELED", "VARIANT"]
+    assert metrics.correct_metadata == [EmbeddingMetrics.UNKNOWN] * 3 + [EmbeddingMetrics.FALSE_POSITIVE]
+    assert metrics.type_metadata == ["SNV", "INSERTION", "DELETION", "SNV"]
+    bin_names = [alt_count_bin_name(bin_idx) for bin_idx in range(NUM_ALT_COUNT_BINS)]
+    assert metrics.truncated_count_metadata == [bin_names[0], bin_names[1], bin_names[-1], bin_names[0]]
+    assert torch.vstack(metrics.features).shape == (4, 4)
+
+
+class EmbeddingRecorder:
+    # a stand-in for a SummaryWriter that records the metadata of each embedding projection
+    def __init__(self):
+        self.metadata_by_tag = {}
+
+    def add_embedding(self, features, metadata, metadata_header, tag, global_step=None):
+        self.metadata_by_tag[tag] = metadata
+
+
+class FeatureSets:
+    def __init__(self, means_be):
+        self.means_be = means_be
+
+    def means_over_sets(self):
+        return self.means_be
+
+
+class FakeArtifactModel:
+    def calculate_features(self, batch):
+        size = batch.size()
+        return FeatureSets(torch.randn(size, 4)), FeatureSets(torch.randn(size, 4)), torch.randn(size, 4)
+
+
+def test_training_projections_use_the_same_metadata_as_filter_variants():
+    # projections of the training data used to label data "artifact" / "non-artifact" / "unlabeled", unlike
+    # filter_variants, which uses the Label names
+    data = [make_datum(label, source=0) for label in Label for _ in range(5)]
+    summary_writer = EmbeddingRecorder()
+    record_embeddings(FakeArtifactModel(), [Batch(data)], summary_writer)
+
+    assert summary_writer.metadata_by_tag
+    for tag, metadata in summary_writer.metadata_by_tag.items():
+        labels, correctness = {row[0] for row in metadata}, {row[1] for row in metadata}
+        assert labels == {label.name for label in Label}, tag
+        assert correctness == {EmbeddingMetrics.UNKNOWN}, tag
