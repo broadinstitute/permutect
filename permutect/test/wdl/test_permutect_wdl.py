@@ -1,11 +1,13 @@
 import json
 import os
 import subprocess
+import tarfile
 
 import cyvcf2
 import pytest
 
 from permutect.test.test_file_names import *
+from permutect.test.wdl.test_wdl_scripts import task_output_files
 from permutect.tools.filter_variants import POST_PROB_INFO_KEY
 from permutect.tools.pre_permutect_filtering import HAIRPIN_FILTER
 
@@ -18,7 +20,29 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def run_permutect_wdl(working_dir, filter_pcr_errors: bool) -> dict:
+def make_cached_m2_outputs(working_dir, with_segments: bool) -> str:
+    """
+    An archive of Mutect2 outputs for SEQC2 WES chr20, as made by the ArchiveM2Outputs task, with or without segments
+    """
+    m2_outputs = {
+        "test_dataset": SEQC2_WES_PLAIN_TEXT_DATA,
+        "mutect2_vcf": MUTECT2_SEQC2_WES_VCF,
+        "mutect2_vcf_idx": MUTECT2_SEQC2_WES_VCF_INDEX,
+        "contigs_table": HG38_CONTIGS_TABLE,
+        "mutect_stats": MUTECT2_SEQC2_WES_STATS,
+    }
+    if with_segments:
+        m2_outputs.update(maf_segments=SEQC2_WES_TUMOR_SEGMENTS, normal_maf_segments=SEQC2_WES_NORMAL_SEGMENTS)
+
+    archive = os.path.join(working_dir, "cached_m2_outputs.tar")
+    file_names_in_archive = task_output_files(PERMUTECT_WDL, "ExtractM2Outputs")
+    with tarfile.open(archive, "w") as tar:
+        for name, m2_output in m2_outputs.items():
+            tar.add(m2_output, arcname=file_names_in_archive[name])
+    return archive
+
+
+def run_permutect_wdl(working_dir, filter_pcr_errors: bool, with_segments: bool) -> dict:
     """
     Run permutect.wdl with Cromwell on SEQC2 WES chr20 data, giving cached Mutect2 outputs so that Mutect2 is skipped.
     Returns the Cromwell workflow metadata.
@@ -41,14 +65,12 @@ def run_permutect_wdl(working_dir, filter_pcr_errors: bool) -> dict:
         # deep in the execution directory for the socket path length limit
         "Permutect.num_workers": 0,
         "Permutect.filter_pcr_errors": filter_pcr_errors,
-        "Permutect.cached_plain_text_test_dataset": SEQC2_WES_PLAIN_TEXT_DATA,
-        "Permutect.cached_mutect2_vcf": MUTECT2_SEQC2_WES_VCF,
-        "Permutect.cached_mutect2_vcf_idx": MUTECT2_SEQC2_WES_VCF_INDEX,
-        "Permutect.cached_contigs_table": HG38_CONTIGS_TABLE,
-        "Permutect.cached_maf_segments": SEQC2_WES_TUMOR_SEGMENTS,
-        "Permutect.cached_normal_maf_segments": SEQC2_WES_NORMAL_SEGMENTS,
-        "Permutect.cached_mutect_stats": MUTECT2_SEQC2_WES_STATS,
+        "Permutect.cached_m2_outputs": make_cached_m2_outputs(working_dir, with_segments),
         "Permutect.permutect_docker": PERMUTECT_TEST_DOCKER,
+        # Terra turns unset optional inputs into empty strings, which the workflow must treat as unset
+        "Permutect.masks": "",
+        "Permutect.test_dataset_truth_vcf": "",
+        "Permutect.test_dataset_truth_vcf_idx": "",
     }
     inputs_json, metadata_json = os.path.join(working_dir, "inputs.json"), os.path.join(working_dir, "metadata.json")
     with open(inputs_json, "w") as file:
@@ -69,6 +91,18 @@ def run_permutect_wdl(working_dir, filter_pcr_errors: bool) -> dict:
     return metadata
 
 
+def check_cached_m2_outputs(metadata: dict, with_segments: bool):
+    # the cache is unpacked rather than running Mutect2, and passed through to the output as is
+    calls = metadata["calls"]
+    assert "Permutect.ExtractM2Outputs" in calls
+    assert "Permutect.Mutect2" not in calls and "Permutect.ArchiveM2Outputs" not in calls
+    assert metadata["outputs"]["Permutect.m2_outputs"] == metadata["inputs"]["cached_m2_outputs"]
+
+    filtering_inputs = calls["Permutect.PermutectFiltering"][0]["inputs"]
+    for segments in ("maf_segments", "normal_maf_segments"):
+        assert (filtering_inputs[segments] is not None) == with_segments
+
+
 def output_vcf_records(metadata: dict) -> list[cyvcf2.Variant]:
     for output_file in ("output_vcf", "output_vcf_idx", "tensorboard_report"):
         assert os.path.exists(metadata["outputs"]["Permutect." + output_file])
@@ -81,16 +115,22 @@ def has_filter(v: cyvcf2.Variant, filter_name: str) -> bool:
 
 @pytest.fixture(scope="module")
 def metadata_with_pcr_error_filtering(tmp_path_factory):
-    return run_permutect_wdl(tmp_path_factory.mktemp("with_pcr_error_filtering"), filter_pcr_errors=True)
+    working_dir = tmp_path_factory.mktemp("with_pcr_error_filtering")
+    return run_permutect_wdl(working_dir, filter_pcr_errors=True, with_segments=True)
 
 
 @pytest.fixture(scope="module")
 def metadata_without_pcr_error_filtering(tmp_path_factory):
-    return run_permutect_wdl(tmp_path_factory.mktemp("without_pcr_error_filtering"), filter_pcr_errors=False)
+    # also without segments, which Mutect2 doesn't always make
+    working_dir = tmp_path_factory.mktemp("without_pcr_error_filtering")
+    return run_permutect_wdl(working_dir, filter_pcr_errors=False, with_segments=False)
 
 
 def test_permutect_wdl_with_pcr_error_filtering(metadata_with_pcr_error_filtering):
+    check_cached_m2_outputs(metadata_with_pcr_error_filtering, with_segments=True)
     assert "Permutect.PrePermutectFiltering" in metadata_with_pcr_error_filtering["calls"]
+    # the empty truth VCF counts as no truth VCF
+    assert "Permutect.PermutectConcordance" not in metadata_with_pcr_error_filtering["calls"]
     records = output_vcf_records(metadata_with_pcr_error_filtering)
     assert any(v.INFO.get(POST_PROB_INFO_KEY) is not None for v in records)
 
@@ -100,6 +140,7 @@ def test_permutect_wdl_with_pcr_error_filtering(metadata_with_pcr_error_filterin
 
 
 def test_permutect_wdl_without_pcr_error_filtering(metadata_without_pcr_error_filtering):
+    check_cached_m2_outputs(metadata_without_pcr_error_filtering, with_segments=False)
     assert "Permutect.PrePermutectFiltering" not in metadata_without_pcr_error_filtering["calls"]
     records = output_vcf_records(metadata_without_pcr_error_filtering)
     assert any(v.INFO.get(POST_PROB_INFO_KEY) is not None for v in records)

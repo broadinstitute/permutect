@@ -41,19 +41,16 @@ workflow Permutect {
         File? test_dataset_truth_vcf_idx
         String? concordance_header
 
-        # These HACKS are required to get around Terra's unreliable call-caching
-        # note: defining them as Strings instead of Files is essential because otherwise
+        # Mutect2's outputs from an earlier run, ie the m2_outputs output of that run: an uncompressed tar archive of
+        # the Permutect test dataset, the Mutect2 VCF and its index, the contigs table, the Mutect2 stats, and the tumor
+        # and normal minor allele fraction segments if Mutect2 made them.  If this is given, Mutect2 is not run.
+        # This HACK is required to get around Terra's unreliable call-caching
+        # note: defining it as a String instead of a File is essential because otherwise
         # a cached input gs://[some hash]/final-outputs/file.txt is written as
         # gs://[some hash]/final-outputs/[another hash]/final-outputs/file.txt
         # and eventually the file name gets too long and throws an error in Terra/cromwell.
-        # if we define them as Strings it uses the literal value
-        String? cached_plain_text_test_dataset
-        String? cached_mutect2_vcf
-        String? cached_mutect2_vcf_idx
-        String? cached_contigs_table
-        String? cached_maf_segments
-        String? cached_normal_maf_segments
-        String? cached_mutect_stats
+        # if we define it as a String it uses the literal value
+        String? cached_m2_outputs
 
         String? permutect_filtering_extra_args
         String? gcs_project_for_requester_pays
@@ -61,13 +58,6 @@ workflow Permutect {
         String permutect_docker
         Int? preemptible
         Int? max_retries
-
-        # WDL version 1.0 does not have an empty Optional literal
-        # such a literal is very useful because Terra has a bug where whenever a data table is updated, empty values
-        # silently and invisibly get converted to empty strings "".  Thus it is useful to recognize empty strings and
-        # declare empty Optionals.  The only way to do this in WDL 1.0 is to get an empty Optional as a variable from the
-        # workflow inputs.  These inputs should NEVER be filled in!!!!!
-        File? EMPTY_STRING_HACK
     }
 
     # I (David Benjamin, that is) always run Permutect on Terra, which has the following extremely irritating bug:
@@ -77,33 +67,33 @@ workflow Permutect {
     # The workaround is to explicitly test for Strings equal to "", which are actually empty Optionals that
     # Terra converted.
 
-    File? intervals_hack = if (select_first([intervals,""]) == "") then EMPTY_STRING_HACK else intervals
-    File? masks_hack = if (select_first([masks,""]) == "") then EMPTY_STRING_HACK else masks
+    # WDL version 1.0 does not have an empty Optional literal, but a declaration inside a conditional is an Optional
+    # outside of it, so NONE is always an empty Optional.
+    if (false) {
+        File NONE = ""
+    }
 
-    File? control_bam_hack = if select_first([control_bam, ""]) == "" then EMPTY_STRING_HACK else control_bam
-    File? control_bai_hack = if select_first([control_bai, ""]) == "" then EMPTY_STRING_HACK else control_bai
-    File? gnomad_hack = if select_first([gnomad, ""]) == "" then EMPTY_STRING_HACK else gnomad
-    File? gnomad_idx_hack = if select_first([gnomad_idx, ""]) == "" then EMPTY_STRING_HACK else gnomad_idx
+    File? intervals_hack = if (select_first([intervals,""]) == "") then NONE else intervals
+    File? masks_hack = if (select_first([masks,""]) == "") then NONE else masks
 
-    File? variants_for_contamination_hack = if select_first([variants_for_contamination, ""]) == "" then EMPTY_STRING_HACK else variants_for_contamination
-    File? variants_for_contamination_idx_hack = if select_first([variants_for_contamination_idx, ""]) == "" then EMPTY_STRING_HACK else variants_for_contamination_idx
-    File? realignment_index_bundle_hack = if select_first([realignment_index_bundle, ""]) == "" then EMPTY_STRING_HACK else realignment_index_bundle
-    File? dragstr_model_hack = if select_first([dragstr_model, ""]) == "" then EMPTY_STRING_HACK else dragstr_model
-    File? common_hets_for_segmentation_hack = if select_first([common_hets_for_segmentation, ""]) == "" then EMPTY_STRING_HACK else common_hets_for_segmentation
-    File? test_dataset_truth_vcf_hack = if select_first([test_dataset_truth_vcf, ""]) == "" then EMPTY_STRING_HACK else test_dataset_truth_vcf
-    File? test_dataset_truth_vcf_idx_hack = if select_first([test_dataset_truth_vcf_idx, ""]) == "" then EMPTY_STRING_HACK else test_dataset_truth_vcf_idx
+    File? control_bam_hack = if select_first([control_bam, ""]) == "" then NONE else control_bam
+    File? control_bai_hack = if select_first([control_bai, ""]) == "" then NONE else control_bai
+    File? gnomad_hack = if select_first([gnomad, ""]) == "" then NONE else gnomad
+    File? gnomad_idx_hack = if select_first([gnomad_idx, ""]) == "" then NONE else gnomad_idx
 
-    File? cached_dataset_hack = if (select_first([cached_plain_text_test_dataset,""]) == "") then EMPTY_STRING_HACK else cached_plain_text_test_dataset
-    String? cached_mutect2_vcf_hack = if (select_first([cached_mutect2_vcf,""]) == "") then EMPTY_STRING_HACK else cached_mutect2_vcf
-    String? cached_mutect2_vcf_idx_hack = if (select_first([cached_mutect2_vcf_idx,""]) == "") then EMPTY_STRING_HACK else cached_mutect2_vcf_idx
-    String? cached_contigs_table_hack = if (select_first([cached_contigs_table,""]) == "") then EMPTY_STRING_HACK else cached_contigs_table
-    String? cached_maf_segments_hack = if (select_first([cached_maf_segments,""]) == "") then EMPTY_STRING_HACK else cached_maf_segments
-    String? cached_normal_maf_segments_hack = if (select_first([cached_normal_maf_segments,""]) == "") then EMPTY_STRING_HACK else cached_normal_maf_segments
-    String? cached_mutect_stats_hack = if (select_first([cached_mutect_stats,""]) == "") then EMPTY_STRING_HACK else cached_mutect_stats
+    File? variants_for_contamination_hack = if select_first([variants_for_contamination, ""]) == "" then NONE else variants_for_contamination
+    File? variants_for_contamination_idx_hack = if select_first([variants_for_contamination_idx, ""]) == "" then NONE else variants_for_contamination_idx
+    File? realignment_index_bundle_hack = if select_first([realignment_index_bundle, ""]) == "" then NONE else realignment_index_bundle
+    File? dragstr_model_hack = if select_first([dragstr_model, ""]) == "" then NONE else dragstr_model
+    File? common_hets_for_segmentation_hack = if select_first([common_hets_for_segmentation, ""]) == "" then NONE else common_hets_for_segmentation
+    File? test_dataset_truth_vcf_hack = if select_first([test_dataset_truth_vcf, ""]) == "" then NONE else test_dataset_truth_vcf
+    File? test_dataset_truth_vcf_idx_hack = if select_first([test_dataset_truth_vcf_idx, ""]) == "" then NONE else test_dataset_truth_vcf_idx
 
-    String? gcs_project_for_requester_pays_hack = if select_first([gcs_project_for_requester_pays, ""]) == "" then EMPTY_STRING_HACK else gcs_project_for_requester_pays
+    String? cached_m2_outputs_hack = if (select_first([cached_m2_outputs,""]) == "") then NONE else cached_m2_outputs
 
-    Boolean use_cache = defined(cached_dataset_hack) && defined(cached_mutect2_vcf_hack) && defined(cached_contigs_table_hack) && defined(cached_mutect_stats_hack)
+    String? gcs_project_for_requester_pays_hack = if select_first([gcs_project_for_requester_pays, ""]) == "" then NONE else gcs_project_for_requester_pays
+
+    Boolean use_cache = defined(cached_m2_outputs_hack)
     if(!use_cache) {
         call m2.Mutect2 {
             input:
@@ -145,12 +135,36 @@ workflow Permutect {
                 preemptible = preemptible,
                 max_retries = max_retries
         }
+
+        call ArchiveM2Outputs {
+            input:
+                test_dataset = select_first([Mutect2.permutect_test_dataset]),
+                mutect2_vcf = Mutect2.output_vcf,
+                mutect2_vcf_idx = Mutect2.output_vcf_idx,
+                contigs_table = Mutect2.permutect_contigs_table,
+                mutect_stats = Mutect2.mutect_stats,
+                maf_segments = Mutect2.modeled_segments_tumor,
+                normal_maf_segments = Mutect2.modeled_segments_normal,
+                permutect_docker = permutect_docker,
+                preemptible = preemptible,
+                max_retries = max_retries
+        }
+    }
+
+    if (use_cache) {
+        call ExtractM2Outputs {
+            input:
+                cached_m2_outputs = select_first([cached_m2_outputs_hack]),
+                permutect_docker = permutect_docker,
+                preemptible = preemptible,
+                max_retries = max_retries
+        }
     }
 
     call SplitMultiallelics {
         input:
-            input_vcf = select_first([Mutect2.output_vcf, cached_mutect2_vcf_hack]),
-            input_vcf_idx = select_first([Mutect2.output_vcf_idx, cached_mutect2_vcf_idx_hack]),
+            input_vcf = select_first([Mutect2.output_vcf, ExtractM2Outputs.mutect2_vcf]),
+            input_vcf_idx = select_first([Mutect2.output_vcf_idx, ExtractM2Outputs.mutect2_vcf_idx]),
             ref_fasta = ref_fasta,
             ref_fai = ref_fai,
             ref_dict = ref_dict,
@@ -169,19 +183,19 @@ workflow Permutect {
 
     # minor allele fraction segments from Mutect2's ModelSegments if Mutect2 ran, otherwise the cached segments.
     # Unlike select_first, this allows the segments to be absent.
-    File? tumor_segments = if defined(Mutect2.modeled_segments_tumor) then Mutect2.modeled_segments_tumor else cached_maf_segments_hack
-    File? normal_segments = if defined(Mutect2.modeled_segments_normal) then Mutect2.modeled_segments_normal else cached_normal_maf_segments_hack
+    File? tumor_segments = if defined(Mutect2.modeled_segments_tumor) then Mutect2.modeled_segments_tumor else ExtractM2Outputs.maf_segments
+    File? normal_segments = if defined(Mutect2.modeled_segments_normal) then Mutect2.modeled_segments_normal else ExtractM2Outputs.normal_maf_segments
 
     call PermutectFiltering {
         input:
             mutect2_vcf = select_first([PrePermutectFiltering.output_vcf, SplitMultiallelics.output_vcf]),
             mutect2_vcf_idx = select_first([PrePermutectFiltering.output_vcf_idx, SplitMultiallelics.output_vcf_idx]),
             artifact_model = artifact_model,
-            test_dataset = select_first([Mutect2.permutect_test_dataset, cached_dataset_hack]),
-            contigs_table = select_first([Mutect2.permutect_contigs_table, cached_contigs_table_hack]),
+            test_dataset = select_first([Mutect2.permutect_test_dataset, ExtractM2Outputs.test_dataset]),
+            contigs_table = select_first([Mutect2.permutect_contigs_table, ExtractM2Outputs.contigs_table]),
             maf_segments = tumor_segments,
             normal_maf_segments = normal_segments,
-            mutect_stats = select_first([Mutect2.mutect_stats, cached_mutect_stats_hack]),
+            mutect_stats = select_first([Mutect2.mutect_stats, ExtractM2Outputs.mutect_stats]),
             batch_size = batch_size,
             num_workers = num_workers,
             gpu_count = gpu_count,
@@ -210,8 +224,8 @@ workflow Permutect {
                 masks = masks_hack,
                 truth_vcf = select_first([test_dataset_truth_vcf_hack]),
                 truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_hack]),
-                eval_vcf = select_first([Mutect2.output_vcf, cached_mutect2_vcf_hack]),
-                eval_vcf_idx = select_first([Mutect2.output_vcf_idx, cached_mutect2_vcf_idx_hack]),
+                eval_vcf = select_first([Mutect2.output_vcf, ExtractM2Outputs.mutect2_vcf]),
+                eval_vcf_idx = select_first([Mutect2.output_vcf_idx, ExtractM2Outputs.mutect2_vcf_idx]),
                 gatk_docker = permutect_docker,
                 concordance_header = concordance_header
         }
@@ -221,14 +235,9 @@ workflow Permutect {
         File output_vcf = PermutectFiltering.output_vcf
         File output_vcf_idx = PermutectFiltering.output_vcf_idx
         File tensorboard_report = PermutectFiltering.tensorboard_report
-        String test_dataset = select_first([Mutect2.permutect_test_dataset, cached_dataset_hack])
-        String mutect2_vcf = select_first([Mutect2.output_vcf, cached_mutect2_vcf_hack])
-        String mutect2_vcf_idx = select_first([Mutect2.output_vcf_idx, cached_mutect2_vcf_idx_hack])
-        String contigs_table = select_first([Mutect2.permutect_contigs_table, cached_contigs_table_hack])
-        # the segments given to PermutectFiltering, for use as cached segments in later runs
-        String? maf_segments = tumor_segments
-        String? normal_maf_segments = normal_segments
-        String mutect_stats = select_first([Mutect2.mutect_stats, cached_mutect_stats_hack])
+        # Mutect2's outputs, for use as cached_m2_outputs in later runs: the archive of this run's Mutect2 outputs, or
+        # else the given cached_m2_outputs, passed through as a String for the reason given where it is declared
+        String m2_outputs = select_first([ArchiveM2Outputs.m2_outputs, cached_m2_outputs_hack])
 
         File? fn = PermutectConcordance.fn
         File? fn_idx = PermutectConcordance.fn_idx
@@ -493,5 +502,103 @@ task Concordance {
         File ftn_idx = "filtered_true_negatives.vcf.idx"
         File summary = "summary.txt"
         File filter_analysis = "filter-analysis.txt"
+    }
+}
+
+# bundle Mutect2's outputs into a single uncompressed tar archive, which ExtractM2Outputs unpacks in later runs
+task ArchiveM2Outputs {
+    input {
+        File test_dataset
+        File mutect2_vcf
+        File mutect2_vcf_idx
+        File contigs_table
+        File mutect_stats
+        File? maf_segments
+        File? normal_maf_segments
+        String permutect_docker
+        Int? preemptible
+        Int? max_retries
+    }
+
+    # room for the inputs and the archive
+    Int disk_space = ceil(2 * size([test_dataset, mutect2_vcf, mutect2_vcf_idx, contigs_table, mutect_stats], "GB")) + 10
+
+    command <<<
+        set -euo pipefail
+
+        # Mutect2 makes an uncompressed VCF with a .idx index unless given compress_vcfs, which this workflow never does
+        case "~{mutect2_vcf}" in
+            *.vcf) ;;
+            *) echo "Expected an uncompressed .vcf from Mutect2, got ~{mutect2_vcf}" >&2; exit 1;;
+        esac
+
+        # links with the fixed names that ExtractM2Outputs expects
+        mkdir archive
+        ln -s ~{test_dataset} archive/test_dataset.txt
+        ln -s ~{mutect2_vcf} archive/mutect2.vcf
+        ln -s ~{mutect2_vcf_idx} archive/mutect2.vcf.idx
+        ln -s ~{contigs_table} archive/contigs.table
+        ln -s ~{mutect_stats} archive/mutect.stats
+        maf_segments="~{default="" maf_segments}"
+        normal_maf_segments="~{default="" normal_maf_segments}"
+        if [ -n "$maf_segments" ]; then ln -s "$maf_segments" archive/maf_segments.seg; fi
+        if [ -n "$normal_maf_segments" ]; then ln -s "$normal_maf_segments" archive/normal_maf_segments.seg; fi
+
+        # uncompressed (no -z), and archiving the files that the links point to (-h)
+        tar -chf cached_m2_outputs.tar -C archive .
+    >>>
+
+    runtime {
+        docker: permutect_docker
+        bootDiskSizeGb: 12
+        memory: "2 GB"
+        disks: "local-disk " + disk_space + " SSD"
+        preemptible: select_first([preemptible, 0])
+        maxRetries: select_first([max_retries, 0])
+        cpu: 1
+    }
+
+    output {
+        File m2_outputs = "cached_m2_outputs.tar"
+    }
+}
+
+# unpack the archive made by ArchiveM2Outputs
+task ExtractM2Outputs {
+    input {
+        File cached_m2_outputs
+        String permutect_docker
+        Int? preemptible
+        Int? max_retries
+    }
+
+    # room for the archive and its contents
+    Int disk_space = ceil(2 * size(cached_m2_outputs, "GB")) + 10
+
+    command <<<
+        set -euo pipefail
+        tar -xf ~{cached_m2_outputs}
+    >>>
+
+    runtime {
+        docker: permutect_docker
+        bootDiskSizeGb: 12
+        memory: "2 GB"
+        disks: "local-disk " + disk_space + " SSD"
+        preemptible: select_first([preemptible, 0])
+        maxRetries: select_first([max_retries, 0])
+        cpu: 1
+    }
+
+    # the names that ArchiveM2Outputs gives the files
+    output {
+        File test_dataset = "test_dataset.txt"
+        File mutect2_vcf = "mutect2.vcf"
+        File mutect2_vcf_idx = "mutect2.vcf.idx"
+        File contigs_table = "contigs.table"
+        File mutect_stats = "mutect.stats"
+        # absent if Mutect2 didn't make them
+        File? maf_segments = "maf_segments.seg"
+        File? normal_maf_segments = "normal_maf_segments.seg"
     }
 }
