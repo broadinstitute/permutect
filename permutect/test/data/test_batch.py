@@ -1,11 +1,19 @@
 import numpy as np
+import pytest
 import torch
 
 from permutect.data.batch import Batch
+from permutect.data.batch import BatchIndexedTensor
 from permutect.data.batch import DownsampledBatch
+from permutect.data.count_binning import NUM_ALT_COUNT_BINS
+from permutect.data.count_binning import NUM_LOGIT_BINS
+from permutect.data.count_binning import NUM_REF_COUNT_BINS
 from permutect.data.datum import RAW_READS_ARRAY_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
+from permutect.metrics.loss_metrics import AccuracyMetrics
+from permutect.utils.enums import Label
+from permutect.utils.enums import Variation
 
 # ref and alt read counts of each variant in the test batch, including a variant with no ref reads
 COUNTS = [(3, 2), (0, 4), (5, 1), (2, 3)]
@@ -82,3 +90,25 @@ def test_batch_get_matches_datum_get_for_every_field():
             values = batch_to_check.get(data_field)
             assert isinstance(values, torch.Tensor) and values.shape == (len(data),), data_field
             assert torch.equal(values.double(), expected), data_field
+
+
+@pytest.mark.parametrize("include_logits", [False, True])
+def test_batch_indexed_tensor_shapes(include_logits):
+    cpu = torch.device("cpu")
+    shape = (3, len(Label), len(Variation), NUM_REF_COUNT_BINS, NUM_ALT_COUNT_BINS) + (
+        (NUM_LOGIT_BINS,) if include_logits else ()
+    )
+    assert BatchIndexedTensor.shape_for(3, include_logits) == shape
+
+    zeros = BatchIndexedTensor.zeros(3, include_logits, device=cpu)
+    ones = BatchIndexedTensor.ones(3, include_logits, device=cpu)
+    assert zeros.shape == ones.shape == shape and ones.has_logits() == include_logits
+
+    # growing the source dimension keeps the existing sources and zeroes the new ones
+    ones.resize_sources(5)
+    assert ones.shape == BatchIndexedTensor.shape_for(5, include_logits)
+    assert torch.all(ones[:3] == 1) and torch.all(ones[3:] == 0)
+
+    if include_logits:
+        accuracy_metrics = AccuracyMetrics.create(3, device=cpu)
+        assert isinstance(accuracy_metrics, AccuracyMetrics) and accuracy_metrics.shape == shape

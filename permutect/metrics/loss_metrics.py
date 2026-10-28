@@ -15,14 +15,12 @@ from permutect.data.batch import BatchProperty
 from permutect.data.count_binning import ALT_COUNT_BIN_BOUNDS
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import NUM_LOGIT_BINS
-from permutect.data.count_binning import NUM_REF_COUNT_BINS
 from permutect.data.count_binning import REF_COUNT_BIN_BOUNDS
 from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.count_binning import logits_from_bin_indices
 from permutect.data.count_binning import top_of_logit_bin
 from permutect.metrics import plotting
 from permutect.metrics.plotting import legend_if_applicable
-from permutect.misc_utils import resolve_device
 from permutect.utils.array_utils import select_and_sum
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
@@ -233,15 +231,7 @@ class AccuracyMetrics(BatchIndexedTensor):
 
     @classmethod
     def create(cls, num_sources: int, device=None):
-        shape = (
-            num_sources,
-            len(Label),
-            len(Variation),
-            NUM_REF_COUNT_BINS,
-            NUM_ALT_COUNT_BINS,
-            NUM_LOGIT_BINS,
-        )
-        return cls(torch.zeros(shape, device=resolve_device(device)))
+        return cls.zeros(num_sources, include_logits=True, device=device)
 
     def record_with_sources_and_logits(
         self,

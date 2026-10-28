@@ -320,22 +320,21 @@ class BatchIndexedTensor(Tensor):
         return (num_sources, len(Label), len(Variation), NUM_REF_COUNT_BINS, NUM_ALT_COUNT_BINS)
 
     @classmethod
-    def zeros(cls, num_sources: int, include_logits: bool = False, device=None):
+    def shape_for(cls, num_sources: int, include_logits: bool = False):
         base_shape = BatchIndexedTensor.shape_without_logits(num_sources)
-        shape = (base_shape + (NUM_LOGIT_BINS,)) if include_logits else base_shape
-        return cls(torch.zeros(shape, device=resolve_device(device)))
+        return (base_shape + (NUM_LOGIT_BINS,)) if include_logits else base_shape
+
+    @classmethod
+    def zeros(cls, num_sources: int, include_logits: bool = False, device=None):
+        return cls(torch.zeros(cls.shape_for(num_sources, include_logits), device=resolve_device(device)))
 
     @classmethod
     def ones(cls, num_sources: int, include_logits: bool = False, device=None):
-        base_shape = BatchIndexedTensor.shape_without_logits(num_sources)
-        shape = (base_shape + (NUM_LOGIT_BINS,)) if include_logits else base_shape
-        return cls(torch.ones(shape, device=resolve_device(device)))
+        return cls(torch.ones(cls.shape_for(num_sources, include_logits), device=resolve_device(device)))
 
     def resize_sources(self, new_num_sources):
         old_num_sources = self.num_sources()
-        base_shape = BatchIndexedTensor.shape_without_logits(new_num_sources)
-        shape = (base_shape + (NUM_LOGIT_BINS,)) if self.has_logits() else base_shape
-        self.resize_(shape)
+        self.resize_(BatchIndexedTensor.shape_for(new_num_sources, self.has_logits()))
         self[old_num_sources:] = 0
 
     # TODO: move to subclass as in comments below

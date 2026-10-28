@@ -100,3 +100,14 @@ def test_vcf_annotation_without_a_segmentation(tmp_path):
     segmentation = defaultdict(IntervalTree)
     segmentation["chr1"][90:150] = 0.25
     assert annotated_mafs(tmp_path, segmentation=segmentation) == [(0.25, 0.5), (0.5, 0.5)]
+
+
+@pytest.mark.parametrize("num_folds, used_folds", [(3, [0, 2]), (3, [1]), (1000, [7])])
+def test_restrict_to_folds(num_folds, used_folds):
+    # with 1000 folds the estimated size rounds down to 0, and the capacity must grow to fit
+    data = [make_datum(index, index % 4) for index in range(20)]
+    memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=20, estimated_num_reads=40)
+    restricted = memory_mapped_data.restrict_to_folds(num_folds, used_folds)
+    assert_same_data(restricted, [datum for index, datum in enumerate(data) if index % num_folds in used_folds])
+
+    assert memory_mapped_data.restrict_to_folds(num_folds, used_folds=None) is memory_mapped_data

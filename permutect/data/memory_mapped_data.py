@@ -108,21 +108,27 @@ class MemoryMappedData:
                     count += 1
         print(f"generated {count} objects.")
 
+    def _restrict(self, reads_datum_source, estimated_proportion: float) -> MemoryMappedData:
+        """
+        New memory-mapped data holding the data from a generator over a subset of this one's data.  The estimated
+        proportion of data kept sets the initial capacity, which grows as needed if the estimate is too low.
+        """
+        fudge_factor = 1.1
+        estimated_num_data = int(self.num_data * estimated_proportion * fudge_factor)
+        estimated_num_reads = int(self.num_reads * estimated_proportion * fudge_factor)
+        return MemoryMappedData.from_generator(reads_datum_source, estimated_num_data, estimated_num_reads)
+
     def restrict_to_folds(self, num_folds: int, used_folds: List[int] = None, label_probs_l=None) -> MemoryMappedData:
         if used_folds is None:
             return self
         else:
             print(f"Restricting to folds {used_folds} out of {num_folds} total folds.")
-            proportion = len(used_folds) / num_folds
-            fudge_factor = 1.1
-            estimated_num_data = int(self.num_data * proportion * fudge_factor)
-            estimated_num_reads = int(self.num_reads * proportion * fudge_factor)
             reads_datum_source = self.generate(
                 num_folds=num_folds,
                 used_folds=used_folds,
                 label_probs_l=label_probs_l,
             )
-            return MemoryMappedData.from_generator(reads_datum_source, estimated_num_data, estimated_num_reads)
+            return self._restrict(reads_datum_source, estimated_proportion=len(used_folds) / num_folds)
 
     def restrict_to_labeled_only(self) -> MemoryMappedData:
         print("Restricting dataset to labeled data only.")
@@ -135,12 +141,8 @@ class MemoryMappedData:
             labeled_count += 1 if datum.is_labeled() else 0
 
         labeled_proportion = labeled_count / total if total > 0 else 0
-        fudge_factor = 1.1
-        estimated_num_reads = int(self.num_reads * labeled_proportion * fudge_factor)
-        estimated_num_data = int(self.num_data * labeled_proportion * fudge_factor)
-
         reads_datum_source = (datum for datum in self.generate() if datum.is_labeled())
-        return MemoryMappedData.from_generator(reads_datum_source, estimated_num_data, estimated_num_reads)
+        return self._restrict(reads_datum_source, estimated_proportion=labeled_proportion)
 
     """
     Add log allele frequency (AF), minor allele frequency (MAF), and normal minor allele frequency (normal MAF) to the
