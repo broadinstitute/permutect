@@ -1,6 +1,10 @@
-name: WDL integration tests
+name: Docker image and WDL integration tests
 
-# Runs on pull requests, on pushes to main, and on pushes to other branches that change the Dockerfile or scripts/.
+# Builds each commit's Docker image once and runs the WDL integration tests at most once:
+#   - pull requests and pushes to main build the image and run the WDL tests
+#   - pushes to a branch with an open pull request do nothing, because the pull_request run covers the same commit
+#   - pushes to other branches run the WDL tests if they change the Dockerfile or scripts/, and otherwise only build
+#     the image
 # Push filters can't express "main or these paths", so the changes job checks the paths.
 on:
   push:
@@ -16,6 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       wdl: ${{ steps.filter.outputs.wdl }}
+      open_pr: ${{ steps.pr.outputs.open_pr }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
@@ -30,9 +35,18 @@ jobs:
               - "Dockerfile"
               - "scripts/**"
 
+      - name: Check for an open pull request
+        id: pr
+        if: github.event_name == 'push' && github.ref != 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          num_open=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$GITHUB_REF_NAME" --state open --json number --jq length)
+          echo "open_pr=$([ "$num_open" -gt 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
   wdl:
     needs: changes
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || needs.changes.outputs.wdl == 'true'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || (needs.changes.outputs.wdl == 'true' && needs.changes.outputs.open_pr != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -61,3 +75,21 @@ jobs:
 
       - name: Run WDL integration tests
         run: pixi run -e wdl test-wdl
+
+  # when the wdl job doesn't build the image, check that it builds
+  docker:
+    needs: changes
+    if: github.event_name == 'push' && github.ref != 'refs/heads/main' && needs.changes.outputs.wdl != 'true' && needs.changes.outputs.open_pr != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2  # v3.10.0
+
+      - name: Build Docker image
+        uses: docker/build-push-action@14487ce63c7a62a4a324b0bfb37086795e31c6c1  # v6.16.0
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
