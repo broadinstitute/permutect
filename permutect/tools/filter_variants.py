@@ -15,7 +15,6 @@ from permutect.architecture.artifact_model import load_model
 from permutect.architecture.posterior_model import PosteriorModel
 from permutect.data import plain_text_data
 from permutect.data.batch import Batch
-from permutect.data.count_binning import MAX_ALT_COUNT
 from permutect.data.count_binning import alt_count_bin_index
 from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
@@ -579,7 +578,7 @@ def apply_filtering_to_vcf(
             embedding_metrics.label_metadata.append(label.name)
             embedding_metrics.type_metadata.append(variant_type.name)
             embedding_metrics.truncated_count_metadata.append(
-                alt_count_bin_name(alt_count_bin_index(min(MAX_ALT_COUNT, posterior_result.alt_count)))
+                alt_count_bin_name(alt_count_bin_index(posterior_result.alt_count))
             )
             embedding_metrics.features.append(posterior_result.embedding)
             # TODO: we don't yet record ref features but we could eventually. . .

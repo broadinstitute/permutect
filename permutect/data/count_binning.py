@@ -56,28 +56,38 @@ def logit_bin_name(logit_bin_idx: int) -> str:
     return f"{MIN_LOGIT + (logit_bin_idx + 0.5) * LOGIT_BIN_SKIP:.1f}"
 
 
-def ref_count_bin_indices(count_tensor: IntTensor) -> IntTensor:
-    return torch.div(torch.clip(count_tensor, max=MAX_REF_COUNT), COUNT_BIN_SKIP, rounding_mode="floor")
+def clamp_count(count, min_count: int, max_count: int):
+    """
+    clamp an int, or each element of a tensor, to the range [min_count, max_count]
+    """
+    if isinstance(count, Tensor):
+        return torch.clamp(count, min=min_count, max=max_count)
+    return max(min_count, min(count, max_count))
 
 
-def alt_count_bin_indices(count_tensor: IntTensor) -> IntTensor:
-    return torch.div(torch.clip(count_tensor, max=MAX_ALT_COUNT) - 1, COUNT_BIN_SKIP, rounding_mode="floor")
+def ref_count_bin_index(count):
+    """
+    the bin of a ref count, or of each element of a tensor of ref counts.  Counts above MAX_REF_COUNT go in the last bin.
+    """
+    return clamp_count(count, 0, MAX_REF_COUNT) // COUNT_BIN_SKIP
 
 
-def count_from_ref_bin_index(count_bin_index: int) -> int:
-    return COUNT_BIN_SKIP * count_bin_index + (COUNT_BIN_SKIP // 2)
+def alt_count_bin_index(count):
+    """
+    the bin of an alt count, or of each element of a tensor of alt counts.  Counts below MIN_ALT_COUNT go in the first
+    bin and counts above MAX_ALT_COUNT go in the last bin.
+    """
+    return (clamp_count(count, MIN_ALT_COUNT, MAX_ALT_COUNT) - MIN_ALT_COUNT) // COUNT_BIN_SKIP
 
 
-def count_from_alt_bin_index(count_bin_index: int) -> int:
-    return MIN_ALT_COUNT + COUNT_BIN_SKIP * count_bin_index + (COUNT_BIN_SKIP // 2)
+def count_from_ref_bin_index(count_bin_index):
+    # the center of the bin (rounded down if COUNT_BIN_SKIP is even), for a bin index or a tensor of bin indices
+    return COUNT_BIN_SKIP * count_bin_index + (COUNT_BIN_SKIP - 1) // 2
 
 
-def ref_count_bin_index(count: int) -> int:
-    return count // COUNT_BIN_SKIP
-
-
-def alt_count_bin_index(count: int) -> int:
-    return (count - MIN_ALT_COUNT) // COUNT_BIN_SKIP
+def count_from_alt_bin_index(count_bin_index):
+    # the center of the bin (rounded down if COUNT_BIN_SKIP is even), for a bin index or a tensor of bin indices
+    return MIN_ALT_COUNT + COUNT_BIN_SKIP * count_bin_index + (COUNT_BIN_SKIP - 1) // 2
 
 
 def round_ref_count_to_bin_center(count: int) -> int:
@@ -88,17 +98,9 @@ def round_alt_count_to_bin_center(count: int) -> int:
     return count_from_alt_bin_index(alt_count_bin_index(count))
 
 
-def counts_from_ref_bin_indices(count_bin_indices: IntTensor) -> IntTensor:
-    return COUNT_BIN_SKIP * count_bin_indices + (COUNT_BIN_SKIP // 2)
-
-
-def counts_from_alt_bin_indices(count_bin_indices: IntTensor) -> IntTensor:
-    return MIN_ALT_COUNT + COUNT_BIN_SKIP * count_bin_indices + (COUNT_BIN_SKIP // 2)
-
-
 def ref_count_bin_name(bin_idx: int) -> str:
-    return str(COUNT_BIN_SKIP * bin_idx + (COUNT_BIN_SKIP - 1) // 2)  # the center of the bin
+    return str(count_from_ref_bin_index(bin_idx))
 
 
 def alt_count_bin_name(bin_idx: int) -> str:
-    return str(MIN_ALT_COUNT + COUNT_BIN_SKIP * bin_idx + (COUNT_BIN_SKIP - 1) // 2)  # the center of the bin
+    return str(count_from_alt_bin_index(bin_idx))

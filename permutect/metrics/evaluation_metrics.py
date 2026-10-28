@@ -12,7 +12,6 @@ from permutect.data.batch import Batch
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import NUM_REF_COUNT_BINS
 from permutect.data.count_binning import alt_count_bin_name
-from permutect.data.count_binning import count_from_alt_bin_index
 from permutect.data.count_binning import ref_count_bin_name
 from permutect.metrics import plotting
 from permutect.metrics.loss_metrics import AccuracyMetrics
@@ -379,8 +378,8 @@ class EmbeddingMetrics:
 
         # read average embeddings stratified by alt count
         for count_bin in range(NUM_ALT_COUNT_BINS):
-            count = count_from_alt_bin_index(count_bin)
-            indices = set([n for n, alt_count in enumerate(self.truncated_count_metadata) if alt_count == str(count)])
+            count_name = alt_count_bin_name(count_bin)
+            indices = set([n for n, alt_count in enumerate(self.truncated_count_metadata) if alt_count == count_name])
             interesting = interesting_indices & indices
             boring = boring_indices & indices
             boring_count = max(len(interesting) // 3, 100) if is_filter_variants else len(boring)
@@ -399,7 +398,7 @@ class EmbeddingMetrics:
                     stacked_features[idx],
                     metadata=[all_metadata[round(n)] for n in idx.tolist()],
                     metadata_header=["Labels", "Correctness", "Types", "Counts"],
-                    tag=prefix + "embedding for alt count " + str(count),
+                    tag=prefix + "embedding for alt count " + count_name,
                     global_step=epoch,
                 )
 
@@ -408,6 +407,6 @@ class EmbeddingMetrics:
                         stacked_ref_features[idx],
                         metadata=[all_metadata[round(n)] for n in idx.tolist()],
                         metadata_header=["Labels", "Correctness", "Types", "Counts"],
-                        tag=prefix + "ref embedding for alt count " + str(count),
+                        tag=prefix + "ref embedding for alt count " + count_name,
                         global_step=epoch,
                     )

@@ -15,12 +15,10 @@ from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import NUM_LOGIT_BINS
 from permutect.data.count_binning import NUM_REF_COUNT_BINS
 from permutect.data.count_binning import alt_count_bin_index
-from permutect.data.count_binning import alt_count_bin_indices
 from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.count_binning import logit_bin_indices
 from permutect.data.count_binning import logit_bin_name
 from permutect.data.count_binning import ref_count_bin_index
-from permutect.data.count_binning import ref_count_bin_indices
 from permutect.data.count_binning import ref_count_bin_name
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.datum import FLOAT_DTYPE
@@ -217,8 +215,8 @@ class BatchIndices:
         self.sources = sources
         self.labels = labels
         self.var_types = var_types
-        self.ref_count_bins = ref_count_bin_indices(ref_counts)
-        self.alt_count_bins = alt_count_bin_indices(alt_counts)
+        self.ref_count_bins = ref_count_bin_index(ref_counts)
+        self.alt_count_bins = alt_count_bin_index(alt_counts)
 
         # We do something kind of dangerous-seeming here: sources is the zeroth dimension and so the formula for
         # flattened indices *doesn't depend on the number of sources* since the stride from one source to the next is the

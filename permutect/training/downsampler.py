@@ -13,7 +13,6 @@ from permutect.data.batch import BatchIndexedTensor
 from permutect.data.count_binning import COUNT_BIN_SKIP
 from permutect.data.count_binning import MAX_ALT_COUNT
 from permutect.data.count_binning import MAX_REF_COUNT
-from permutect.data.count_binning import MIN_ALT_COUNT
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import NUM_REF_COUNT_BINS
 from permutect.data.count_binning import alt_count_bin_index
@@ -77,11 +76,11 @@ class Downsampler(Module):
                 binned_ref_trans_kry[:, ref_bin, downref_bin] += ref_trans_kry[:, ref, downref]
 
         for alt in range(MAX_ALT_COUNT + 1):
-            alt_bin = 0 if alt < MIN_ALT_COUNT else alt_count_bin_index(alt)
+            alt_bin = alt_count_bin_index(alt)
             for downalt in range(MAX_ALT_COUNT + 1):
                 # in the downsampling we guarantee at least one alt read count, so a beta binomial that samples no
-                # alt reads end up with one read, hence is in bin 0.
-                downalt_bin = 0 if downalt < MIN_ALT_COUNT else alt_count_bin_index(downalt)
+                # alt reads end up with one read, hence is in bin 0, which is where alt_count_bin_index puts 0.
+                downalt_bin = alt_count_bin_index(downalt)
                 binned_alt_trans_haz[:, alt_bin, downalt_bin] += alt_trans_haz[:, alt, downalt]
 
         self.binned_ref_trans_kry = Buffer(binned_ref_trans_kry / COUNT_BIN_SKIP)
