@@ -48,7 +48,7 @@ def generate_edited_data(memory_mapped_datas, edit_type: str, source: int):
                 raise Exception(f"edit type {edit_type} not implemented yet")
 
 
-def parse_arguments():
+def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(description="train the Mutect3 artifact model")
     parser.add_argument(
         "--" + constants.DATASET_EDIT_TYPE_NAME,
@@ -68,7 +68,7 @@ def parse_arguments():
     )
     parser.add_argument("--" + constants.OUTPUT_NAME, type=str, required=True, help="path to pruned dataset file")
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main_without_parsing(args):

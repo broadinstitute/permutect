@@ -7,7 +7,6 @@ import os
 import re
 import shlex
 import subprocess
-import sys
 import tarfile
 
 import pytest
@@ -138,22 +137,21 @@ def fill_placeholders(command: str, inputs: dict) -> str:
     return re.sub(r'~\{(?:default="([^"]*)"\s+)?(?:"([^"]*)"\s*\+\s*)?(\w+)\}', fill, command)
 
 
-def edit_dataset_arguments(monkeypatch, new_source):
+def edit_dataset_arguments(new_source):
     command = fill_placeholders(
         task_command(EDIT_DATASET_WDL, "EditDataset"),
         {"train_tar": "data.tar", "new_source": new_source, "edit_type": "keep_everything", "extra_args": None},
     )
     words = shlex.split(command.replace("\\\n", " "))
-    monkeypatch.setattr(sys, "argv", words[words.index("edit_dataset") :])
-    return edit_dataset.parse_arguments()
+    return edit_dataset.parse_arguments(words[words.index("edit_dataset") + 1 :])
 
 
-def test_edit_dataset_command(monkeypatch):
-    arguments = edit_dataset_arguments(monkeypatch, new_source=3)
+def test_edit_dataset_command():
+    arguments = edit_dataset_arguments(new_source=3)
     assert getattr(arguments, constants.TRAIN_TAR_NAME) == ["data.tar"]
     assert getattr(arguments, constants.SOURCE_NAME) == 3
 
-    arguments = edit_dataset_arguments(monkeypatch, new_source=None)
+    arguments = edit_dataset_arguments(new_source=None)
     assert getattr(arguments, constants.TRAIN_TAR_NAME) == ["data.tar"]
     assert getattr(arguments, constants.SOURCE_NAME) is None
 
