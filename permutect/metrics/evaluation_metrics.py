@@ -17,7 +17,7 @@ from permutect.data.count_binning import ref_count_bin_name
 from permutect.metrics import plotting
 from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.metrics.posterior_result import PosteriorResult
-from permutect.misc_utils import gpu_if_available
+from permutect.misc_utils import resolve_device
 from permutect.utils.enums import Call
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
@@ -27,7 +27,8 @@ NUM_DATA_FOR_TENSORBOARD_PROJECTION = 10000
 
 
 class EvaluationMetrics:
-    def __init__(self, num_sources, device=gpu_if_available()):
+    def __init__(self, num_sources, device=None):
+        device = resolve_device(device)
         # we will have a map from epoch type to EvaluationMetricsForOneEpochType
         self.accuracy_metrics_by_epoch_type = defaultdict(lambda: AccuracyMetrics.create(num_sources, device))
 

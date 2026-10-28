@@ -142,7 +142,7 @@ def train_one_epoch(
     loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
 
     parent_batch: Batch
-    for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
+    for parent_batch in tqdm(prefetch_generator(loader, device=model._device), mininterval=60, total=len(loader)):
         batch: DownsampledBatch
         for downsampling_iteration in range(2):
             ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
@@ -212,7 +212,7 @@ def collect_evaluation_data(
         loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
 
         parent_batch: Batch
-        for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
+        for parent_batch in tqdm(prefetch_generator(loader, device=model._device), mininterval=60, total=len(loader)):
             # TODO: magic constant
             for _ in range(3):
                 ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)

@@ -289,6 +289,7 @@ def make_filtered_vcf(
         initial_log_variant_prior,
         initial_log_artifact_prior,
         no_germline_mode=no_germline_mode,
+        device=device,
         het_beta=het_beta,
     )
     posterior_data_loader = make_posterior_data_loader(
@@ -333,14 +334,14 @@ def make_filtered_vcf(
 def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_workers: int):
     # pass through the dataset, running the artifact model
     # to get artifact logits, which we record in a dict keyed by variant strings.  These will later be added to PosteriorDatum objects.
-    loader = dataset.make_data_loader(batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
+    loader = dataset.make_data_loader(batch_size, pin_memory=model._device.type == "cuda", num_workers=num_workers)
 
     # test-time adaptation leaves the model in training mode, which would turn on dropout and batch norm updates
     model.train(False)
 
     print("creating posterior data...")
     batch: Batch
-    for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
+    for batch in tqdm(prefetch_generator(loader, device=model._device), mininterval=60, total=len(loader)):
         output = model.compute_batch_output(batch)
         for int_array, float_array, logit, embedding in zip(
             batch.get_int_array_be(),
@@ -412,7 +413,8 @@ def make_posterior_data_loader(
 
     posterior_dataset = ReadsDataset(posterior_mmap)
     report_memory_usage("Finished creating posterior ReadsDataset.")
-    return posterior_dataset.make_data_loader(batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
+    pin_memory = model._device.type == "cuda"
+    return posterior_dataset.make_data_loader(batch_size, pin_memory=pin_memory, num_workers=num_workers)
 
 
 # error probability thresholds is a dict from Variant type to error probability threshold (float)
@@ -429,14 +431,16 @@ def apply_filtering_to_vcf(
 ):
     print("Computing final error probabilities")
     passing_call_type = Call.GERMLINE if germline_mode else Call.SOMATIC
-    evaluation_metrics = EvaluationMetrics(num_sources=1)
+    device = posterior_model._device
+    evaluation_metrics = EvaluationMetrics(num_sources=1, device=device)
 
     # Note: using BatchIndexedTotals in a hacky way, with Call replacing Source!
-    artifact_logit_metrics = AccuracyMetrics.create(num_sources=len(Call))
+    artifact_logit_metrics = AccuracyMetrics.create(num_sources=len(Call), device=device)
     encoding_to_posterior_results = {}
 
     batch: Batch
-    for batch in tqdm(prefetch_generator(posterior_loader), mininterval=60, total=len(posterior_loader)):
+    batches = prefetch_generator(posterior_loader, device=device)
+    for batch in tqdm(batches, mininterval=60, total=len(posterior_loader)):
         # posterior, along with intermediate tensors for debugging/interpretation
         log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, log_posteriors_bc = (
             posterior_model.log_posterior_and_ingredients(batch)

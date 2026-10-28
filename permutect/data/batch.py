@@ -27,7 +27,7 @@ from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.data.datum import get_data_field
 from permutect.data.plain_text_data import convert_uint8_to_quantile_normalized
-from permutect.misc_utils import gpu_if_available
+from permutect.misc_utils import resolve_device
 from permutect.utils.array_utils import flattened_indices
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
@@ -323,13 +323,13 @@ class BatchIndexedTensor(Tensor):
     def zeros(cls, num_sources: int, include_logits: bool = False, device=None):
         base_shape = BatchIndexedTensor.shape_without_logits(num_sources)
         shape = (base_shape + (NUM_LOGIT_BINS,)) if include_logits else base_shape
-        return cls(torch.zeros(shape, device=(gpu_if_available() if device is None else device)))
+        return cls(torch.zeros(shape, device=resolve_device(device)))
 
     @classmethod
-    def ones(cls, num_sources: int, include_logits: bool = False, device=gpu_if_available()):
+    def ones(cls, num_sources: int, include_logits: bool = False, device=None):
         base_shape = BatchIndexedTensor.shape_without_logits(num_sources)
         shape = (base_shape + (NUM_LOGIT_BINS,)) if include_logits else base_shape
-        return cls(torch.ones(shape, device=device))
+        return cls(torch.ones(shape, device=resolve_device(device)))
 
     def resize_sources(self, new_num_sources):
         old_num_sources = self.num_sources()

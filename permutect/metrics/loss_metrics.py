@@ -22,7 +22,7 @@ from permutect.data.count_binning import logits_from_bin_indices
 from permutect.data.count_binning import top_of_logit_bin
 from permutect.metrics import plotting
 from permutect.metrics.plotting import legend_if_applicable
-from permutect.misc_utils import gpu_if_available
+from permutect.misc_utils import resolve_device
 from permutect.utils.array_utils import select_and_sum
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
@@ -38,7 +38,7 @@ def masked_ratio(numerator: Tensor, denominator: Tensor) -> Tensor:
 
 
 class LossMetrics:
-    def __init__(self, num_sources: int, device=gpu_if_available()):
+    def __init__(self, num_sources: int, device=None):
         self.totals_slvra = BatchIndexedTensor.zeros(num_sources=num_sources, device=device)
         self.counts_slvra = BatchIndexedTensor.zeros(num_sources=num_sources, device=device)
         self.num_sources = num_sources
@@ -232,7 +232,7 @@ class AccuracyMetrics(BatchIndexedTensor):
         assert data.dim() == 6, "needs 6 dimensions"
 
     @classmethod
-    def create(cls, num_sources: int, device=gpu_if_available()):
+    def create(cls, num_sources: int, device=None):
         shape = (
             num_sources,
             len(Label),
@@ -241,7 +241,7 @@ class AccuracyMetrics(BatchIndexedTensor):
             NUM_ALT_COUNT_BINS,
             NUM_LOGIT_BINS,
         )
-        return cls(torch.zeros(shape, device=device))
+        return cls(torch.zeros(shape, device=resolve_device(device)))
 
     def record_with_sources_and_logits(
         self,

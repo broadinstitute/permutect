@@ -5,10 +5,9 @@ from permutect.architecture.spectra.artifact_spectra import ArtifactSpectra
 from permutect.architecture.spectra.normal_artifact_spectrum import NormalArtifactSpectrum
 from permutect.architecture.spectra.somatic_spectrum import SomaticSpectrum
 from permutect.data.batch import Batch
-from permutect.data.datum import DEFAULT_CPU_FLOAT
-from permutect.data.datum import DEFAULT_GPU_FLOAT
 from permutect.data.datum import Data
-from permutect.misc_utils import gpu_if_available
+from permutect.misc_utils import float_dtype
+from permutect.misc_utils import resolve_device
 from permutect.utils.enums import Call
 from permutect.utils.math_utils import log1mexp
 from permutect.utils.stats_utils import beta_binomial_log_lk
@@ -65,11 +64,11 @@ class PosteriorModelSpectra(nn.Module):
     Basically, anything that computes the likelihood of alt and ref read counts goes here.
     """
 
-    def __init__(self, device=gpu_if_available(), het_beta: float = None):
+    def __init__(self, device=None, het_beta: float = None):
         super(PosteriorModelSpectra, self).__init__()
 
-        self._device = device
-        self._dtype = DEFAULT_GPU_FLOAT if device != torch.device("cpu") else DEFAULT_CPU_FLOAT
+        self._device = resolve_device(device)
+        self._dtype = float_dtype(self._device)
         self.het_beta = het_beta
 
         # TODO introduce parameters class so that num_components is not hard-coded

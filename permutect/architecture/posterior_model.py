@@ -13,14 +13,13 @@ from permutect.data.batch import Batch
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import alt_count_bin_index
 from permutect.data.count_binning import count_from_alt_bin_index
-from permutect.data.datum import DEFAULT_CPU_FLOAT
-from permutect.data.datum import DEFAULT_GPU_FLOAT
 from permutect.data.datum import Data
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.metrics import plotting
 from permutect.misc_utils import StreamingAverage
 from permutect.misc_utils import backpropagate
-from permutect.misc_utils import gpu_if_available
+from permutect.misc_utils import float_dtype
+from permutect.misc_utils import resolve_device
 from permutect.utils.enums import Call
 from permutect.utils.enums import Variation
 
@@ -33,18 +32,18 @@ class PosteriorModel(torch.nn.Module):
         variant_log_prior: float,
         artifact_log_prior: float,
         no_germline_mode: bool = False,
-        device=gpu_if_available(),
+        device=None,
         het_beta: float = None,
     ):
         super(PosteriorModel, self).__init__()
 
-        self._device = device
-        self._dtype = DEFAULT_GPU_FLOAT if device != torch.device("cpu") else DEFAULT_CPU_FLOAT
+        self._device = resolve_device(device)
+        self._dtype = float_dtype(self._device)
         self.no_germline_mode = no_germline_mode
         self.het_beta = het_beta
 
-        self.spectra = PosteriorModelSpectra(device=device, het_beta=het_beta)
-        self.priors = PosteriorModelPriors(variant_log_prior, artifact_log_prior, no_germline_mode, device)
+        self.spectra = PosteriorModelSpectra(device=self._device, het_beta=het_beta)
+        self.priors = PosteriorModelPriors(variant_log_prior, artifact_log_prior, no_germline_mode, self._device)
 
         self.to(device=self._device, dtype=self._dtype)
 
@@ -145,7 +144,8 @@ class PosteriorModel(torch.nn.Module):
             snv_context_totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra(device=self._device)
 
             batch: Batch
-            for batch in tqdm(prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)):
+            batches = prefetch_generator(posterior_loader, device=self._device)
+            for batch in tqdm(batches, mininterval=10, total=len(posterior_loader)):
                 relative_posteriors = self.log_relative_posteriors_bc(batch)
                 log_evidence = torch.logsumexp(relative_posteriors, dim=1)
 
@@ -220,7 +220,8 @@ class PosteriorModel(torch.nn.Module):
         # TODO: use the EvaluationMetrics class to generate the theoretical ROC curve
         # TODO: then delete plotting.plot_theoretical_roc_on_axis
         batch: Batch
-        for batch in tqdm(prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)):
+        batches = prefetch_generator(posterior_loader, device=self._device)
+        for batch in tqdm(batches, mininterval=10, total=len(posterior_loader)):
             # TODO: should this be the original alt counts instead?
             alt_counts_b = batch.get(Data.ALT_COUNT).cpu().tolist()
             # 0th column is true variant, subtract it from 1 to get error prob

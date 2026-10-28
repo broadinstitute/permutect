@@ -12,7 +12,7 @@ from torch.nn.parameter import Buffer
 from permutect.data.batch import Batch
 from permutect.data.datum import Data
 from permutect.metrics import plotting
-from permutect.misc_utils import gpu_if_available
+from permutect.misc_utils import resolve_device
 from permutect.utils.array_utils import add_at_index
 from permutect.utils.array_utils import index_tensor
 from permutect.utils.enums import Call
@@ -74,11 +74,11 @@ class PosteriorModelPriors(nn.Module):
         variant_log_prior: float,
         artifact_log_prior: float,
         no_germline_mode: bool,
-        device=gpu_if_available(),
+        device=None,
     ):
         super(PosteriorModelPriors, self).__init__()
         self.no_germline_mode = no_germline_mode
-        self._device = device
+        self._device = resolve_device(device)
         self.use_context_dependent_snv_priors = True
 
         # pre-softmax priors of different call types [log P(variant), log P(artifact), log P(seq error)] for each variant type
@@ -111,8 +111,8 @@ class PosteriorModelPriors(nn.Module):
         self.use_context_dependent_snv_priors = False
 
     @classmethod
-    def initialize_snv_context_totals_rrra(cls, device=gpu_if_available()):
-        return torch.zeros(5, 5, 5, 5, device=device)
+    def initialize_snv_context_totals_rrra(cls, device=None):
+        return torch.zeros(5, 5, 5, 5, device=resolve_device(device))
 
     @classmethod
     def increment_somatic_snv_context_totals_rrra(

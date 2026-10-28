@@ -6,16 +6,29 @@ import pytest
 import torch
 from torch import Tensor
 
+from permutect import misc_utils
+from permutect.architecture.posterior_model import PosteriorModel
+from permutect.architecture.posterior_model_priors import PosteriorModelPriors
+from permutect.architecture.spectra.posterior_model_spectra import PosteriorModelSpectra
+from permutect.data.batch import BatchIndexedTensor
+from permutect.data.datum import DEFAULT_CPU_FLOAT
+from permutect.data.datum import DEFAULT_GPU_FLOAT
 from permutect.data.datum import RAW_READS_ARRAY_DTYPE
 from permutect.data.datum import Datum
+from permutect.metrics.evaluation_metrics import EvaluationMetrics
+from permutect.metrics.loss_metrics import AccuracyMetrics
+from permutect.metrics.loss_metrics import LossMetrics
 from permutect.misc_utils import ConsistentValue
 from permutect.misc_utils import StreamingAverage
 from permutect.misc_utils import Timer
 from permutect.misc_utils import encode
 from permutect.misc_utils import encode_datum
 from permutect.misc_utils import encode_variant
+from permutect.misc_utils import float_dtype
 from permutect.misc_utils import get_first_numeric_element
 from permutect.misc_utils import overlapping_filters
+from permutect.misc_utils import resolve_device
+from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
 
@@ -426,3 +439,50 @@ def test_overlapping_filters_edge_cases(tmp_path):
 
     # filter names must match exactly
     assert overlapping_filters(filtered, {"germ", "Germline", "germline_risk"}) == set()
+
+
+@pytest.fixture
+def default_device_is_meta(monkeypatch):
+    # PyTorch's meta device stands in for a default device that differs from the one when permutect was imported
+    monkeypatch.setattr(misc_utils, "gpu_if_available", lambda exploit_mps=False: torch.device("meta"))
+
+
+def test_resolve_device(default_device_is_meta):
+    assert resolve_device() == torch.device("meta")
+    assert resolve_device("cpu") == torch.device("cpu")
+    assert resolve_device(torch.device("cpu")) == torch.device("cpu")
+
+
+def test_float_dtype():
+    assert float_dtype("cpu") == float_dtype(torch.device("cpu")) == DEFAULT_CPU_FLOAT
+    # every non-CPU device, including MPS, gets the GPU dtype
+    for device in ("cuda", torch.device("cuda:1"), "mps", "meta"):
+        assert float_dtype(device) == DEFAULT_GPU_FLOAT
+
+
+# the device of each object made with the default device
+DEFAULT_DEVICES = {
+    "LossMetrics": lambda: LossMetrics(num_sources=1).totals_slvra.device,
+    "AccuracyMetrics": lambda: AccuracyMetrics.create(num_sources=1).device,
+    "EvaluationMetrics": lambda: EvaluationMetrics(num_sources=1).accuracy_metrics_by_epoch_type[Epoch.TRAIN].device,
+    "BatchIndexedTensor.zeros": lambda: BatchIndexedTensor.zeros(num_sources=1).device,
+    "BatchIndexedTensor.ones": lambda: BatchIndexedTensor.ones(num_sources=1).device,
+    "PosteriorModelPriors": lambda: (
+        PosteriorModelPriors(-10, -10, no_germline_mode=False).somatic_snv_log_priors_rrra.device
+    ),
+    "SNV context totals": lambda: PosteriorModelPriors.initialize_snv_context_totals_rrra().device,
+    "PosteriorModelSpectra": lambda: PosteriorModelSpectra()._device,
+    "PosteriorModel": lambda: next(PosteriorModel(-10, -10).parameters()).device,
+}
+
+
+@pytest.mark.parametrize("name", DEFAULT_DEVICES)
+def test_default_device_is_resolved_when_called(default_device_is_meta, name):
+    # a default argument of device=gpu_if_available() is evaluated once, at import
+    assert DEFAULT_DEVICES[name]() == torch.device("meta")
+
+
+def test_models_accept_string_devices():
+    model = PosteriorModel(-10, -10, device="cpu")
+    assert model._device == model.spectra._device == model.priors._device == torch.device("cpu")
+    assert model._dtype == DEFAULT_CPU_FLOAT

@@ -9,6 +9,8 @@ from torch import Tensor
 from torch import nn
 from torch.nn import Parameter
 
+from permutect.data.datum import DEFAULT_CPU_FLOAT
+from permutect.data.datum import DEFAULT_GPU_FLOAT
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.utils.allele_utils import trim_alleles_on_right
@@ -43,6 +45,22 @@ def gpu_if_available(exploit_mps=False) -> torch.device:
     else:
         d = "cpu"
     return torch.device(d)
+
+
+def resolve_device(device=None) -> torch.device:
+    """
+    The given device (a torch.device or a string such as "cpu") as a torch.device, or by default a GPU if available.
+    Use device=None as a default argument and resolve it with this when called, because a default of
+    gpu_if_available() is evaluated only once, at import.
+    """
+    return gpu_if_available() if device is None else torch.device(device)
+
+
+def float_dtype(device=None) -> torch.dtype:
+    """
+    The floating-point dtype of models and of batches sent to them on a device
+    """
+    return DEFAULT_CPU_FLOAT if resolve_device(device).type == "cpu" else DEFAULT_GPU_FLOAT
 
 
 def freeze(parameters):
