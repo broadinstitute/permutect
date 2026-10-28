@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 from intervaltree import IntervalTree
 
+from permutect import misc_utils
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.datum import NUMBER_OF_BYTES_IN_PACKED_READ
 from permutect.data.datum import Data
@@ -100,6 +101,14 @@ def test_vcf_annotation_without_a_segmentation(tmp_path):
     segmentation = defaultdict(IntervalTree)
     segmentation["chr1"][90:150] = 0.25
     assert annotated_mafs(tmp_path, segmentation=segmentation) == [(0.25, 0.5), (0.5, 0.5)]
+
+
+def test_vcf_annotation_keys_follow_misc_utils(tmp_path, monkeypatch):
+    # like the output join in filter_variants, both sides of the annotation join must use the misc_utils encodings, so
+    # that changing the key format there cannot make every datum silently drop out of the annotated data
+    original_encode = misc_utils.encode
+    monkeypatch.setattr(misc_utils, "encode", lambda *args: "new format " + original_encode(*args))
+    assert len(annotated_mafs(tmp_path)) == 2
 
 
 @pytest.mark.parametrize("num_folds, used_folds", [(3, [0, 2]), (3, [1]), (1000, [7])])

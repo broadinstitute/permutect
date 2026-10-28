@@ -23,7 +23,7 @@ from permutect.data.datum import INTEGER_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.misc_utils import Timer
-from permutect.misc_utils import encode
+from permutect.misc_utils import encode_datum
 from permutect.misc_utils import encode_variant
 from permutect.misc_utils import get_first_numeric_element
 from permutect.misc_utils import overlapping_filters
@@ -183,7 +183,7 @@ class MemoryMappedData:
         for datum in self.generate():
             contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
             position = datum.get(Data.POSITION)
-            encoding = encode(contig_name, position, datum.get_ref_allele(), datum.get_alt_allele())
+            encoding = encode_datum(datum, contig_index_to_name_map)
 
             if encoding in log_allele_frequencies and encoding not in encodings_to_exclude:
                 # NOTE: we copy the float array because it needs to be modified
