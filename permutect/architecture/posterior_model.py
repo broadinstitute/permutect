@@ -7,6 +7,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm.autonotebook import tqdm
 from tqdm.autonotebook import trange
 
+from permutect import constants
 from permutect.architecture.posterior_model_priors import PosteriorModelPriors
 from permutect.architecture.spectra.posterior_model_spectra import PosteriorModelSpectra
 from permutect.data.batch import Batch
@@ -131,12 +132,14 @@ class PosteriorModel(torch.nn.Module):
         log_posteriors_bc[:, Call.NORMAL_ARTIFACT] += artifact_logits_b
         for non_artifact_call in (Call.SOMATIC, Call.SEQ_ERROR, Call.GERMLINE):
             log_posteriors_bc[:, non_artifact_call] = torch.where(
-                known_artifacts_b, -9999, log_posteriors_bc[:, non_artifact_call]
+                known_artifacts_b, constants.IMPOSSIBLE_LOG_PROB, log_posteriors_bc[:, non_artifact_call]
             )
 
         # TODO: HACK / EXPERIMENT: make it impossible to call an artifact when the artifact logits are negative
         log_posteriors_bc[:, Call.ARTIFACT] = torch.where(
-            batch.get(Data.CACHED_ARTIFACT_LOGIT) < 0, -9999, log_posteriors_bc[:, Call.ARTIFACT]
+            batch.get(Data.CACHED_ARTIFACT_LOGIT) < 0,
+            constants.IMPOSSIBLE_LOG_PROB,
+            log_posteriors_bc[:, Call.ARTIFACT],
         )
         # TODO: END OF HACK / EXPERIMENT
 

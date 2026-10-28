@@ -9,6 +9,7 @@ from torch import nn
 from torch.nn import Parameter
 from torch.nn.parameter import Buffer
 
+from permutect import constants
 from permutect.data.batch import Batch
 from permutect.data.datum import Data
 from permutect.metrics import plotting
@@ -59,7 +60,7 @@ class PosteriorModelPriors(nn.Module):
     normal artifacts.
     The prior for germline variants is not learned but depends on the population allele frequency of each
     particular variant.  Therefore the stored log germline prior is set to zero (except in no_germline mode, where it
-    is set to -9999 to effectively turn off germline calls) and is replaced in log_priors_bc by the per-variant log
+    is set to IMPOSSIBLE_LOG_PROB to effectively turn off germline calls) and is replaced in log_priors_bc by the per-variant log
     probability of not being hom ref.
     The sequencing error log prior is also set to zero because sequencing error essentially *always* happens!  More
     precisely, the sequencing error *generative process* of the sequencer having some stochastic process of misread
@@ -87,7 +88,7 @@ class PosteriorModelPriors(nn.Module):
         with torch.no_grad():
             self.log_priors_vc[:, Call.SOMATIC] = variant_log_prior
             self.log_priors_vc[:, Call.ARTIFACT] = artifact_log_prior
-            self.log_priors_vc[:, Call.GERMLINE] = -9999 if self.no_germline_mode else 0
+            self.log_priors_vc[:, Call.GERMLINE] = constants.IMPOSSIBLE_LOG_PROB if self.no_germline_mode else 0
             self.log_priors_vc[:, Call.NORMAL_ARTIFACT] = artifact_log_prior
 
         # context and substitution dependent (the 3 r's stand for ref context, the 'a' is for alt base)
@@ -133,11 +134,11 @@ class PosteriorModelPriors(nn.Module):
         log_allele_frequencies_b = batch.get(Data.LOG_ALLELE_FREQUENCY)
         is_snv_b = (variant_types_b == Variation.SNV).float()
 
-        # seq error and germline initialized to 0 or -9999 as discussed above
+        # seq error and germline initialized to 0 or IMPOSSIBLE_LOG_PROB as discussed above
         log_priors_bc = self.log_priors_vc[variant_types_b.long(), :]
         log_priors_bc[:, Call.SEQ_ERROR] = 0
         log_priors_bc[:, Call.GERMLINE] = (
-            -9999
+            constants.IMPOSSIBLE_LOG_PROB
             if self.no_germline_mode
             else log_allele_frequencies_b + torch.log(2 - torch.exp(log_allele_frequencies_b))
         )  # 1 minus hom ref probability: 1 - (1 - AF)^2 = AF (2 - AF)
@@ -168,7 +169,7 @@ class PosteriorModelPriors(nn.Module):
         with torch.no_grad():
             self.log_priors_vc.copy_(torch.log(posterior_totals_vc / (posterior_totals_vc + overall_total)))
             self.log_priors_vc[:, Call.SEQ_ERROR] = 0
-            self.log_priors_vc[:, Call.GERMLINE] = -9999 if self.no_germline_mode else 0
+            self.log_priors_vc[:, Call.GERMLINE] = constants.IMPOSSIBLE_LOG_PROB if self.no_germline_mode else 0
 
         if self.use_context_dependent_snv_priors:
             total_sc = torch.round(convert_rrra_tensor_to_sc(snv_context_totals_rrra) + total_ignored_per_context).int()

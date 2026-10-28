@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 
+from permutect import constants
 from permutect.architecture.spectra.artifact_spectra import ArtifactSpectra
 from permutect.architecture.spectra.normal_artifact_spectrum import NormalArtifactSpectrum
 from permutect.architecture.spectra.somatic_spectrum import SomaticSpectrum
@@ -111,7 +112,9 @@ class PosteriorModelSpectra(nn.Module):
         normal_log_lks_bc[:, Call.SOMATIC] = normal_seq_error_log_lks
         normal_log_lks_bc[:, Call.ARTIFACT] = normal_seq_error_log_lks
         normal_log_lks_bc[:, Call.SEQ_ERROR] = normal_seq_error_log_lks
-        normal_log_lks_bc[:, Call.NORMAL_ARTIFACT] = torch.where(normal_alt_counts_b < 1, -9999, na_normal_log_lks_b)
+        normal_log_lks_bc[:, Call.NORMAL_ARTIFACT] = torch.where(
+            normal_alt_counts_b < 1, constants.IMPOSSIBLE_LOG_PROB, na_normal_log_lks_b
+        )
         normal_log_lks_bc[:, Call.GERMLINE] = germline_log_likelihood(
             log_afs_b, batch.get(Data.NORMAL_MAF), normal_alt_counts_b, normal_depths_b, self.het_beta
         )

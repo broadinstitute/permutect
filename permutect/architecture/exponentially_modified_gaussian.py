@@ -8,8 +8,8 @@ from torch.nn.utils import parametrize
 
 from permutect.architecture.parameterizations import BoundedNumber
 
-SQRTPI = torch.sqrt(torch.tensor(math.pi))
-SQRT2 = torch.sqrt(torch.tensor(2.0))
+SQRTPI = math.sqrt(math.pi)
+SQRT2 = math.sqrt(2.0)
 
 MIN_STDEV = 0.01
 MAX_STDEV = 100

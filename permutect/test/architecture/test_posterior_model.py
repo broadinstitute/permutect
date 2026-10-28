@@ -4,10 +4,13 @@ import numpy as np
 import pytest
 import torch
 
+from permutect import constants
 from permutect.architecture.posterior_model import PosteriorModel
 from permutect.architecture.posterior_model import best_error_probability_threshold
+from permutect.architecture.posterior_model_priors import PosteriorModelPriors
 from permutect.data.datum import Data
 from permutect.test.architecture.test_posterior_model_priors import make_batch
+from permutect.utils.enums import Call
 from permutect.utils.enums import Variation
 
 # a device other than the default one, which on a machine without a GPU is the CPU
@@ -16,6 +19,31 @@ META = torch.device("meta")
 
 def make_posterior_model(device) -> PosteriorModel:
     return PosteriorModel(variant_log_prior=-10, artifact_log_prior=-10, device=device)
+
+
+def test_impossible_calls_use_the_shared_impossible_log_prob(monkeypatch):
+    # no-germline mode, known artifacts, negative artifact logits and normal artifacts without normal alt reads all rule
+    # out calls with constants.IMPOSSIBLE_LOG_PROB, so that changing it changes every one of them
+    impossible = -5000.0
+    monkeypatch.setattr(constants, "IMPOSSIBLE_LOG_PROB", impossible)
+    model = PosteriorModel(variant_log_prior=-10, artifact_log_prior=-10, no_germline_mode=True, device="cpu")
+    assert torch.all(model.priors.log_priors_vc[:, Call.GERMLINE] == impossible)
+
+    values = {Data.ORIGINAL_DEPTH: 30, Data.ORIGINAL_ALT_COUNT: 5, Data.ORIGINAL_NORMAL_DEPTH: 30, Data.MAF: 0.5}
+    known_artifact = make_batch([0.01], values | {Data.CACHED_ARTIFACT_LOGIT: math.inf})
+    log_priors_bc, _, normal_log_lks_bc, log_posteriors_bc = model.log_posterior_and_ingredients(known_artifact)
+    assert log_priors_bc[0, Call.GERMLINE].item() == pytest.approx(impossible, abs=1)  # the priors are normalized
+    assert normal_log_lks_bc[0, Call.NORMAL_ARTIFACT].item() == impossible
+    for call in (Call.SOMATIC, Call.SEQ_ERROR, Call.GERMLINE):
+        assert log_posteriors_bc[0, call].item() == impossible
+
+    negative_artifact_logit = make_batch([0.01], values | {Data.CACHED_ARTIFACT_LOGIT: -1})
+    assert model.log_relative_posteriors_bc(negative_artifact_logit)[0, Call.ARTIFACT].item() == impossible
+
+    model.priors.disable_context_dependent_snv_priors()
+    totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra()
+    model.priors.update_priors_m_step(torch.ones(len(Variation), len(Call)), totals_rrra, totals_rrra, 10)
+    assert torch.all(model.priors.log_priors_vc[:, Call.GERMLINE] == impossible)
 
 
 def test_spectra_use_the_posterior_model_device():

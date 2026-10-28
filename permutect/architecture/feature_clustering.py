@@ -8,16 +8,16 @@ from torch import nn
 from torch.nn import Parameter
 from torch.nn.utils import parametrize
 
+from permutect.architecture.exponentially_modified_gaussian import STDEV_CONSTRAINT
 from permutect.architecture.exponentially_modified_gaussian import ExponentiallyModifiedGaussian
-from permutect.architecture.parameterizations import BoundedNumber
 from permutect.architecture.parameterizations import LogWeights
 from permutect.architecture.parameterizations import UnitVector
 from permutect.data.batch import Batch
 from permutect.data.datum import Data
 from permutect.sets.ragged_sets import RaggedSets
 
-LOG2PI = torch.log(torch.tensor(2.0 * math.pi))
-MAX_LOGIT = 20
+LOG2PI = math.log(2.0 * math.pi)
+LOGIT_CAP = 20
 
 
 def parallel_and_orthogonal_projections(vectors_re: Tensor, direction_vectors_ke) -> Tuple[Tensor, Tensor]:
@@ -44,11 +44,6 @@ def diagonal_gaussian_log_likelihood(vectors_bf: Tensor, stdev_bf: Tensor) -> Te
     normalization_part = -(feature_dim / 2) * LOG2PI - torch.sum(torch.log(stdev_bf), dim=-1)
     exponential_part = -torch.sum(torch.square(vectors_bf / stdev_bf), dim=-1) / 2
     return normalization_part + exponential_part
-
-
-MIN_STDEV = 0.01
-MAX_STDEV = 100
-STDEV_CONSTRAINT = BoundedNumber(min_val=MIN_STDEV, max_val=MAX_STDEV)
 
 
 class FeatureClustering(nn.Module):
@@ -131,7 +126,7 @@ class FeatureClustering(nn.Module):
 
         # the generative model can yield extremely certain results, leading to potentially exploding gradients
         # here we cap the certainty of the output logits
-        capped_logits_b = MAX_LOGIT * torch.tanh(logits_b / MAX_LOGIT)
+        capped_logits_b = LOGIT_CAP * torch.tanh(logits_b / LOGIT_CAP)
         return capped_logits_b, log_lks_bk
 
     # avoid implicit forward calls because PyCharm doesn't recognize them
