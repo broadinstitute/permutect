@@ -1,4 +1,3 @@
-
 import torch
 from torch import IntTensor
 from torch import exp

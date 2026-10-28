@@ -156,9 +156,13 @@ class MemoryMappedData:
         contig_index_to_name_map,
         filters_to_exclude: Set[str],
         artifact_filters: Set[str],
-        segmentation=defaultdict(IntervalTree),
-        normal_segmentation=defaultdict(IntervalTree),
+        segmentation=None,
+        normal_segmentation=None,
     ) -> Generator[Datum, None, None]:
+        # a new empty segmentation for each call: lookups add an empty tree for each contig to a defaultdict
+        segmentation = defaultdict(IntervalTree) if segmentation is None else segmentation
+        normal_segmentation = defaultdict(IntervalTree) if normal_segmentation is None else normal_segmentation
+
         log_allele_frequencies = {}
         encodings_to_exclude = set()
         artifact_encodings = set()
@@ -209,8 +213,8 @@ class MemoryMappedData:
         contig_index_to_name_map,
         filters_to_exclude: Set[str],
         artifact_filters: Set[str],
-        segmentation=defaultdict(IntervalTree),
-        normal_segmentation=defaultdict(IntervalTree),
+        segmentation=None,
+        normal_segmentation=None,
     ) -> MemoryMappedData:
         generator = self.generate_vcf_annotated_data(
             input_vcf=input_vcf,

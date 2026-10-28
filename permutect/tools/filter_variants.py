@@ -249,10 +249,6 @@ def make_filtered_vcf(
     segmentation=None,
     normal_segmentation=None,
 ):
-    if segmentation is None:
-        segmentation = defaultdict(IntervalTree)
-    if normal_segmentation is None:
-        normal_segmentation = defaultdict(IntervalTree)
     print("Loading artifact model and test dataset")
     contig_index_to_name_map = {}
     with open(contigs_table) as file:
@@ -373,10 +369,6 @@ def make_annotated_dataset(
     segmentation=None,
     normal_segmentation=None,
 ):
-    if segmentation is None:
-        segmentation = defaultdict(IntervalTree)
-    if normal_segmentation is None:
-        normal_segmentation = defaultdict(IntervalTree)
     normalizing_timer = Timer("Normalizing data. . .")
     normalized_mmap_data = plain_text_data.make_normalized_mmap_data(dataset_files=[dataset_file])
     normalizing_timer.report("Time to normalize test data:")

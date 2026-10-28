@@ -1,4 +1,3 @@
-
 import torch
 from torch import log
 from torch import logsumexp
