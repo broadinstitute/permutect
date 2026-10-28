@@ -2,7 +2,6 @@ import argparse
 import math
 from collections import defaultdict
 
-import cyvcf2
 import numpy as np
 import torch
 from intervaltree import IntervalTree
@@ -26,13 +25,13 @@ from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.metrics.posterior_result import PosteriorResult
 from permutect.misc_utils import Timer
-from permutect.misc_utils import declare_format_dp
+from permutect.misc_utils import VcfEditor
 from permutect.misc_utils import encode_datum
 from permutect.misc_utils import encode_variant
-from permutect.misc_utils import get_tumor_sample_index
 from permutect.misc_utils import gpu_if_available
 from permutect.misc_utils import overlapping_filters
 from permutect.misc_utils import report_memory_usage
+from permutect.misc_utils import tumor_depths
 from permutect.parameters import TrainingParameters
 from permutect.parameters import add_training_params_to_parser
 from permutect.parameters import parse_training_params
@@ -490,49 +489,28 @@ def apply_filtering_to_vcf(
             )
 
     print("Applying threshold")
-    unfiltered_vcf = cyvcf2.VCF(input_vcf)
-    tumor_sample_index = get_tumor_sample_index(unfiltered_vcf)
-
     all_types = [call_type.name for call_type in Call]
-    declare_format_dp(unfiltered_vcf)
     # these have one value per Call type, not per alt allele
-    for info_key, description in (
-        (POST_PROB_INFO_KEY, "Mutect3 posterior probability of"),
-        (LOG_PRIOR_INFO_KEY, "Log priors of"),
-        (SPECTRA_LOG_LIKELIHOOD_INFO_KEY, "Log spectra likelihoods of"),
-        (NORMAL_LOG_LIKELIHOOD_INFO_KEY, "Log normal likelihoods of"),
-    ):
-        unfiltered_vcf.add_info_to_header(
-            {
-                "ID": info_key,
-                "Description": description + " {" + ", ".join(all_types) + "}",
-                "Type": "Float",
-                "Number": str(len(Call)),
-            }
+    info_fields = {
+        info_key: ("Float", len(Call), description + " {" + ", ".join(all_types) + "}")
+        for info_key, description in (
+            (POST_PROB_INFO_KEY, "Mutect3 posterior probability of"),
+            (LOG_PRIOR_INFO_KEY, "Log priors of"),
+            (SPECTRA_LOG_LIKELIHOOD_INFO_KEY, "Log spectra likelihoods of"),
+            (NORMAL_LOG_LIKELIHOOD_INFO_KEY, "Log normal likelihoods of"),
         )
-    unfiltered_vcf.add_info_to_header(
-        {
-            "ID": ARTIFACT_LOD_INFO_KEY,
-            "Description": "Mutect3 artifact log odds",
-            "Type": "Float",
-            "Number": "A",
-        }
-    )
+    }
+    info_fields[ARTIFACT_LOD_INFO_KEY] = ("Float", "A", "Mutect3 artifact log odds")
+    filter_descriptions = {name: name for n, name in enumerate(FILTER_NAMES) if n != passing_call_type}
+    editor = VcfEditor(input_vcf, output_vcf, info_fields, filter_descriptions)
 
-    for n, filter_name in enumerate(FILTER_NAMES):
-        if n != passing_call_type:
-            unfiltered_vcf.add_filter_to_header({"ID": filter_name, "Description": filter_name})
-
-    writer = cyvcf2.Writer(output_vcf, unfiltered_vcf)  # input vcf is a template for the header
-    pbar = tqdm(enumerate(unfiltered_vcf), mininterval=60)
     labeled_truth = False
     embedding_metrics = EmbeddingMetrics()  # only if there is labeled truth for evaluation
 
     missing_encodings = []
-    for n, v in pbar:
+    for v in editor:
         # variants with trusted non-artifact filters were excluded from the posterior model
         if overlapping_filters(v, TRUSTED_NON_ARTIFACT_FILTERS):
-            writer.write_record(v)
             continue
 
         filters = overlapping_filters(v, TRUSTED_ARTIFACT_FILTERS)
@@ -611,7 +589,7 @@ def apply_filtering_to_vcf(
             # It is possible due to various quirks of Mutect2 assembly and flags such as --genotype-germline-sites etc
             # that a site with zero alt depth can end up in the output VCF.  However, Permutect exludes such sites from
             # the test dataset.  Therefore, we manually check for such sites and make sure they get filtered!
-            total_alt_depth = np.sum(v.format("AD")[tumor_sample_index][1:])
+            _, total_alt_depth = tumor_depths(v, editor.tumor_sample_index)
             if total_alt_depth == 0:
                 filters.add(FILTER_NAMES[Call.SEQ_ERROR])
             # without a posterior Permutect has no call to make, so keep the input's filters rather than writing PASS
@@ -619,15 +597,11 @@ def apply_filtering_to_vcf(
                 filters.update(v.FILTER.split(";"))
             missing_encodings.append(encoding)
         v.FILTER = ";".join(filters) if filters else "PASS"
-        writer.write_record(v)
     if missing_encodings:
         print(
             f"{len(missing_encodings)} variants in the input VCF had no Permutect posterior, for example because they "
             f"are missing from the dataset, and keep their input filters.  Examples: {', '.join(missing_encodings[:5])}"
         )
-    print("closing resources")
-    writer.close()
-    unfiltered_vcf.close()
 
     embedding_metrics.output_to_summary_writer(summary_writer, is_filter_variants=True)
 

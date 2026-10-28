@@ -21,6 +21,7 @@ from permutect.metrics.loss_metrics import LossMetrics
 from permutect.misc_utils import ConsistentValue
 from permutect.misc_utils import StreamingAverage
 from permutect.misc_utils import Timer
+from permutect.misc_utils import VcfEditor
 from permutect.misc_utils import encode
 from permutect.misc_utils import encode_datum
 from permutect.misc_utils import encode_variant
@@ -28,6 +29,7 @@ from permutect.misc_utils import float_dtype
 from permutect.misc_utils import get_first_numeric_element
 from permutect.misc_utils import overlapping_filters
 from permutect.misc_utils import resolve_device
+from permutect.misc_utils import tumor_depths
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
@@ -439,6 +441,41 @@ def test_overlapping_filters_edge_cases(tmp_path):
 
     # filter names must match exactly
     assert overlapping_filters(filtered, {"germ", "Germline", "germline_risk"}) == set()
+
+
+# a tumor-normal Mutect2 header without a FORMAT/DP line for its DP values, like the output of SplitMultiallelics
+TUMOR_NORMAL_VCF_HEADER = VCF_HEADER.replace(
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+    '##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">\n'
+    "##tumor_sample=tumor\n"
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tnormal\ttumor\n",
+)
+
+
+def test_vcf_editor(tmp_path):
+    input_vcf, output_vcf = tmp_path / "input.vcf", str(tmp_path / "output.vcf")
+    lines = [
+        vcf_line("A", "T", pos=100) + "\tAD:DP\t10,0:10\t6,3:9",
+        vcf_line("C", "G", pos=200) + "\tAD:DP\t8,1:9\t5,0:5",
+    ]
+    input_vcf.write_text(TUMOR_NORMAL_VCF_HEADER + "".join(line + "\n" for line in lines))
+
+    info_fields = {"SCORE": ("Integer", 1, "a score"), "PER_ALT": ("Float", "A", "a value for each alt allele")}
+    editor = VcfEditor(str(input_vcf), output_vcf, info_fields, filters={"low_score": "the score is low"})
+    assert editor.tumor_sample_index == 1
+    depths_by_position = {}
+    for v in editor:
+        depths_by_position[v.POS] = tumor_depths(v, editor.tumor_sample_index)
+        v.INFO["SCORE"] = v.POS // 100
+        if v.POS == 100:
+            continue  # every record is written, including those that skip the rest of the loop
+        v.FILTER = "low_score"
+    assert depths_by_position == {100: (6, 3), 200: (5, 0)}
+
+    output = cyvcf2.VCF(output_vcf)
+    assert [output.get_header_type(key)["Number"] for key in ("SCORE", "PER_ALT")] == ["1", "A"]
+    assert '##FILTER=<ID=low_score,Description="the score is low">' in output.raw_header
+    assert [(v.POS, v.INFO["SCORE"], v.FILTER) for v in output] == [(100, 1, None), (200, 2, "low_score")]
 
 
 @pytest.fixture
