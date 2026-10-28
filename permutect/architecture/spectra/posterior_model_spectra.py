@@ -11,6 +11,7 @@ from permutect.misc_utils import resolve_device
 from permutect.utils.enums import Call
 from permutect.utils.math_utils import log1mexp
 from permutect.utils.stats_utils import beta_binomial_log_lk
+from permutect.utils.stats_utils import binomial_log_lk
 
 
 # given germline, the probability of these particular reads being alt
@@ -34,15 +35,9 @@ def germline_log_likelihood(log_afs, mafs, alt_counts, depths, het_beta=None):
     log_half_het_prop = log1mexp(log_afs) - log_2m_afs
     log_hom_prop = log_afs - log_2m_afs
 
-    log_mafs = torch.log(mafs)
-    log_1m_mafs = torch.log(1 - mafs)
-
-    ref_counts = depths - alt_counts
-
-    combinatorial_term = torch.lgamma(depths + 1) - torch.lgamma(alt_counts + 1) - torch.lgamma(ref_counts + 1)
     # the following should both be 1D tensors of length batch size
-    alt_minor_binomial = combinatorial_term + alt_counts * log_mafs + ref_counts * log_1m_mafs
-    alt_major_binomial = combinatorial_term + ref_counts * log_mafs + alt_counts * log_1m_mafs
+    alt_minor_binomial = binomial_log_lk(depths, alt_counts, mafs)
+    alt_major_binomial = binomial_log_lk(depths, alt_counts, 1 - mafs)
     alt_minor_ll = log_half_het_prop + (
         alt_minor_binomial if het_beta is None else beta_binomial_log_lk(depths, alt_counts, het_alpha, het_beta_to_use)
     )

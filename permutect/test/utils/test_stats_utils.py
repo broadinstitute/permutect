@@ -103,3 +103,11 @@ def test_uniform_binomial():
         ub = torch.exp(uniform_binomial_log_lk(ntens, k, torch.tensor([0]), torch.tensor([1])))
         exact = 1 / (n + 1)
         assert torch.sum(torch.abs(ub - exact)).item() < 0.01
+
+
+def test_binomial_with_probability_zero_or_one():
+    # k log(p) with k = 0 and p = 0 used to give 0 * -inf = NaN instead of 0
+    n = torch.tensor([30.0, 30.0, 30.0, 30.0, 0.0])
+    k = torch.tensor([0.0, 30.0, 5.0, 0.0, 0.0])
+    p = torch.tensor([0.0, 1.0, 0.0, 1.0, 0.0])
+    assert binomial_log_lk(n, k, p).tolist() == [0.0, 0.0, -float("inf"), -float("inf"), 0.0]

@@ -51,6 +51,7 @@ from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.misc_utils import ConsistentValue
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
+from permutect.utils.math_utils import log_binomial_coefficient
 
 MAX_VALUE = 10000
 EPSILON = 0.00001
@@ -367,13 +368,9 @@ def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> Lis
     tlod_over_nalt = all_info_ve[:, 4]
     orig_alt_counts = np.array([datum.get(Data.ORIGINAL_ALT_COUNT) for datum in buffer])
     orig_depths = np.array([datum.get(Data.ORIGINAL_DEPTH) for datum in buffer])
-    orig_ref_counts = orig_depths - orig_alt_counts
 
     natural_log_tlod = LOG10_TO_LN * tlod_over_nalt * orig_alt_counts
-    a, b, c = (
-        torch.lgamma(torch.from_numpy(x)).numpy() for x in (orig_depths + 1, orig_alt_counts + 1, orig_ref_counts + 1)
-    )
-    tlod_correction = a - b - c
+    tlod_correction = log_binomial_coefficient(torch.from_numpy(orig_depths), torch.from_numpy(orig_alt_counts)).numpy()
     average_qual_feature = ((natural_log_tlod + tlod_correction) / orig_alt_counts) / 10
 
     all_info_transformed_ve = np.hstack([binary_info_array_ve, average_qual_feature.reshape(-1, 1)])
