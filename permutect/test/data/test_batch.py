@@ -60,3 +60,25 @@ def test_downsampled_reads_belong_to_their_variant():
 
         # no read is kept twice
         assert len(set(map(tuple, reads.tolist()))) == len(reads)
+
+
+def test_batch_get_matches_datum_get_for_every_field():
+    # uint32 fields such as the position are stored as two int16s, and decoding them only worked for a single Datum
+    data = [make_datum(variant, ref, alt) for variant, (ref, alt) in enumerate(COUNTS)]
+    for n, datum in enumerate(data):
+        datum.set(Data.POSITION, [100, 2**16 + 1, 4_000_000_000, 123_456_789][n])
+        datum.set(Data.REF_ALLELE_AS_BASE_5, 5**13 - n)
+        datum.set(Data.ALT_ALLELE_AS_BASE_5, n)
+        datum.set(Data.SOURCE, n)
+        datum.set(Data.SEQ_ERROR_LOG_LK, -0.5 * n)
+    batch = Batch(data)
+    keep_all = torch.ones(batch.size())
+    downsampled = DownsampledBatch(batch, ref_fracs_b=keep_all, alt_fracs_b=keep_all)
+
+    for data_field in Data:
+        # float64 holds both the float16 fields and the uint32 fields exactly
+        expected = torch.tensor([float(datum.get(data_field)) for datum in data], dtype=torch.float64)
+        for batch_to_check in (batch, downsampled):
+            values = batch_to_check.get(data_field)
+            assert isinstance(values, torch.Tensor) and values.shape == (len(data),), data_field
+            assert torch.equal(values.double(), expected), data_field

@@ -22,12 +22,10 @@ from permutect.data.count_binning import ref_count_bin_index
 from permutect.data.count_binning import ref_count_bin_name
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.datum import FLOAT_DTYPE
-from permutect.data.datum import INTEGER_DTYPE
-from permutect.data.datum import LARGE_INTEGER_DTYPE
 from permutect.data.datum import NUMBER_OF_BYTES_IN_PACKED_READ
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
-from permutect.data.datum import uint32_from_two_int16s
+from permutect.data.datum import get_data_field
 from permutect.data.plain_text_data import convert_uint8_to_quantile_normalized
 from permutect.misc_utils import gpu_if_available
 from permutect.utils.array_utils import flattened_indices
@@ -83,15 +81,7 @@ class Batch:
             return self.lazy_batch_indices[use_original_counts]
 
     def get(self, data_field: Data):
-        index = data_field.idx
-        if data_field.dtype == INTEGER_DTYPE:
-            return self.int_tensor[:, index]
-        elif data_field.dtype == LARGE_INTEGER_DTYPE:
-            return uint32_from_two_int16s(self.int_tensor[:, index], self.int_tensor[:, index + 1])
-        elif data_field.dtype == FLOAT_DTYPE:
-            return self.float_tensor[:, index]
-        else:
-            assert False, "Unsupported data type"
+        return get_data_field(self.int_tensor, self.float_tensor, data_field)
 
     # convert to the training format of 0.0 / 0.5 / 1.0 for variant / unlabeled / artifact
     # the 0.5 for unlabeled data is reasonable but should never actually be used due to the is_labeled mask
