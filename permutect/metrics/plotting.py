@@ -1,12 +1,19 @@
-import math
+import itertools
 import warnings
 from typing import List
 
+import numpy as np
+import torch
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
+from torch import Tensor
 
 # one or more simple plots of y data vs x data on shared axes
+from permutect.data.count_binning import ALT_COUNT_BIN_BOUNDS
 from permutect.data.count_binning import LOGIT_BIN_SKIP
+from permutect.data.count_binning import REF_COUNT_BIN_BOUNDS
+from permutect.utils.enums import Label
+from permutect.utils.enums import Variation
 
 # Filter the specific warning
 warnings.filterwarnings(
@@ -54,6 +61,36 @@ def color_plot_2d_on_axis(ax, x_bounds, y_bounds, values, x_label, y_label, vmin
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     return mesh
+
+
+def count_plot_on_axis(ax, counts_lra: Tensor, label: Label):
+    """
+    color plot vs alt count (x) and ref count (y) bins of the counts of one label, given counts indexed by label 'l',
+    ref count bin 'r' and alt count bin 'a'.  Since counts span orders of magnitude the color scale is the log of the
+    counts relative to the greatest count of any label.
+    """
+    vmin, vmax = -10, 0
+    normalized_counts_ra = counts_lra[label] / torch.max(counts_lra) + 0.0001
+    log_counts_ra = torch.clip(torch.log(normalized_counts_ra), min=vmin, max=vmax)
+    x_bounds, y_bounds = np.array(ALT_COUNT_BIN_BOUNDS), np.array(REF_COUNT_BIN_BOUNDS)
+    return color_plot_2d_on_axis(ax, x_bounds, y_bounds, log_counts_ra, None, None, vmin=vmin, vmax=vmax)
+
+
+def label_and_variant_type_figure(plot_on_axis) -> Figure:
+    """
+    figure with a row of subplots for each Label and a column for each Variation, each made by
+    plot_on_axis(label, var_type, axis) as a color plot vs alt count (x) and ref count (y) bins with a shared color bar
+    """
+    figsize = (2.5 * len(Variation), 2.5 * len(Label))
+    fig, axes = plt.subplots(len(Label), len(Variation), sharex="all", sharey="all", squeeze=False, figsize=figsize)
+    common_colormesh = None
+    for label, var_type in itertools.product(Label, Variation):
+        common_colormesh = plot_on_axis(label, var_type, axes[label, var_type])
+    fig.colorbar(common_colormesh)
+
+    row_labels, col_labels = [label.name for label in Label], [var_type.name for var_type in Variation]
+    tidy_subplots(fig, axes, x_label="alt count", y_label="ref count", row_labels=row_labels, col_labels=col_labels)
+    return fig
 
 
 def simple_histograms_on_axis(ax, list_of_histogram_data, list_of_labels, num_bins):
@@ -117,77 +154,6 @@ def plot_roc_on_axis(list_of_tuple_lists, curve_labels, axis, sens_prec: bool, t
         axis.plot(x, y, spec, markersize=2, label="")  # point
     for x, y, spec in big_dots:
         axis.plot(x, y, spec, markersize=6, label="")  # point
-
-
-# similar to the above, but labels are not known and we just have the predicted error probabilities
-# we generate a theoretical ROC curve i.e. what the ROC curve would be if these predicted probabilities were
-# perfectly calibrated
-# labels are 0 for non-artifact, 1 for artifact
-# predicted_error_probs is a list of list of floats between 0 and 1
-# curve labels is a list of strings
-def plot_theoretical_roc_on_axis(predicted_error_probs, curve_labels, axis, recall_weight: float = 1.0):
-    x_y_lab_tuples = []
-    dots = []
-    best_thresholds = []
-    for error_probs, curve_label in zip(predicted_error_probs, curve_labels):
-        # best threshold is (threshold, art accuracay, non-art accuracy)
-        thresh_and_accs, best_threshold = get_theoretical_roc_data(error_probs, recall_weight=recall_weight)
-        x_y_lab_tuples.append(([x[1] for x in thresh_and_accs], [x[2] for x in thresh_and_accs], curve_label))
-
-        for threshold, art_acc, non_art_acc in thresh_and_accs:
-            dots.append((art_acc, non_art_acc, "go"))
-        dots.append((best_threshold[1], best_threshold[2], "ro"))
-        best_thresholds.append(best_threshold)
-
-    simple_plot_on_axis(axis, x_y_lab_tuples, "precision", "sensitivity")
-    for x, y, spec in dots:
-        axis.plot(x, y, spec, markersize=2, label="")  # point
-    return best_thresholds
-
-
-# input is list of artifact probabilities
-# NOTE: this actually includes all errors, such as germline and seq error, but for later possible
-# fixing code duplication with the above method we'll call it "artifact"
-# 1st output is (threshold, accuracy on non-errors, accuracy on errors) tuples
-# 2nd output is the threshold that maximizes harmonic mean of these two accuracies
-def get_theoretical_roc_data(artifact_probs, recall_weight: float = 1.0):
-    # recall weight is the relative of importance of recall vs precision in the weighted harmonic
-    # mean i.e. the "beta" in the general F_beta score
-    beta_sqr = recall_weight**2
-    artifact_probs.sort(key=lambda p: p)  # sort from least to greatest error probability
-    num_calls = len(artifact_probs)
-    total_artifact = sum([prob for prob in artifact_probs]) + 0.0001
-    total_non_artifact = num_calls - total_artifact + 0.0002
-    # start at threshold = 0; that is, everything is called an artifact, and pick up one variant at a time
-    # by increasing the probability threshold
-    thresh_and_accs = []  # tuples of threshold, accuracy on artifacts, accuracy on non-artifacts
-    art_found, non_art_found = total_artifact, 0
-    next_threshold = -1
-    best_threshold, best_harmonic_mean = (
-        (0, 1, 0),
-        0,
-    )  # best threshold is threshold, precision, sensitivity
-    for prob in artifact_probs:
-        art_found -= prob  # lose a fractional artifact
-        non_art_found += 1 - prob  # gain a fractional non-artifact
-
-        tp = non_art_found  # non-artifacts that pass threshold are true positives
-        fp = total_artifact - art_found  # artifacts that do not fail threshold are false positives
-
-        # in sensitivity-precision mode we care about the precision, not the absolute accuracy of artifact calls
-        sensitivity = tp / total_non_artifact
-        precision = tp / (tp + fp)
-
-        harmonic_mean = (1 + beta_sqr) * sensitivity * precision / (sensitivity + (beta_sqr * precision) + 0.0001)
-
-        if harmonic_mean > best_harmonic_mean:
-            best_harmonic_mean = harmonic_mean
-            best_threshold = (prob, precision, sensitivity)
-
-        if prob > next_threshold:
-            thresh_and_accs.append((next_threshold, precision, sensitivity))
-            next_threshold = math.ceil(prob * 20) / 20  # we are basically having thresholds of 0.05, 0.1, 0.15. . .
-    return thresh_and_accs, best_threshold
 
 
 def tidy_subplots(

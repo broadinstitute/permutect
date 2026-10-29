@@ -1,11 +1,23 @@
 import numpy as np
+import pytest
 import torch
 
 from permutect.data.batch import Batch
+from permutect.data.batch import BatchIndexedTensor
+from permutect.data.batch import BatchIndices
 from permutect.data.batch import DownsampledBatch
+from permutect.data.count_binning import NUM_ALT_COUNT_BINS
+from permutect.data.count_binning import NUM_LOGIT_BINS
+from permutect.data.count_binning import NUM_REF_COUNT_BINS
+from permutect.data.count_binning import alt_count_bin_index
+from permutect.data.count_binning import logit_bin_indices
+from permutect.data.count_binning import ref_count_bin_index
 from permutect.data.datum import RAW_READS_ARRAY_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
+from permutect.metrics.loss_metrics import AccuracyMetrics
+from permutect.utils.enums import Label
+from permutect.utils.enums import Variation
 
 # ref and alt read counts of each variant in the test batch, including a variant with no ref reads
 COUNTS = [(3, 2), (0, 4), (5, 1), (2, 3)]
@@ -60,3 +72,73 @@ def test_downsampled_reads_belong_to_their_variant():
 
         # no read is kept twice
         assert len(set(map(tuple, reads.tolist()))) == len(reads)
+
+
+def test_batch_get_matches_datum_get_for_every_field():
+    # uint32 fields such as the position are stored as two int16s, and decoding them only worked for a single Datum
+    data = [make_datum(variant, ref, alt) for variant, (ref, alt) in enumerate(COUNTS)]
+    for n, datum in enumerate(data):
+        datum.set(Data.POSITION, [100, 2**16 + 1, 4_000_000_000, 123_456_789][n])
+        datum.set(Data.REF_ALLELE_AS_BASE_5, 5**13 - n)
+        datum.set(Data.ALT_ALLELE_AS_BASE_5, n)
+        datum.set(Data.SOURCE, n)
+        datum.set(Data.SEQ_ERROR_LOG_LK, -0.5 * n)
+    batch = Batch(data)
+    keep_all = torch.ones(batch.size())
+    downsampled = DownsampledBatch(batch, ref_fracs_b=keep_all, alt_fracs_b=keep_all)
+
+    for data_field in Data:
+        # float64 holds both the float16 fields and the uint32 fields exactly
+        expected = torch.tensor([float(datum.get(data_field)) for datum in data], dtype=torch.float64)
+        for batch_to_check in (batch, downsampled):
+            values = batch_to_check.get(data_field)
+            assert isinstance(values, torch.Tensor) and values.shape == (len(data),), data_field
+            assert torch.equal(values.double(), expected), data_field
+
+
+@pytest.mark.parametrize("include_logits", [False, True])
+def test_batch_indices_follow_the_batch_indexed_tensor_layout(include_logits):
+    # flattened indices, including those with overridden sources and labels, pick the same elements as plain indexing
+    generator = torch.Generator().manual_seed(0)
+    num_sources, size = 3, 50
+    sources, override_sources = torch.randint(num_sources, (2, size), generator=generator)
+    labels, override_labels = torch.randint(len(Label), (2, size), generator=generator)
+    var_types = torch.randint(len(Variation), (size,), generator=generator)
+    ref_counts, alt_counts = torch.randint(1, 20, (2, size), generator=generator)
+    logits = 5 * torch.randn(size, generator=generator) if include_logits else None
+    indices = BatchIndices(sources, labels, var_types, ref_counts, alt_counts)
+
+    plain_index = (override_sources, override_labels, var_types)
+    plain_index += (ref_count_bin_index(ref_counts), alt_count_bin_index(alt_counts))
+    plain_index += (logit_bin_indices(logits),) if include_logits else ()
+    shape = BatchIndexedTensor.shape_for(num_sources, include_logits)
+
+    values = torch.rand(shape, generator=generator)
+    picked = indices.index_into_tensor(BatchIndexedTensor(values), override_sources, override_labels, logits)
+    assert torch.equal(picked, values[plain_index])
+
+    totals = BatchIndexedTensor.zeros(num_sources, include_logits, device=torch.device("cpu"))
+    indices.increment_tensor(totals, torch.ones(size), override_sources, override_labels, logits)
+    assert torch.equal(totals, torch.zeros(shape).index_put_(plain_index, torch.ones(size), accumulate=True))
+
+
+@pytest.mark.parametrize("include_logits", [False, True])
+def test_batch_indexed_tensor_shapes(include_logits):
+    cpu = torch.device("cpu")
+    shape = (3, len(Label), len(Variation), NUM_REF_COUNT_BINS, NUM_ALT_COUNT_BINS) + (
+        (NUM_LOGIT_BINS,) if include_logits else ()
+    )
+    assert BatchIndexedTensor.shape_for(3, include_logits) == shape
+
+    zeros = BatchIndexedTensor.zeros(3, include_logits, device=cpu)
+    ones = BatchIndexedTensor.ones(3, include_logits, device=cpu)
+    assert zeros.shape == ones.shape == shape and ones.has_logits() == include_logits
+
+    # growing the source dimension keeps the existing sources and zeroes the new ones
+    ones.resize_sources(5)
+    assert ones.shape == BatchIndexedTensor.shape_for(5, include_logits)
+    assert torch.all(ones[:3] == 1) and torch.all(ones[3:] == 0)
+
+    if include_logits:
+        accuracy_metrics = AccuracyMetrics.create(3, device=cpu)
+        assert isinstance(accuracy_metrics, AccuracyMetrics) and accuracy_metrics.shape == shape

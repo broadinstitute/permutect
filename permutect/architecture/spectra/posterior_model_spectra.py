@@ -1,17 +1,18 @@
 import torch
 from torch import nn
 
+from permutect import constants
 from permutect.architecture.spectra.artifact_spectra import ArtifactSpectra
 from permutect.architecture.spectra.normal_artifact_spectrum import NormalArtifactSpectrum
 from permutect.architecture.spectra.somatic_spectrum import SomaticSpectrum
 from permutect.data.batch import Batch
-from permutect.data.datum import DEFAULT_CPU_FLOAT
-from permutect.data.datum import DEFAULT_GPU_FLOAT
 from permutect.data.datum import Data
-from permutect.misc_utils import gpu_if_available
+from permutect.misc_utils import float_dtype
+from permutect.misc_utils import resolve_device
 from permutect.utils.enums import Call
 from permutect.utils.math_utils import log1mexp
 from permutect.utils.stats_utils import beta_binomial_log_lk
+from permutect.utils.stats_utils import binomial_log_lk
 
 
 # given germline, the probability of these particular reads being alt
@@ -35,15 +36,9 @@ def germline_log_likelihood(log_afs, mafs, alt_counts, depths, het_beta=None):
     log_half_het_prop = log1mexp(log_afs) - log_2m_afs
     log_hom_prop = log_afs - log_2m_afs
 
-    log_mafs = torch.log(mafs)
-    log_1m_mafs = torch.log(1 - mafs)
-
-    ref_counts = depths - alt_counts
-
-    combinatorial_term = torch.lgamma(depths + 1) - torch.lgamma(alt_counts + 1) - torch.lgamma(ref_counts + 1)
     # the following should both be 1D tensors of length batch size
-    alt_minor_binomial = combinatorial_term + alt_counts * log_mafs + ref_counts * log_1m_mafs
-    alt_major_binomial = combinatorial_term + ref_counts * log_mafs + alt_counts * log_1m_mafs
+    alt_minor_binomial = binomial_log_lk(depths, alt_counts, mafs)
+    alt_major_binomial = binomial_log_lk(depths, alt_counts, 1 - mafs)
     alt_minor_ll = log_half_het_prop + (
         alt_minor_binomial if het_beta is None else beta_binomial_log_lk(depths, alt_counts, het_alpha, het_beta_to_use)
     )
@@ -65,11 +60,11 @@ class PosteriorModelSpectra(nn.Module):
     Basically, anything that computes the likelihood of alt and ref read counts goes here.
     """
 
-    def __init__(self, device=gpu_if_available(), het_beta: float = None):
+    def __init__(self, device=None, het_beta: float = None):
         super(PosteriorModelSpectra, self).__init__()
 
-        self._device = device
-        self._dtype = DEFAULT_GPU_FLOAT if device != torch.device("cpu") else DEFAULT_CPU_FLOAT
+        self._device = resolve_device(device)
+        self._dtype = float_dtype(self._device)
         self.het_beta = het_beta
 
         # TODO introduce parameters class so that num_components is not hard-coded
@@ -117,7 +112,9 @@ class PosteriorModelSpectra(nn.Module):
         normal_log_lks_bc[:, Call.SOMATIC] = normal_seq_error_log_lks
         normal_log_lks_bc[:, Call.ARTIFACT] = normal_seq_error_log_lks
         normal_log_lks_bc[:, Call.SEQ_ERROR] = normal_seq_error_log_lks
-        normal_log_lks_bc[:, Call.NORMAL_ARTIFACT] = torch.where(normal_alt_counts_b < 1, -9999, na_normal_log_lks_b)
+        normal_log_lks_bc[:, Call.NORMAL_ARTIFACT] = torch.where(
+            normal_alt_counts_b < 1, constants.IMPOSSIBLE_LOG_PROB, na_normal_log_lks_b
+        )
         normal_log_lks_bc[:, Call.GERMLINE] = germline_log_likelihood(
             log_afs_b, batch.get(Data.NORMAL_MAF), normal_alt_counts_b, normal_depths_b, self.het_beta
         )

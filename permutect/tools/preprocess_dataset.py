@@ -10,7 +10,7 @@ normalizes each chunk, outputs each chunk as a binary PyTorch file, and bundles 
 """
 
 
-def parse_arguments():
+def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(
         description="preprocess plain text training dataset into tarfile of nprmalized binary data"
     )
@@ -35,7 +35,7 @@ def parse_arguments():
         required=True,
         help="path to output tarfile of training data",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def do_work(plain_text_dataset_files, output_tarfile, sources: List[int]):

@@ -8,6 +8,7 @@ class PosteriorResult:
         self,
         artifact_logit: float,
         posterior_probabilities,
+        error_probability: float,
         log_priors,
         spectra_lls,
         normal_lls,
@@ -19,6 +20,7 @@ class PosteriorResult:
     ):
         self.artifact_logit = artifact_logit
         self.posterior_probabilities = posterior_probabilities
+        self.error_probability = error_probability
         self.log_priors = log_priors
         self.spectra_lls = spectra_lls
         self.normal_lls = normal_lls

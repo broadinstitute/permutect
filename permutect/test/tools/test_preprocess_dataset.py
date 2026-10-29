@@ -1,5 +1,4 @@
 import tempfile
-from argparse import Namespace
 
 from permutect import constants
 from permutect.data.memory_mapped_data import MemoryMappedData
@@ -15,10 +14,16 @@ def test_on_10_megabases_singular():
 
     tarfile_name = training_data_tarfile.name if not OVERWRITE_SAVED_TARFILE else training_data_tarfile
 
-    preprocess_args = Namespace()
-    setattr(preprocess_args, constants.TRAINING_DATASETS_NAME, [SMALL_PLAIN_TEXT_DATA])
-    setattr(preprocess_args, constants.OUTPUT_NAME, tarfile_name)
-    setattr(preprocess_args, constants.SOURCES_NAME, [0])
+    preprocess_args = preprocess_dataset.parse_arguments(
+        [
+            "--" + constants.TRAINING_DATASETS_NAME,
+            SMALL_PLAIN_TEXT_DATA,
+            "--" + constants.OUTPUT_NAME,
+            tarfile_name,
+            "--" + constants.SOURCES_NAME,
+            "0",
+        ]
+    )
     preprocess_dataset.main_without_parsing(preprocess_args)
 
     memory_mapped_data = MemoryMappedData.load_from_tarfile(tarfile_name)

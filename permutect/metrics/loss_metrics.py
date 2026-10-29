@@ -15,14 +15,12 @@ from permutect.data.batch import BatchProperty
 from permutect.data.count_binning import ALT_COUNT_BIN_BOUNDS
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import NUM_LOGIT_BINS
-from permutect.data.count_binning import NUM_REF_COUNT_BINS
 from permutect.data.count_binning import REF_COUNT_BIN_BOUNDS
 from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.count_binning import logits_from_bin_indices
 from permutect.data.count_binning import top_of_logit_bin
 from permutect.metrics import plotting
 from permutect.metrics.plotting import legend_if_applicable
-from permutect.misc_utils import gpu_if_available
 from permutect.utils.array_utils import select_and_sum
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
@@ -38,7 +36,7 @@ def masked_ratio(numerator: Tensor, denominator: Tensor) -> Tensor:
 
 
 class LossMetrics:
-    def __init__(self, num_sources: int, device=gpu_if_available()):
+    def __init__(self, num_sources: int, device=None):
         self.totals_slvra = BatchIndexedTensor.zeros(num_sources=num_sources, device=device)
         self.counts_slvra = BatchIndexedTensor.zeros(num_sources=num_sources, device=device)
         self.num_sources = num_sources
@@ -127,26 +125,12 @@ class LossMetrics:
         :return:
         """
         assert self.has_been_sent_to_cpu, "Can't make plots before sending to CPU"
-        max_for_this_source_and_variant_type = torch.max(self.counts_slvra[source, :, var_type])
         # TODO: only if include logits
         sum_dims = (BatchProperty.SOURCE,) if source is None else ()
-        selection = ({} if source is None else {BatchProperty.SOURCE: source}) | {
-            BatchProperty.VARIANT_TYPE: var_type,
-            BatchProperty.LABEL: label,
-        }
+        selection = ({} if source is None else {BatchProperty.SOURCE: source}) | {BatchProperty.VARIANT_TYPE: var_type}
 
-        counts_ra = select_and_sum(self.counts_slvra, select=selection, sum=sum_dims)
-        normalized_counts_ra = counts_ra / max_for_this_source_and_variant_type
-        return plotting.color_plot_2d_on_axis(
-            axis,
-            np.array(ALT_COUNT_BIN_BOUNDS),
-            np.array(REF_COUNT_BIN_BOUNDS),
-            normalized_counts_ra,
-            None,
-            None,
-            vmin=0,
-            vmax=1,
-        )
+        counts_lra = select_and_sum(self.counts_slvra, select=selection, sum=sum_dims)
+        return plotting.count_plot_on_axis(axis, counts_lra, label)
 
     def make_plots(
         self,
@@ -157,33 +141,11 @@ class LossMetrics:
         plot_type: str = "loss",
     ):
         assert self.has_been_sent_to_cpu, "Can't make plots before sending to CPU"
+        plot_on_axis = {"loss": self.plot_losses, "counts": self.plot_counts}[plot_type]
 
         for source in range(self.num_sources):
-            fig, axes = plt.subplots(
-                len(Label),
-                len(Variation),
-                sharex="all",
-                sharey="all",
-                squeeze=False,
-                figsize=(2.5 * len(Variation), 2.5 * len(Label)),
-            )
-            row_names = [label.name for label in Label]
-            variation_types = [var_type.name for var_type in Variation]
-            common_colormesh = None
-            for label in Label:
-                for var_type in Variation:
-                    if plot_type == "loss":
-                        common_colormesh = self.plot_losses(label, var_type, axes[label, var_type], source)
-                    elif plot_type == "counts":
-                        common_colormesh = self.plot_counts(label, var_type, axes[label, var_type], source)
-            fig.colorbar(common_colormesh)
-            plotting.tidy_subplots(
-                fig,
-                axes,
-                x_label="alt count",
-                y_label="ref count",
-                row_labels=row_names,
-                col_labels=variation_types,
+            fig = plotting.label_and_variant_type_figure(
+                lambda label, var_type, axis: plot_on_axis(label, var_type, axis, source)
             )
             source_suffix = (
                 "" if self.num_sources == 1 else (", all sources" if source is None else f", source {source}")
@@ -232,16 +194,8 @@ class AccuracyMetrics(BatchIndexedTensor):
         assert data.dim() == 6, "needs 6 dimensions"
 
     @classmethod
-    def create(cls, num_sources: int, device=gpu_if_available()):
-        shape = (
-            num_sources,
-            len(Label),
-            len(Variation),
-            NUM_REF_COUNT_BINS,
-            NUM_ALT_COUNT_BINS,
-            NUM_LOGIT_BINS,
-        )
-        return cls(torch.zeros(shape, device=device))
+    def create(cls, num_sources: int, device=None):
+        return cls.zeros(num_sources, include_logits=True, device=device)
 
     def record_with_sources_and_logits(
         self,

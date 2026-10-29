@@ -17,36 +17,26 @@ def find_factors(n: int):
     return result
 
 
-def prob_to_logit(prob: float):
+# torch.logit(probs, eps=LOGIT_EPS) clips probabilities to [LOGIT_EPS, 1 - LOGIT_EPS], so that 0 and 1 have finite logits
+LOGIT_EPS = 5e-8
+
+
+def prob_to_logit(prob: float) -> float:
     # the inverse of the sigmoid function.  Convert a probability to a logit.
-    clipped_prob = 0.5 + 0.9999999 * (prob - 0.5)
-    return math.log(clipped_prob / (1 - clipped_prob))
-
-
-def inverse_sigmoid(probs: Tensor) -> Tensor:
-    clipped_probs = 0.5 + 0.9999999 * (probs - 0.5)
-    return torch.log(clipped_probs / (1 - clipped_probs))
+    return torch.logit(torch.tensor(prob, dtype=torch.float64), eps=LOGIT_EPS).item()
 
 
 def log_binomial_coefficient(n: Tensor, k: Tensor):
     return (n + 1).lgamma() - (k + 1).lgamma() - ((n - k) + 1).lgamma()
 
 
-def f_score(tp, fp, total_true):
-    fn = total_true - tp
-    return tp / (tp + (fp + fn) / 2)
-
-
-def add_in_log_space(x: Tensor, y: Tensor):
+def f_score(precision, recall, beta: float = 1.0):
     """
-    implement result = log(exp(x) + exp(y)) in a numerically stable way by extracting the elementwise max:
-    with M = torch.maximum(x,y); result = log(exp(M)exp(x-M) + exp(M)exp(y-M)) = M + log(exp(x-M) + exp(y-M))
-    this could be done by stacking x and y along a new dimension, then doing logsumexp along that dimension, but
-    that is cumbersome.
-    :return:
+    The F_beta score, the weighted harmonic mean of precision and recall in which recall is beta times as important as
+    precision.  The 0.0001 avoids dividing by zero when both are zero.
     """
-    m = torch.maximum(x, y)
-    return m + torch.log(torch.exp(x - m) + torch.exp(y - m))
+    beta_sqr = beta**2
+    return (1 + beta_sqr) * recall * precision / (recall + (beta_sqr * precision) + 0.0001)
 
 
 def subtract_in_log_space(x: Tensor, y: Tensor):

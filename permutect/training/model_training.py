@@ -19,14 +19,11 @@ from permutect.architecture.artifact_model import ArtifactModel
 from permutect.architecture.artifact_model import record_embeddings
 from permutect.data.batch import Batch
 from permutect.data.batch import DownsampledBatch
-from permutect.data.count_binning import alt_count_bin_index
-from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.count_binning import round_alt_count_to_bin_center
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.data.reads_dataset import ReadsDataset
-from permutect.metrics.evaluation_metrics import EmbeddingMetrics
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.misc_utils import Timer
 from permutect.misc_utils import backpropagate
@@ -41,7 +38,6 @@ from permutect.training.loss_recorder import LossRecorder
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
 from permutect.utils.enums import ParameterSet
-from permutect.utils.enums import Variation
 
 WORST_OFFENDERS_QUEUE_SIZE = 100
 
@@ -146,7 +142,7 @@ def train_one_epoch(
     loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
 
     parent_batch: Batch
-    for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
+    for parent_batch in tqdm(prefetch_generator(loader, device=model._device), mininterval=60, total=len(loader)):
         batch: DownsampledBatch
         for downsampling_iteration in range(2):
             ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
@@ -188,7 +184,6 @@ def train_one_epoch(
             train_loader,
             valid_loader,
             summary_writer,
-            collect_embeddings=False,
             report_worst=False,
         )
 
@@ -217,7 +212,7 @@ def collect_evaluation_data(
         loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
 
         parent_batch: Batch
-        for parent_batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
+        for parent_batch in tqdm(prefetch_generator(loader, device=model._device), mininterval=60, total=len(loader)):
             # TODO: magic constant
             for _ in range(3):
                 ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
@@ -278,7 +273,6 @@ def evaluate_model(
     train_loader,
     valid_loader,
     summary_writer: SummaryWriter,
-    collect_embeddings: bool = False,
     report_worst: bool = False,
 ):
     # self.freeze_all()
@@ -299,40 +293,4 @@ def evaluate_model(
 
             summary_writer.add_text(tag, "\n".join(lines), global_step=epoch)
 
-    if collect_embeddings:
-        embedding_metrics = EmbeddingMetrics()
-
-        # now go over just the validation data and generate feature vectors / metadata for tensorboard projectors
-        batch: Batch
-        for batch in tqdm(prefetch_generator(valid_loader), mininterval=60, total=len(valid_loader)):
-            output = model.compute_batch_output(batch)
-            pred_b = output.logits_b.detach().cpu()
-            labels_b = batch.get_training_labels().cpu()
-            correct_b = ((pred_b > 0) == (labels_b > 0.5)).tolist()
-            is_labeled_list = batch.get_is_labeled_mask().cpu().tolist()
-
-            label_strings = [
-                ("artifact" if label > 0.5 else "non-artifact") if is_labeled > 0.5 else "unlabeled"
-                for (label, is_labeled) in zip(labels_b.tolist(), is_labeled_list)
-            ]
-
-            correct_strings = [
-                str(correctness) if is_labeled > 0.5 else "-1"
-                for (correctness, is_labeled) in zip(correct_b, is_labeled_list)
-            ]
-
-            embedding_metrics.label_metadata.extend(label_strings)
-            embedding_metrics.correct_metadata.extend(correct_strings)
-            embedding_metrics.type_metadata.extend(
-                [Variation(idx).name for idx in batch.get(Data.VARIANT_TYPE).cpu().tolist()]
-            )
-            embedding_metrics.truncated_count_metadata.extend(
-                [
-                    alt_count_bin_name(alt_count_bin_index(alt_count))
-                    for alt_count in batch.get(Data.ALT_COUNT).cpu().tolist()
-                ]
-            )
-            embedding_metrics.features.append(output.features_be.detach().cpu())
-            embedding_metrics.ref_features.append(output.ref_features_be.detach().cpu())
-        embedding_metrics.output_to_summary_writer(summary_writer, epoch=epoch)
     # done collecting data

@@ -3,12 +3,16 @@ from typing import Iterator
 from typing import Set
 
 import cyvcf2
+import numpy as np
 import psutil
 import torch
 from torch import Tensor
 from torch import nn
 from torch.nn import Parameter
+from tqdm.autonotebook import tqdm
 
+from permutect.data.datum import DEFAULT_CPU_FLOAT
+from permutect.data.datum import DEFAULT_GPU_FLOAT
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.utils.allele_utils import trim_alleles_on_right
@@ -43,6 +47,22 @@ def gpu_if_available(exploit_mps=False) -> torch.device:
     else:
         d = "cpu"
     return torch.device(d)
+
+
+def resolve_device(device=None) -> torch.device:
+    """
+    The given device (a torch.device or a string such as "cpu") as a torch.device, or by default a GPU if available.
+    Use device=None as a default argument and resolve it with this when called, because a default of
+    gpu_if_available() is evaluated only once, at import.
+    """
+    return gpu_if_available() if device is None else torch.device(device)
+
+
+def float_dtype(device=None) -> torch.dtype:
+    """
+    The floating-point dtype of models and of batches sent to them on a device
+    """
+    return DEFAULT_CPU_FLOAT if resolve_device(device).type == "cpu" else DEFAULT_GPU_FLOAT
 
 
 def freeze(parameters):
@@ -159,6 +179,44 @@ def get_tumor_sample_index(vcf: cyvcf2.VCF) -> int:
             print(f"tumor sample found in VCF header: name {sample}, index {n}")
             tumor_sample_index = n
     return tumor_sample_index
+
+
+def tumor_depths(v: cyvcf2.Variant, tumor_sample_index: int) -> tuple[int, int]:
+    # the tumor's ref depth and its total depth of all alt alleles
+    tumor_allele_depths = v.format("AD")[tumor_sample_index]
+    return tumor_allele_depths[0], np.sum(tumor_allele_depths[1:])
+
+
+class VcfEditor:
+    """
+    Copy a VCF record by record, editing records on the way, to an output VCF whose header is that of the input plus the
+    given INFO and FILTER lines.  Iterating over the editor yields the input records in order, and each record, with any
+    edits, is written when the next one is requested.  Both files are closed after the last record.
+
+    :param info_fields: dict from INFO ID to (Type, Number, Description)
+    :param filters: dict from FILTER ID to Description
+    """
+
+    def __init__(self, input_vcf, output_vcf, info_fields: dict = None, filters: dict = None):
+        self.vcf = cyvcf2.VCF(input_vcf)
+        self.tumor_sample_index = get_tumor_sample_index(self.vcf)
+
+        declare_format_dp(self.vcf)
+        for info_id, (info_type, number, description) in (info_fields or {}).items():
+            info_line = {"ID": info_id, "Description": description, "Type": info_type, "Number": str(number)}
+            self.vcf.add_info_to_header(info_line)
+        for filter_id, description in (filters or {}).items():
+            self.vcf.add_filter_to_header({"ID": filter_id, "Description": description})
+        self.writer = cyvcf2.Writer(output_vcf, self.vcf)  # the input VCF is a template for the header
+
+    def __iter__(self) -> Iterator[cyvcf2.Variant]:
+        try:
+            for v in tqdm(self.vcf, mininterval=60):
+                yield v
+                self.writer.write_record(v)
+        finally:
+            self.writer.close()
+            self.vcf.close()
 
 
 def check_for_nan(model: torch.nn.Module):

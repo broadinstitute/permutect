@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 from enum import IntEnum
 from random import randint
 from typing import List
@@ -15,23 +16,19 @@ from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import NUM_LOGIT_BINS
 from permutect.data.count_binning import NUM_REF_COUNT_BINS
 from permutect.data.count_binning import alt_count_bin_index
-from permutect.data.count_binning import alt_count_bin_indices
 from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.count_binning import logit_bin_indices
 from permutect.data.count_binning import logit_bin_name
 from permutect.data.count_binning import ref_count_bin_index
-from permutect.data.count_binning import ref_count_bin_indices
 from permutect.data.count_binning import ref_count_bin_name
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.datum import FLOAT_DTYPE
-from permutect.data.datum import INTEGER_DTYPE
-from permutect.data.datum import LARGE_INTEGER_DTYPE
 from permutect.data.datum import NUMBER_OF_BYTES_IN_PACKED_READ
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
-from permutect.data.datum import uint32_from_two_int16s
+from permutect.data.datum import get_data_field
 from permutect.data.plain_text_data import convert_uint8_to_quantile_normalized
-from permutect.misc_utils import gpu_if_available
+from permutect.misc_utils import resolve_device
 from permutect.utils.array_utils import flattened_indices
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
@@ -85,15 +82,7 @@ class Batch:
             return self.lazy_batch_indices[use_original_counts]
 
     def get(self, data_field: Data):
-        index = data_field.idx
-        if data_field.dtype == INTEGER_DTYPE:
-            return self.int_tensor[:, index]
-        elif data_field.dtype == LARGE_INTEGER_DTYPE:
-            return uint32_from_two_int16s(self.int_tensor[:, index], self.int_tensor[:, index + 1])
-        elif data_field.dtype == FLOAT_DTYPE:
-            return self.float_tensor[:, index]
-        else:
-            assert False, "Unsupported data type"
+        return get_data_field(self.int_tensor, self.float_tensor, data_field)
 
     # convert to the training format of 0.0 / 0.5 / 1.0 for variant / unlabeled / artifact
     # the 0.5 for unlabeled data is reasonable but should never actually be used due to the is_labeled mask
@@ -217,15 +206,15 @@ class BatchIndices:
         self.sources = sources
         self.labels = labels
         self.var_types = var_types
-        self.ref_count_bins = ref_count_bin_indices(ref_counts)
-        self.alt_count_bins = alt_count_bin_indices(alt_counts)
+        self.ref_count_bins = ref_count_bin_index(ref_counts)
+        self.alt_count_bins = alt_count_bin_index(alt_counts)
 
         # We do something kind of dangerous-seeming here: sources is the zeroth dimension and so the formula for
         # flattened indices *doesn't depend on the number of sources* since the stride from one source to the next is the
         # product of all the *other* dimensionalities.  Thus we can set the zeroth dimension to anything we want!
         # Just to make sure that this doesn't cause a silent error, we set it to None so that things will blow up
         # if my little analysis here is wrong
-        dims = (None, len(Label), len(Variation), NUM_REF_COUNT_BINS, NUM_ALT_COUNT_BINS)
+        dims = BatchIndexedTensor.shape_without_logits(num_sources=None)
         idx = (self.sources, self.labels, self.var_types, self.ref_count_bins, self.alt_count_bins)
         self.flattened_idx = flattened_indices(dims, idx)
 
@@ -236,11 +225,10 @@ class BatchIndices:
         of imputed unlabeled data.
 
         The stride from one label to the next is the product of all successive dimensionalities, i.e.
-        len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS, so we simply add the product of this
+        BatchIndexedTensor.property_stride(BatchProperty.LABEL), so we simply add the product of this
         stride length with the difference between pseudolabels and actual labels.
 
-        A source_override works similarly, but with stride length equal to
-        len(Label) * len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS
+        A source_override works similarly, but with the stride of the source dimension
 
         If using logits, we use the fact that logits are the last indexed dimnension.  Every flattened index
         without logits corresponds to NUM_LOGIT_BINS bins with logits, so the flattened index with logits
@@ -250,13 +238,13 @@ class BatchIndices:
 
         if source_override is not None:
             assert len(source_override) == len(self.sources)
-            stride_length = len(Label) * len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS
+            stride_length = BatchIndexedTensor.property_stride(BatchProperty.SOURCE)
             diff = source_override - self.sources
             flattened_indices = flattened_indices + (stride_length * diff)
 
         if pseudolabels is not None:
             assert len(pseudolabels) == len(self.labels)
-            stride_length = len(Variation) * NUM_REF_COUNT_BINS * NUM_ALT_COUNT_BINS
+            stride_length = BatchIndexedTensor.property_stride(BatchProperty.LABEL)
             diff = pseudolabels - self.labels
             flattened_indices = flattened_indices + (stride_length * diff)
 
@@ -332,22 +320,26 @@ class BatchIndexedTensor(Tensor):
         return (num_sources, len(Label), len(Variation), NUM_REF_COUNT_BINS, NUM_ALT_COUNT_BINS)
 
     @classmethod
-    def zeros(cls, num_sources: int, include_logits: bool = False, device=None):
-        base_shape = BatchIndexedTensor.shape_without_logits(num_sources)
-        shape = (base_shape + (NUM_LOGIT_BINS,)) if include_logits else base_shape
-        return cls(torch.zeros(shape, device=(gpu_if_available() if device is None else device)))
+    def property_stride(cls, batch_property: BatchProperty) -> int:
+        # the flattened index distance between consecutive values of a property: the product of all later dimensions
+        return math.prod(cls.shape_without_logits(num_sources=None)[batch_property + 1 :])
 
     @classmethod
-    def ones(cls, num_sources: int, include_logits: bool = False, device=gpu_if_available()):
+    def shape_for(cls, num_sources: int, include_logits: bool = False):
         base_shape = BatchIndexedTensor.shape_without_logits(num_sources)
-        shape = (base_shape + (NUM_LOGIT_BINS,)) if include_logits else base_shape
-        return cls(torch.ones(shape, device=device))
+        return (base_shape + (NUM_LOGIT_BINS,)) if include_logits else base_shape
+
+    @classmethod
+    def zeros(cls, num_sources: int, include_logits: bool = False, device=None):
+        return cls(torch.zeros(cls.shape_for(num_sources, include_logits), device=resolve_device(device)))
+
+    @classmethod
+    def ones(cls, num_sources: int, include_logits: bool = False, device=None):
+        return cls(torch.ones(cls.shape_for(num_sources, include_logits), device=resolve_device(device)))
 
     def resize_sources(self, new_num_sources):
         old_num_sources = self.num_sources()
-        base_shape = BatchIndexedTensor.shape_without_logits(new_num_sources)
-        shape = (base_shape + (NUM_LOGIT_BINS,)) if self.has_logits() else base_shape
-        self.resize_(shape)
+        self.resize_(BatchIndexedTensor.shape_for(new_num_sources, self.has_logits()))
         self[old_num_sources:] = 0
 
     # TODO: move to subclass as in comments below

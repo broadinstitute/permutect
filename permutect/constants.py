@@ -57,3 +57,6 @@ GERMLINE_MODE_NAME = "germline_mode"
 NO_GERMLINE_MODE_NAME = "no_germline_mode"
 RECALL_WEIGHT_NAME = "recall_weight"
 HET_BETA_NAME = "het_beta"
+
+# numerical constants shared by the models
+IMPOSSIBLE_LOG_PROB = -9999  # rules out a call, while staying finite to avoid the NaNs that -inf can give

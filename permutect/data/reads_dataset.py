@@ -60,7 +60,7 @@ class ReadsDataset(IterableDataset):
         # if no folds, no copying is done; otherwise this creates a new file on disk
         self.memory_mapped_data = memory_mapped_data.restrict_to_folds(num_folds, folds_to_use, keep_probs_by_label_l)
         self._size = self.memory_mapped_data.num_data
-        self._read_end_indices = self.memory_mapped_data.read_end_indices
+        self._read_offsets = self.memory_mapped_data.read_offsets
 
         available_memory = psutil.virtual_memory().available
         print(
@@ -158,8 +158,8 @@ class ReadsDataset(IterableDataset):
                 (worker_start_idx + (chunk + 1) * data_per_chunk) if (chunk < chunks_per_worker - 1) else worker_end_idx
             )
 
-            chunk_read_start_idx = 0 if chunk_start_idx == 0 else self._read_end_indices[chunk_start_idx - 1]
-            chunk_read_end_idx = self._read_end_indices[chunk_end_idx - 1]
+            chunk_read_start_idx = self._read_offsets[chunk_start_idx]
+            chunk_read_end_idx = self._read_offsets[chunk_end_idx]
 
             ram_timer = Timer(f"Worker {worker_id} loading chunk [{chunk_start_idx}, {chunk_end_idx}) into RAM.")
             # TODO: I think the .copy() is necessary to copy the slice of the memory-map from disk into RAM
@@ -167,7 +167,7 @@ class ReadsDataset(IterableDataset):
             chunk_int_data_ve = self._int_array_ve[chunk_start_idx:chunk_end_idx].copy()
             chunk_float_data_ve = self._float_array_ve[chunk_start_idx:chunk_end_idx].copy()
             chunk_reads_re = self._stacked_reads_re[chunk_read_start_idx:chunk_read_end_idx].copy()
-            chunk_read_end_indices = self._read_end_indices[chunk_start_idx:chunk_end_idx] - chunk_read_start_idx
+            chunk_read_offsets = self._read_offsets[chunk_start_idx : chunk_end_idx + 1] - chunk_read_start_idx
             ram_timer.report("Time to load chunk data into RAM")
             report_memory_usage("Chunk data loaded into RAM.")
 
@@ -176,12 +176,10 @@ class ReadsDataset(IterableDataset):
             random.shuffle(indices)
 
             for idx in indices:
-                read_start_idx = 0 if idx == 0 else chunk_read_end_indices[idx - 1]
-                read_end_idx = chunk_read_end_indices[idx]
                 datum = Datum(
                     int_array=chunk_int_data_ve[idx],
                     float_array=chunk_float_data_ve[idx],
-                    reads_re=chunk_reads_re[read_start_idx:read_end_idx],
+                    reads_re=chunk_reads_re[chunk_read_offsets[idx] : chunk_read_offsets[idx + 1]],
                     compressed=True,
                 )
                 # assert datum.get_ref_count() + datum.get_alt_count() == len(datum.get_reads_array_re())

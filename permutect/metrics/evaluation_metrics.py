@@ -11,13 +11,13 @@ from torch.utils.tensorboard import SummaryWriter
 from permutect.data.batch import Batch
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import NUM_REF_COUNT_BINS
+from permutect.data.count_binning import alt_count_bin_index
 from permutect.data.count_binning import alt_count_bin_name
-from permutect.data.count_binning import count_from_alt_bin_index
 from permutect.data.count_binning import ref_count_bin_name
 from permutect.metrics import plotting
 from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.metrics.posterior_result import PosteriorResult
-from permutect.misc_utils import gpu_if_available
+from permutect.misc_utils import resolve_device
 from permutect.utils.enums import Call
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
@@ -27,7 +27,8 @@ NUM_DATA_FOR_TENSORBOARD_PROJECTION = 10000
 
 
 class EvaluationMetrics:
-    def __init__(self, num_sources, device=gpu_if_available()):
+    def __init__(self, num_sources, device=None):
+        device = resolve_device(device)
         # we will have a map from epoch type to EvaluationMetricsForOneEpochType
         self.accuracy_metrics_by_epoch_type = defaultdict(lambda: AccuracyMetrics.create(num_sources, device))
 
@@ -286,6 +287,7 @@ class EmbeddingMetrics:
     TRUE_NEGATIVE = "true-negative"
     FALSE_NEGATIVE_ARTIFACT = "false-negative-artifact"
     TRUE_NEGATIVE_SEQ_ERROR = "true-negative-seq-error"
+    UNKNOWN = "unknown"  # unlabeled data, or labeled data whose correctness isn't evaluated
 
     def __init__(self):
         # things we will collect for the projections
@@ -295,6 +297,33 @@ class EmbeddingMetrics:
         self.truncated_count_metadata = []  # list of lists
         self.features = []  # list of 2D tensors (to be stacked into a single 2D tensor), features over batches
         self.ref_features = []
+
+    def record_batch(
+        self,
+        labels,
+        variant_types,
+        alt_counts,
+        features_be: Tensor,
+        ref_features_be: Tensor = None,
+        correctness: List[str] = None,
+    ):
+        """
+        Record metadata and embeddings for a batch of data, so that every TensorBoard projection uses the same metadata.
+
+        :param labels: the Label of each datum (as an enum or int)
+        :param variant_types: the Variation of each datum (as an enum or int)
+        :param alt_counts: the alt count of each datum
+        :param features_be: embeddings, one row per datum
+        :param ref_features_be: optional ref embeddings, one row per datum
+        :param correctness: the correctness status of each datum, one of the class constants, or None if not evaluated
+        """
+        self.label_metadata.extend(Label(label).name for label in labels)
+        self.correct_metadata.extend([EmbeddingMetrics.UNKNOWN] * len(labels) if correctness is None else correctness)
+        self.type_metadata.extend(Variation(variant_type).name for variant_type in variant_types)
+        self.truncated_count_metadata.extend(alt_count_bin_name(alt_count_bin_index(count)) for count in alt_counts)
+        self.features.append(features_be)
+        if ref_features_be is not None:
+            self.ref_features.append(ref_features_be)
 
     def output_to_summary_writer(
         self,
@@ -379,8 +408,8 @@ class EmbeddingMetrics:
 
         # read average embeddings stratified by alt count
         for count_bin in range(NUM_ALT_COUNT_BINS):
-            count = count_from_alt_bin_index(count_bin)
-            indices = set([n for n, alt_count in enumerate(self.truncated_count_metadata) if alt_count == str(count)])
+            count_name = alt_count_bin_name(count_bin)
+            indices = set([n for n, alt_count in enumerate(self.truncated_count_metadata) if alt_count == count_name])
             interesting = interesting_indices & indices
             boring = boring_indices & indices
             boring_count = max(len(interesting) // 3, 100) if is_filter_variants else len(boring)
@@ -399,7 +428,7 @@ class EmbeddingMetrics:
                     stacked_features[idx],
                     metadata=[all_metadata[round(n)] for n in idx.tolist()],
                     metadata_header=["Labels", "Correctness", "Types", "Counts"],
-                    tag=prefix + "embedding for alt count " + str(count),
+                    tag=prefix + "embedding for alt count " + count_name,
                     global_step=epoch,
                 )
 
@@ -408,6 +437,6 @@ class EmbeddingMetrics:
                         stacked_ref_features[idx],
                         metadata=[all_metadata[round(n)] for n in idx.tolist()],
                         metadata_header=["Labels", "Correctness", "Types", "Counts"],
-                        tag=prefix + "ref embedding for alt count " + str(count),
+                        tag=prefix + "ref embedding for alt count " + count_name,
                         global_step=epoch,
                     )

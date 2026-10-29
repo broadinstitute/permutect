@@ -45,5 +45,5 @@ wdl = { features = ["cpu", "wdl"], solve-group = "default" }
 
 [tasks]
 test = "pytest permutect/test -x -v"
-test-unit = "pytest permutect/test/utils permutect/test/architecture permutect/test/data permutect/test/training permutect/test/metrics permutect/test/tools permutect/test/test_misc_utils.py permutect/test/test_pixi_tasks.py permutect/test/test_project_metadata.py permutect/test/wdl/test_wdl_scripts.py -x -v"
+test-unit = "pytest permutect/test/utils permutect/test/architecture permutect/test/data permutect/test/training permutect/test/metrics permutect/test/tools permutect/test/test_ci_workflows.py permutect/test/test_misc_utils.py permutect/test/test_pixi_tasks.py permutect/test/test_project_metadata.py permutect/test/wdl/test_wdl_scripts.py -x -v"
 install-hooks = "ln -sf ../../scripts/pre-commit .git/hooks/pre-commit && echo 'Pre-commit hook installed.'"

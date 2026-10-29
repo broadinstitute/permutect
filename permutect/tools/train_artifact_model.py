@@ -65,7 +65,7 @@ def main_without_parsing(args):
     model.save_model(path=getattr(args, constants.OUTPUT_NAME))
 
 
-def parse_arguments():
+def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(description="train the Permutect artifact model")
     add_model_params_to_parser(parser)
     add_training_params_to_parser(parser)
@@ -78,7 +78,7 @@ def parse_arguments():
     tensorboard_kwargs = {"type": str, "default": "tensorboard", "required": False, "help": "tensorboard directory"}
     parser.add_argument("--" + constants.TENSORBOARD_DIR_NAME, **tensorboard_kwargs)
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main():

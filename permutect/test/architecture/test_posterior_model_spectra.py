@@ -65,3 +65,22 @@ def test_tiny_afs_survive_float16_storage():
     het_only = germline_log_likelihood(log_afs, mafs, torch.full_like(log_afs, 20.0), depths)
     het_binomial = math.lgamma(41) - 2 * math.lgamma(21) + 40 * math.log(0.5)
     assert torch.allclose(het_only, torch.full_like(het_only, het_binomial), atol=1e-5)
+
+
+def test_maf_of_zero_or_one():
+    # eg copy-neutral loss of heterozygosity, or a normal MAF of 0, used to give NaN likelihoods
+    af, depth = 1e-3, 30.0
+    log_afs = torch.log(torch.full((4,), af))
+    mafs = torch.tensor([0.0, 1.0, 0.0, 1.0])
+    alt_counts = torch.tensor([0.0, depth, 0.0, 5.0])
+    result = germline_log_likelihood(log_afs, mafs, alt_counts, torch.full((4,), depth))
+
+    # with MAF 0 or 1 a het has all or none of its reads alt, half of the time each
+    log_half_het = math.log((1 - af) / (2 - af))
+    log_hom = math.log(af / (2 - af))
+    hom_alpha, hom_beta = torch.tensor([98.0]), torch.tensor([2.0])
+    for n, alt_count in enumerate(alt_counts.tolist()):
+        hom = log_hom + beta_binomial_log_lk(torch.tensor(depth), torch.tensor(alt_count), hom_alpha, hom_beta).item()
+        het = log_half_het if alt_count in (0.0, depth) else -math.inf
+        expected = torch.logsumexp(torch.tensor([het, hom]), dim=0)
+        assert torch.isclose(result[n], expected, atol=1e-4), n

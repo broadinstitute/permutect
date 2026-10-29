@@ -44,7 +44,17 @@ def uint32_to_two_int16s(num: int):
 
 
 def uint32_from_two_int16s(int16_1, int16_2):
-    shifted1, shifted2 = int(int16_1) + (BIGGEST_INT16 + 1), int(int16_2) + (BIGGEST_INT16 + 1)
+    """
+    Inverse of uint32_to_two_int16s for scalars, numpy arrays, or tensors, eg a column of a batch.  The int16s are
+    widened to 64 bits before shifting so that they don't overflow.
+    """
+    if isinstance(int16_1, torch.Tensor):
+        int16_1, int16_2 = int16_1.long(), int16_2.long()
+    elif isinstance(int16_1, np.ndarray):
+        int16_1, int16_2 = int16_1.astype(np.int64), int16_2.astype(np.int64)
+    else:
+        int16_1, int16_2 = int(int16_1), int(int16_2)
+    shifted1, shifted2 = int16_1 + (BIGGEST_INT16 + 1), int16_2 + (BIGGEST_INT16 + 1)
     return BIGGEST_UINT16 * shifted1 + shifted2
 
 
@@ -88,6 +98,26 @@ Data.NUM_SCALAR_INT_ELEMENTS = 16  # in Python 3.11+ can use enum.nonmember
 Data.HAPLOTYPES_START_IDX = 16  # in Python 3.11+ can use enum.nonmember
 Data.NUM_SCALAR_FLOAT_ELEMENTS = 6  # in Python 3.11+ can use enum.nonmember
 Data.INFO_START_IDX = 6  # in Python 3.11+ can use enum.nonmember
+
+
+def get_data_field(int_array, float_array, data_field: Data):
+    """
+    The value of a field from a Datum's 1D int and float arrays, or the column of values from 2D arrays or tensors with
+    one row per Datum, such as those of a Batch.
+    """
+    index = data_field.idx
+
+    def element_or_column(array, idx):
+        return array[idx] if array.ndim == 1 else array[:, idx]
+
+    if data_field.dtype == INTEGER_DTYPE:
+        return element_or_column(int_array, index)
+    elif data_field.dtype == LARGE_INTEGER_DTYPE:
+        return uint32_from_two_int16s(element_or_column(int_array, index), element_or_column(int_array, index + 1))
+    elif data_field.dtype == FLOAT_DTYPE:
+        return element_or_column(float_array, index)
+    else:
+        assert False, "Unsupported data type"
 
 
 class Datum:
@@ -187,15 +217,7 @@ class Datum:
         return result
 
     def get(self, data_field: Data):
-        index = data_field.idx
-        if data_field.dtype == INTEGER_DTYPE:
-            return self.int_array[index]
-        elif data_field.dtype == LARGE_INTEGER_DTYPE:
-            return uint32_from_two_int16s(self.int_array[index], self.int_array[index + 1])
-        elif data_field.dtype == FLOAT_DTYPE:
-            return self.float_array[index]
-        else:
-            assert False, "Unsupported data type"
+        return get_data_field(self.int_array, self.float_array, data_field)
 
     def set(self, data_field: Data, value):
         index = data_field.idx

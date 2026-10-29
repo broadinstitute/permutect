@@ -15,23 +15,19 @@ from permutect.architecture.gated_mlp import GatedRefAltMLP
 from permutect.architecture.mlp import MLP
 from permutect.data.batch import Batch
 from permutect.data.count_binning import MAX_ALT_COUNT
-from permutect.data.count_binning import alt_count_bin_index
-from permutect.data.count_binning import alt_count_bin_name
-from permutect.data.datum import DEFAULT_CPU_FLOAT
-from permutect.data.datum import DEFAULT_GPU_FLOAT
 from permutect.data.datum import Data
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.metrics.evaluation_metrics import EmbeddingMetrics
+from permutect.misc_utils import float_dtype
 from permutect.misc_utils import freeze
-from permutect.misc_utils import gpu_if_available
+from permutect.misc_utils import resolve_device
 from permutect.misc_utils import unfreeze
 from permutect.parameters import ModelParameters
 from permutect.sets.ragged_sets import RaggedSets
 from permutect.training.balancer import Balancer
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import ParameterSet
-from permutect.utils.enums import Variation
 
 MAX_OUTLIER_LOGIT = 10
 BCE = nn.BCEWithLogitsLoss(
@@ -128,11 +124,8 @@ class ArtifactModel(torch.nn.Module):
         device=None,
     ):
         super(ArtifactModel, self).__init__()
-        if device is None:
-            device = gpu_if_available()
-
-        self._device = device
-        self._dtype = DEFAULT_GPU_FLOAT if device != torch.device("cpu") else DEFAULT_CPU_FLOAT
+        self._device = resolve_device(device)
+        self._dtype = float_dtype(self._device)
 
         # this is the length of ref and alt concatenated horizontally ie twice the CNN length
         self._haplotypes_length = haplotypes_length
@@ -317,8 +310,7 @@ class ArtifactModel(torch.nn.Module):
 
 
 def load_model(path, device: torch.device = None):
-    if device is None:
-        device = gpu_if_available()
+    device = resolve_device(device)
     saved = torch.load(path, map_location=device, weights_only=False)
     hyperparams = saved[constants.HYPERPARAMS_NAME]
     num_read_features = saved[constants.NUM_READ_FEATURES_NAME]
@@ -350,30 +342,17 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
     ref_alt_seq_metrics = EmbeddingMetrics()
 
     batch: Batch
-    for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
+    for batch in tqdm(prefetch_generator(loader, device=model._device), mininterval=60, total=len(loader)):
         ref_bre, alt_bre, ref_alt_seq_embeddings_be = model.calculate_features(batch)
 
         alt_means_be = alt_bre.means_over_sets().cpu()
         ref_means_be = ref_bre.means_over_sets().cpu()
         ref_alt_seq_embeddings_be = ref_alt_seq_embeddings_be.cpu()
 
-        labels = [
-            ("artifact" if label > 0.5 else "non-artifact") if is_labeled > 0.5 else "unlabeled"
-            for (label, is_labeled) in zip(batch.get_training_labels().tolist(), batch.get_is_labeled_mask().tolist())
-        ]
-        for metrics, embeddings, ref_features_be in [
-            (embedding_metrics, alt_means_be, ref_means_be),
-            (ref_alt_seq_metrics, ref_alt_seq_embeddings_be, None),
-        ]:
-            metrics.label_metadata.extend(labels)
-            metrics.correct_metadata.extend(["unknown"] * batch.size())
-            metrics.type_metadata.extend([Variation(idx).name for idx in batch.get(Data.VARIANT_TYPE).tolist()])
-            alt_count_strings = [
-                alt_count_bin_name(alt_count_bin_index(ac)) for ac in batch.get(Data.ALT_COUNT).tolist()
-            ]
-            metrics.truncated_count_metadata.extend(alt_count_strings)
-            metrics.features.append(embeddings)
-            if ref_features_be is not None:
-                metrics.ref_features.append(ref_features_be)
+        labels = batch.get(Data.LABEL).tolist()
+        variant_types = batch.get(Data.VARIANT_TYPE).tolist()
+        alt_counts = batch.get(Data.ALT_COUNT).tolist()
+        embedding_metrics.record_batch(labels, variant_types, alt_counts, alt_means_be, ref_features_be=ref_means_be)
+        ref_alt_seq_metrics.record_batch(labels, variant_types, alt_counts, ref_alt_seq_embeddings_be)
     embedding_metrics.output_to_summary_writer(summary_writer)
     ref_alt_seq_metrics.output_to_summary_writer(summary_writer, prefix="ref and alt allele context")

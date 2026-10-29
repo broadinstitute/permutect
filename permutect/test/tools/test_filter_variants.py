@@ -9,11 +9,14 @@ import torch
 from permutect import constants
 from permutect.architecture.artifact_model import ArtifactModel
 from permutect.architecture.artifact_model import load_model
+from permutect.architecture.posterior_model import PosteriorModel
 from permutect.data.datum import Data
+from permutect.test.architecture.test_posterior_model_priors import make_batch
 from permutect.test.test_file_names import *
 from permutect.tools import filter_variants
 from permutect.tools import pre_permutect_filtering
 from permutect.utils.enums import Call
+from permutect.utils.enums import Variation
 
 
 def test_filtering_on_dream1_chr20():
@@ -195,6 +198,20 @@ def save_dropout_model(path):
     )
     saved[constants.STATE_DICT_NAME] = model.state_dict()
     torch.save(saved, path)
+
+
+def test_filtering_checks_germline_mode_like_the_posterior_model(tmp_path):
+    # filter_variants used to compute error probabilities itself, skipping the PosteriorModel check that germline mode
+    # is not combined with a model in no-germline mode
+    model = PosteriorModel(-10, -10, no_germline_mode=True, device=torch.device("cpu"))
+    values = {Data.ORIGINAL_DEPTH: 30, Data.ORIGINAL_ALT_COUNT: 5, Data.ORIGINAL_NORMAL_DEPTH: 30, Data.MAF: 0.5}
+    loader = [make_batch([0.01, 0.1], values)]
+    thresholds = {var_type: 0.5 for var_type in Variation}
+    output_vcf = str(tmp_path / "filtered.vcf")
+    with pytest.raises(AssertionError, match="incompatible"):
+        filter_variants.apply_filtering_to_vcf(
+            MUTECT2_CHR20_FILTERED_VCF, output_vcf, {0: "20"}, thresholds, loader, model, None, germline_mode=True
+        )
 
 
 def test_load_model_returns_model_in_eval_mode():

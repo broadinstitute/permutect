@@ -5,6 +5,7 @@ from torch import Tensor
 from torch import lgamma
 from torch import logsumexp
 
+from permutect.utils.math_utils import log_binomial_coefficient
 from permutect.utils.math_utils import subtract_in_log_space
 
 """
@@ -21,16 +22,15 @@ sum_k exp (log prob(k | n, params)) = 1
 def binomial_log_lk(n, k, p):
     # binomial distribution log likelihood log Binom(k | n, p)
     # = log [nCk * p^k * (1-p)^(n-k)
-    combinatorial_term = torch.lgamma(n + 1) - torch.lgamma(n - k + 1) - torch.lgamma(k + 1)
-    return combinatorial_term + k * torch.log(p) + (n - k) * torch.log(1 - p)
+    # xlogy(x, y) = x log(y), but 0 when x = 0, so that p = 0 or 1 gives 0 * log(0) = 0 rather than NaN
+    return log_binomial_coefficient(n, k) + torch.xlogy(k, p) + torch.xlogy(n - k, 1 - p)
 
 
 def beta_binomial_log_lk(n, k, alpha, beta):
     # beta binomial distribution log likelihood  log P (k | n, alpha, beta)
     #                   = log integral_{0 to 1} Binomial(k | n, p) Beta(p | alpha, beta) dp
-    combinatorial_term = torch.lgamma(n + 1) - torch.lgamma(n - k + 1) - torch.lgamma(k + 1)
     return (
-        combinatorial_term
+        log_binomial_coefficient(n, k)
         + torch.lgamma(k + alpha)
         + torch.lgamma(n - k + beta)
         + torch.lgamma(alpha + beta)

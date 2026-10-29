@@ -1,8 +1,12 @@
+import math
+
+import pytest
 import torch
 
-from permutect.utils.math_utils import add_in_log_space
+from permutect.utils.math_utils import LOGIT_EPS
 from permutect.utils.math_utils import find_factors
 from permutect.utils.math_utils import log1mexp
+from permutect.utils.math_utils import prob_to_logit
 from permutect.utils.math_utils import subtract_in_log_space
 
 
@@ -14,14 +18,13 @@ def test_find_factors():
     assert find_factors(24) == [1, 2, 3, 4, 6, 8, 12, 24]
 
 
-def test_add_in_log_space():
-    x = torch.rand((4, 5))
-    y = torch.rand((4, 5))
-    logx, logy = torch.log(x), torch.log(y)
-    exact = x + y
-    calc = torch.exp(add_in_log_space(logx, logy))
-    # elementwise, within float32 precision; the error summed over all elements often exceeded 10^(-6)
-    torch.testing.assert_close(calc, exact)
+def test_prob_to_logit():
+    # the inverse of the sigmoid.  Every probability used to be squeezed toward 1/2, which changed the logit of an error
+    # probability of 1e-6 by 5%; now only 0 and 1 are clipped, to LOGIT_EPS and 1 - LOGIT_EPS, so their logits are finite
+    for prob in (1e-6, 0.1, 0.5, 0.9, 1 - 1e-6):
+        assert prob_to_logit(prob) == pytest.approx(math.log(prob / (1 - prob)), rel=1e-9)
+    max_logit = math.log((1 - LOGIT_EPS) / LOGIT_EPS)
+    assert prob_to_logit(0.0) == pytest.approx(-max_logit) and prob_to_logit(1.0) == pytest.approx(max_logit)
 
 
 def test_subtract_in_log_space():

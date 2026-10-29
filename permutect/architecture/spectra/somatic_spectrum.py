@@ -1,18 +1,15 @@
-import math
-
 import torch
 from torch import log
 from torch import logsumexp
-from torch import nn
 from torch.nn import Parameter
 from torch.nn.parameter import Buffer
 from torch.nn.utils import parametrize
 
 from permutect.architecture.parameterizations import BoundedNumber
 from permutect.architecture.parameterizations import LogWeights
-from permutect.metrics.plotting import simple_plot
-from permutect.misc_utils import backpropagate
-from permutect.utils.math_utils import add_in_log_space
+from permutect.architecture.spectra.spectrum import Spectrum
+from permutect.architecture.spectra.spectrum import allele_fraction_grid
+from permutect.architecture.spectra.spectrum import smeared_densities
 from permutect.utils.stats_utils import beta_binomial_log_lk
 from permutect.utils.stats_utils import uniform_binomial_log_lk
 
@@ -20,7 +17,7 @@ from permutect.utils.stats_utils import uniform_binomial_log_lk
 MIN_POSTERIOR_FOR_M_STEP = 0.2
 
 
-class SomaticSpectrum(nn.Module):
+class SomaticSpectrum(Spectrum):
     """
     This model takes in 1D tensor (batch size, ) alt counts and depths and computes the log likelihoods
     log P(alt count | depth, spectrum parameters).
@@ -90,42 +87,19 @@ class SomaticSpectrum(nn.Module):
             n=depths_b, k=alt_counts_b, alpha=self.background_alpha, beta=self.background_beta
         )
 
-        result_b = add_in_log_space(
+        result_b = torch.logaddexp(
             self.log_non_background_weight + non_background_log_lks_b,
             self.log_background_weight + background_log_lks_b,
         )
         return result_b
 
     def fit(self, num_epochs, depths_b, alt_counts_b, mafs_b, batch_size=64):
-        optimizer = torch.optim.Adam(self.parameters())
-        num_batches = math.ceil(len(alt_counts_b) / batch_size)
-
-        for epoch in range(num_epochs):
-            for batch in range(num_batches):
-                batch_start = batch * batch_size
-                batch_end = min(batch_start + batch_size, len(alt_counts_b))
-                batch_slice = slice(batch_start, batch_end)
-                loss = -torch.mean(self.forward(depths_b[batch_slice], alt_counts_b[batch_slice], mafs_b[batch_slice]))
-                backpropagate(optimizer, loss)
+        self.fit_to_data(num_epochs, (depths_b, alt_counts_b, mafs_b), batch_size)
 
     """
     get raw data for a spectrum plot of probability density vs allele fraction
     """
 
     def spectrum_density_vs_fraction(self):
-        fractions_f = torch.arange(0.01, 0.99, 0.001)  # 1D tensor
-
-        # smear each binomial f into a narrow Gaussian for plotting
-        cf_k_cpu = self.cf_k.cpu()
-        gauss_k = torch.distributions.normal.Normal(cf_k_cpu, 0.01 * torch.ones_like(cf_k_cpu))
-        log_densities_fk = gauss_k.log_prob(fractions_f.unsqueeze(dim=1))
-
-        log_weights_fk = self.log_weights_k.view(1, -1).cpu()
-        log_weighted_densities_fk = log_weights_fk + log_densities_fk
-        densities_f = torch.exp(torch.logsumexp(log_weighted_densities_fk, dim=-1))
-
-        return fractions_f, densities_f
-
-    def plot_spectrum(self, title):
-        fractions, densities = self.spectrum_density_vs_fraction()
-        return simple_plot([(fractions.numpy(), densities.numpy(), " ")], "AF", "density", title)
+        fractions_f = allele_fraction_grid()
+        return fractions_f, smeared_densities(self.cf_k.cpu(), self.log_weights_k.cpu(), fractions_f)

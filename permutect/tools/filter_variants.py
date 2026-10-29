@@ -2,7 +2,6 @@ import argparse
 import math
 from collections import defaultdict
 
-import cyvcf2
 import numpy as np
 import torch
 from intervaltree import IntervalTree
@@ -15,9 +14,6 @@ from permutect.architecture.artifact_model import load_model
 from permutect.architecture.posterior_model import PosteriorModel
 from permutect.data import plain_text_data
 from permutect.data.batch import Batch
-from permutect.data.count_binning import MAX_ALT_COUNT
-from permutect.data.count_binning import alt_count_bin_index
-from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
@@ -29,13 +25,13 @@ from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.metrics.posterior_result import PosteriorResult
 from permutect.misc_utils import Timer
-from permutect.misc_utils import declare_format_dp
+from permutect.misc_utils import VcfEditor
 from permutect.misc_utils import encode_datum
 from permutect.misc_utils import encode_variant
-from permutect.misc_utils import get_tumor_sample_index
 from permutect.misc_utils import gpu_if_available
 from permutect.misc_utils import overlapping_filters
 from permutect.misc_utils import report_memory_usage
+from permutect.misc_utils import tumor_depths
 from permutect.parameters import TrainingParameters
 from permutect.parameters import add_training_params_to_parser
 from permutect.parameters import parse_training_params
@@ -46,7 +42,7 @@ from permutect.utils.enums import Call
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
-from permutect.utils.math_utils import inverse_sigmoid
+from permutect.utils.math_utils import LOGIT_EPS
 from permutect.utils.math_utils import prob_to_logit
 
 # Trusted filters in the input VCF come from Mutect2, except for hairpin, which comes from pre_permutect_filtering.
@@ -252,10 +248,6 @@ def make_filtered_vcf(
     segmentation=None,
     normal_segmentation=None,
 ):
-    if segmentation is None:
-        segmentation = defaultdict(IntervalTree)
-    if normal_segmentation is None:
-        normal_segmentation = defaultdict(IntervalTree)
     print("Loading artifact model and test dataset")
     contig_index_to_name_map = {}
     with open(contigs_table) as file:
@@ -292,6 +284,7 @@ def make_filtered_vcf(
         initial_log_variant_prior,
         initial_log_artifact_prior,
         no_germline_mode=no_germline_mode,
+        device=device,
         het_beta=het_beta,
     )
     posterior_data_loader = make_posterior_data_loader(
@@ -336,14 +329,14 @@ def make_filtered_vcf(
 def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_workers: int):
     # pass through the dataset, running the artifact model
     # to get artifact logits, which we record in a dict keyed by variant strings.  These will later be added to PosteriorDatum objects.
-    loader = dataset.make_data_loader(batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
+    loader = dataset.make_data_loader(batch_size, pin_memory=model._device.type == "cuda", num_workers=num_workers)
 
     # test-time adaptation leaves the model in training mode, which would turn on dropout and batch norm updates
     model.train(False)
 
     print("creating posterior data...")
     batch: Batch
-    for batch in tqdm(prefetch_generator(loader), mininterval=60, total=len(loader)):
+    for batch in tqdm(prefetch_generator(loader, device=model._device), mininterval=60, total=len(loader)):
         output = model.compute_batch_output(batch)
         for int_array, float_array, logit, embedding in zip(
             batch.get_int_array_be(),
@@ -375,10 +368,6 @@ def make_annotated_dataset(
     segmentation=None,
     normal_segmentation=None,
 ):
-    if segmentation is None:
-        segmentation = defaultdict(IntervalTree)
-    if normal_segmentation is None:
-        normal_segmentation = defaultdict(IntervalTree)
     normalizing_timer = Timer("Normalizing data. . .")
     normalized_mmap_data = plain_text_data.make_normalized_mmap_data(dataset_files=[dataset_file])
     normalizing_timer.report("Time to normalize test data:")
@@ -415,7 +404,8 @@ def make_posterior_data_loader(
 
     posterior_dataset = ReadsDataset(posterior_mmap)
     report_memory_usage("Finished creating posterior ReadsDataset.")
-    return posterior_dataset.make_data_loader(batch_size, pin_memory=torch.cuda.is_available(), num_workers=num_workers)
+    pin_memory = model._device.type == "cuda"
+    return posterior_dataset.make_data_loader(batch_size, pin_memory=pin_memory, num_workers=num_workers)
 
 
 # error probability thresholds is a dict from Variant type to error probability threshold (float)
@@ -432,22 +422,24 @@ def apply_filtering_to_vcf(
 ):
     print("Computing final error probabilities")
     passing_call_type = Call.GERMLINE if germline_mode else Call.SOMATIC
-    evaluation_metrics = EvaluationMetrics(num_sources=1)
+    device = posterior_model._device
+    evaluation_metrics = EvaluationMetrics(num_sources=1, device=device)
 
     # Note: using BatchIndexedTotals in a hacky way, with Call replacing Source!
-    artifact_logit_metrics = AccuracyMetrics.create(num_sources=len(Call))
+    artifact_logit_metrics = AccuracyMetrics.create(num_sources=len(Call), device=device)
     encoding_to_posterior_results = {}
 
     batch: Batch
-    for batch in tqdm(prefetch_generator(posterior_loader), mininterval=60, total=len(posterior_loader)):
+    batches = prefetch_generator(posterior_loader, device=device)
+    for batch in tqdm(batches, mininterval=60, total=len(posterior_loader)):
         # posterior, along with intermediate tensors for debugging/interpretation
         log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, log_posteriors_bc = (
             posterior_model.log_posterior_and_ingredients(batch)
         )
 
         posterior_probs_bc = torch.nn.functional.softmax(log_posteriors_bc, dim=1)
-        error_probs_b = 1 - posterior_probs_bc[:, passing_call_type]
-        error_logits_b = inverse_sigmoid(error_probs_b)
+        error_probs_b = posterior_model.error_probabilities_from_posteriors_b(posterior_probs_bc, germline_mode)
+        error_logits_b = torch.logit(error_probs_b, eps=LOGIT_EPS)
         # this does nothing if the test dataset was generated without a truth VCF and thus has no labels
         # note that here we use error logits, not artifact logits
         # TODO: maybe also have an option to record relative to the computed probability thresholds.
@@ -471,9 +463,10 @@ def apply_filtering_to_vcf(
         ]
         # NOTE: for posterior data, batch.get_info_be actually gets the embedding array!!!!!
         # TODO: perhaps make this safer
-        for datum, post_probs, logit, log_prior, log_spec, log_normal, embedding in zip(
+        for datum, post_probs, error_prob, logit, log_prior, log_spec, log_normal, embedding in zip(
             data,
             posterior_probs_bc,
+            error_probs_b.tolist(),
             artifact_logits,
             log_priors_bc,
             spectra_log_lks_bc,
@@ -484,6 +477,7 @@ def apply_filtering_to_vcf(
             encoding_to_posterior_results[encoding] = PosteriorResult(
                 artifact_logit=logit,
                 posterior_probabilities=post_probs.tolist(),
+                error_probability=error_prob,
                 log_priors=log_prior,
                 spectra_lls=log_spec,
                 normal_lls=log_normal,
@@ -495,49 +489,28 @@ def apply_filtering_to_vcf(
             )
 
     print("Applying threshold")
-    unfiltered_vcf = cyvcf2.VCF(input_vcf)
-    tumor_sample_index = get_tumor_sample_index(unfiltered_vcf)
-
     all_types = [call_type.name for call_type in Call]
-    declare_format_dp(unfiltered_vcf)
     # these have one value per Call type, not per alt allele
-    for info_key, description in (
-        (POST_PROB_INFO_KEY, "Mutect3 posterior probability of"),
-        (LOG_PRIOR_INFO_KEY, "Log priors of"),
-        (SPECTRA_LOG_LIKELIHOOD_INFO_KEY, "Log spectra likelihoods of"),
-        (NORMAL_LOG_LIKELIHOOD_INFO_KEY, "Log normal likelihoods of"),
-    ):
-        unfiltered_vcf.add_info_to_header(
-            {
-                "ID": info_key,
-                "Description": description + " {" + ", ".join(all_types) + "}",
-                "Type": "Float",
-                "Number": str(len(Call)),
-            }
+    info_fields = {
+        info_key: ("Float", len(Call), description + " {" + ", ".join(all_types) + "}")
+        for info_key, description in (
+            (POST_PROB_INFO_KEY, "Mutect3 posterior probability of"),
+            (LOG_PRIOR_INFO_KEY, "Log priors of"),
+            (SPECTRA_LOG_LIKELIHOOD_INFO_KEY, "Log spectra likelihoods of"),
+            (NORMAL_LOG_LIKELIHOOD_INFO_KEY, "Log normal likelihoods of"),
         )
-    unfiltered_vcf.add_info_to_header(
-        {
-            "ID": ARTIFACT_LOD_INFO_KEY,
-            "Description": "Mutect3 artifact log odds",
-            "Type": "Float",
-            "Number": "A",
-        }
-    )
+    }
+    info_fields[ARTIFACT_LOD_INFO_KEY] = ("Float", "A", "Mutect3 artifact log odds")
+    filter_descriptions = {name: name for n, name in enumerate(FILTER_NAMES) if n != passing_call_type}
+    editor = VcfEditor(input_vcf, output_vcf, info_fields, filter_descriptions)
 
-    for n, filter_name in enumerate(FILTER_NAMES):
-        if n != passing_call_type:
-            unfiltered_vcf.add_filter_to_header({"ID": filter_name, "Description": filter_name})
-
-    writer = cyvcf2.Writer(output_vcf, unfiltered_vcf)  # input vcf is a template for the header
-    pbar = tqdm(enumerate(unfiltered_vcf), mininterval=60)
     labeled_truth = False
     embedding_metrics = EmbeddingMetrics()  # only if there is labeled truth for evaluation
 
     missing_encodings = []
-    for n, v in pbar:
+    for v in editor:
         # variants with trusted non-artifact filters were excluded from the posterior model
         if overlapping_filters(v, TRUSTED_NON_ARTIFACT_FILTERS):
-            writer.write_record(v)
             continue
 
         filters = overlapping_filters(v, TRUSTED_ARTIFACT_FILTERS)
@@ -560,9 +533,8 @@ def apply_filtering_to_vcf(
             )
 
             label = Label(posterior_result.label)  # this is the Label enum, might be UNLABELED
-            error_prob = 1 - post_probs[passing_call_type]
             variant_type = find_variant_type(v)
-            called_as_error = error_prob > error_probability_thresholds[variant_type]
+            called_as_error = posterior_result.error_probability > error_probability_thresholds[variant_type]
 
             error_call = None
 
@@ -575,19 +547,9 @@ def apply_filtering_to_vcf(
                 error_call = list(Call)[highest_prob_index]
                 filters.add(FILTER_NAMES[highest_prob_index])
 
-            # note that this excludes the correctness part of embedding metrics, which is below
-            embedding_metrics.label_metadata.append(label.name)
-            embedding_metrics.type_metadata.append(variant_type.name)
-            embedding_metrics.truncated_count_metadata.append(
-                alt_count_bin_name(alt_count_bin_index(min(MAX_ALT_COUNT, posterior_result.alt_count)))
-            )
-            embedding_metrics.features.append(posterior_result.embedding)
-            # TODO: we don't yet record ref features but we could eventually. . .
-
-            correctness_label = "unknown"
+            correctness_label = EmbeddingMetrics.UNKNOWN
             if label != Label.UNLABELED:
                 labeled_truth = True
-                clipped_error_prob = 0.5 + 0.9999999 * (error_prob - 0.5)  # noqa: F841
 
                 # TODO: this is sloppy -- it only works because when we label the posterior dataset (if truth is available)
                 # TODO: we stretch the definitions so that "Label.ARTIFACT" simply means "something we shouldn't call", including
@@ -614,12 +576,20 @@ def apply_filtering_to_vcf(
                     # TODO: this is only right for somatic calling
                     bad_call = error_call if called_as_error else Call.SOMATIC
                     evaluation_metrics.record_mistake(posterior_result, bad_call)
-            embedding_metrics.correct_metadata.append(correctness_label)
+
+            # TODO: we don't yet record ref features but we could eventually. . .
+            embedding_metrics.record_batch(
+                [label],
+                [variant_type],
+                [posterior_result.alt_count],
+                posterior_result.embedding,
+                correctness=[correctness_label],
+            )
         else:
             # It is possible due to various quirks of Mutect2 assembly and flags such as --genotype-germline-sites etc
             # that a site with zero alt depth can end up in the output VCF.  However, Permutect exludes such sites from
             # the test dataset.  Therefore, we manually check for such sites and make sure they get filtered!
-            total_alt_depth = np.sum(v.format("AD")[tumor_sample_index][1:])
+            _, total_alt_depth = tumor_depths(v, editor.tumor_sample_index)
             if total_alt_depth == 0:
                 filters.add(FILTER_NAMES[Call.SEQ_ERROR])
             # without a posterior Permutect has no call to make, so keep the input's filters rather than writing PASS
@@ -627,15 +597,11 @@ def apply_filtering_to_vcf(
                 filters.update(v.FILTER.split(";"))
             missing_encodings.append(encoding)
         v.FILTER = ";".join(filters) if filters else "PASS"
-        writer.write_record(v)
     if missing_encodings:
         print(
             f"{len(missing_encodings)} variants in the input VCF had no Permutect posterior, for example because they "
             f"are missing from the dataset, and keep their input filters.  Examples: {', '.join(missing_encodings[:5])}"
         )
-    print("closing resources")
-    writer.close()
-    unfiltered_vcf.close()
 
     embedding_metrics.output_to_summary_writer(summary_writer, is_filter_variants=True)
 

@@ -7,22 +7,55 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm.autonotebook import tqdm
 from tqdm.autonotebook import trange
 
+from permutect import constants
 from permutect.architecture.posterior_model_priors import PosteriorModelPriors
 from permutect.architecture.spectra.posterior_model_spectra import PosteriorModelSpectra
 from permutect.data.batch import Batch
+from permutect.data.batch import BatchIndices
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
-from permutect.data.count_binning import alt_count_bin_index
 from permutect.data.count_binning import count_from_alt_bin_index
-from permutect.data.datum import DEFAULT_CPU_FLOAT
-from permutect.data.datum import DEFAULT_GPU_FLOAT
 from permutect.data.datum import Data
 from permutect.data.prefetch_generator import prefetch_generator
 from permutect.metrics import plotting
+from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.misc_utils import StreamingAverage
 from permutect.misc_utils import backpropagate
-from permutect.misc_utils import gpu_if_available
+from permutect.misc_utils import float_dtype
+from permutect.misc_utils import resolve_device
 from permutect.utils.enums import Call
+from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
+from permutect.utils.math_utils import LOGIT_EPS
+from permutect.utils.math_utils import f_score
+from permutect.utils.math_utils import prob_to_logit
+
+
+def best_error_probability_threshold(error_probs, recall_weight: float = 1.0) -> float:
+    """
+    The error probability threshold that maximizes the expected F score if the error probabilities are calibrated.
+    Variants pass if their error probability is at most the threshold, and recall_weight is the beta of the F_beta
+    score, the importance of recall (sensitivity) relative to precision.
+    """
+    sorted_probs = sorted(error_probs)  # from least to greatest error probability
+    total_error = sum(sorted_probs) + 0.0001
+    total_non_error = len(sorted_probs) - total_error + 0.0002
+
+    # start at threshold = 0; that is, everything fails, and pass one variant at a time by increasing the threshold
+    error_found, non_error_found = total_error, 0
+    best_threshold, best_f_score = 0, 0
+    for prob in sorted_probs:
+        error_found -= prob  # lose a fractional error
+        non_error_found += 1 - prob  # gain a fractional non-error
+
+        tp = non_error_found  # non-errors that pass the threshold are true positives
+        fp = total_error - error_found  # errors that pass the threshold are false positives
+        sensitivity = tp / total_non_error
+        precision = tp / (tp + fp)
+
+        score = f_score(precision, sensitivity, beta=recall_weight)
+        if score > best_f_score:
+            best_f_score, best_threshold = score, prob
+    return best_threshold
 
 
 class PosteriorModel(torch.nn.Module):
@@ -33,18 +66,18 @@ class PosteriorModel(torch.nn.Module):
         variant_log_prior: float,
         artifact_log_prior: float,
         no_germline_mode: bool = False,
-        device=gpu_if_available(),
+        device=None,
         het_beta: float = None,
     ):
         super(PosteriorModel, self).__init__()
 
-        self._device = device
-        self._dtype = DEFAULT_GPU_FLOAT if device != torch.device("cpu") else DEFAULT_CPU_FLOAT
+        self._device = resolve_device(device)
+        self._dtype = float_dtype(self._device)
         self.no_germline_mode = no_germline_mode
         self.het_beta = het_beta
 
-        self.spectra = PosteriorModelSpectra(device=device, het_beta=het_beta)
-        self.priors = PosteriorModelPriors(variant_log_prior, artifact_log_prior, no_germline_mode, device)
+        self.spectra = PosteriorModelSpectra(device=self._device, het_beta=het_beta)
+        self.priors = PosteriorModelPriors(variant_log_prior, artifact_log_prior, no_germline_mode, self._device)
 
         self.to(device=self._device, dtype=self._dtype)
 
@@ -61,10 +94,16 @@ class PosteriorModel(torch.nn.Module):
         :param batch:
         :return: non-log error probabilities as a 1D tensor with length batch size
         """
+        return self.error_probabilities_from_posteriors_b(self.posterior_probabilities_bc(batch), germline_mode)
+
+    def error_probabilities_from_posteriors_b(self, posterior_probs_bc: Tensor, germline_mode: bool = False) -> Tensor:
+        """
+        :param posterior_probs_bc: non-log posterior probabilities, as from posterior_probabilities_bc
+        :param germline_mode: if True, germline classification is not considered an error mode
+        :return: non-log error probabilities as a 1D tensor with length batch size
+        """
         assert not (germline_mode and self.no_germline_mode), "germline mode and no-germline mode are incompatible"
-        return (
-            1 - self.posterior_probabilities_bc(batch)[:, Call.GERMLINE if germline_mode else Call.SOMATIC]
-        )  # 0th column is variant
+        return 1 - posterior_probs_bc[:, Call.GERMLINE if germline_mode else Call.SOMATIC]  # 0th column is variant
 
     def log_posterior_and_ingredients(self, batch: Batch) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """
@@ -93,12 +132,14 @@ class PosteriorModel(torch.nn.Module):
         log_posteriors_bc[:, Call.NORMAL_ARTIFACT] += artifact_logits_b
         for non_artifact_call in (Call.SOMATIC, Call.SEQ_ERROR, Call.GERMLINE):
             log_posteriors_bc[:, non_artifact_call] = torch.where(
-                known_artifacts_b, -9999, log_posteriors_bc[:, non_artifact_call]
+                known_artifacts_b, constants.IMPOSSIBLE_LOG_PROB, log_posteriors_bc[:, non_artifact_call]
             )
 
         # TODO: HACK / EXPERIMENT: make it impossible to call an artifact when the artifact logits are negative
         log_posteriors_bc[:, Call.ARTIFACT] = torch.where(
-            batch.get(Data.CACHED_ARTIFACT_LOGIT) < 0, -9999, log_posteriors_bc[:, Call.ARTIFACT]
+            batch.get(Data.CACHED_ARTIFACT_LOGIT) < 0,
+            constants.IMPOSSIBLE_LOG_PROB,
+            log_posteriors_bc[:, Call.ARTIFACT],
         )
         # TODO: END OF HACK / EXPERIMENT
 
@@ -145,7 +186,8 @@ class PosteriorModel(torch.nn.Module):
             snv_context_totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra(device=self._device)
 
             batch: Batch
-            for batch in tqdm(prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)):
+            batches = prefetch_generator(posterior_loader, device=self._device)
+            for batch in tqdm(batches, mininterval=10, total=len(posterior_loader)):
                 relative_posteriors = self.log_relative_posteriors_bc(batch)
                 log_evidence = torch.logsumexp(relative_posteriors, dim=1)
 
@@ -184,10 +226,7 @@ class PosteriorModel(torch.nn.Module):
                 # normal_artifact_spectra_fig, normal_artifact_spectra_axs = plot_artifact_spectra(self.normal_artifact_spectra)
                 # summary_writer.add_figure("Normal Artifact AF Spectra", normal_artifact_spectra_fig, epoch)
 
-                var_spectra_fig, var_spectra_axs = plt.subplots()
-                frac, dens = self.spectra.somatic_spectrum.spectrum_density_vs_fraction()
-                var_spectra_axs.plot(frac.detach().numpy(), dens.detach().numpy(), label="spectrum")
-                var_spectra_axs.set_title("Variant AF Spectrum")
+                var_spectra_fig, _ = self.spectra.somatic_spectrum.plot_spectrum("Variant AF Spectrum")
                 summary_writer.add_figure("Variant AF Spectra", var_spectra_fig, epoch)
 
                 prior_fig, prior_ax = self.priors.make_priors_bar_plot(snv_context_totals_rrra)
@@ -215,40 +254,59 @@ class PosteriorModel(torch.nn.Module):
         self.train(False)
         error_probs_by_type = {var_type: [] for var_type in Variation}  # includes both artifact and seq errors
 
-        error_probs_by_type_by_cnt = {var_type: [[] for _ in range(NUM_ALT_COUNT_BINS)] for var_type in Variation}
+        # expected counts for the theoretical ROC curves, ie the ROC curves if the error probabilities were perfectly
+        # calibrated: a variant with error probability p counts as 1 - p non-errors (VARIANT) and p errors (ARTIFACT)
+        theoretical_metrics = AccuracyMetrics.create(num_sources=1, device=torch.device("cpu"))
 
-        # TODO: use the EvaluationMetrics class to generate the theoretical ROC curve
-        # TODO: then delete plotting.plot_theoretical_roc_on_axis
         batch: Batch
-        for batch in tqdm(prefetch_generator(posterior_loader), mininterval=10, total=len(posterior_loader)):
-            # TODO: should this be the original alt counts instead?
-            alt_counts_b = batch.get(Data.ALT_COUNT).cpu().tolist()
+        batches = prefetch_generator(posterior_loader, device=self._device)
+        for batch in tqdm(batches, mininterval=10, total=len(posterior_loader)):
             # 0th column is true variant, subtract it from 1 to get error prob
-            error_probs_b = self.error_probabilities_b(batch, germline_mode).cpu().tolist()
-
-            for var_type, alt_count, error_prob in zip(
-                batch.get(Data.VARIANT_TYPE).cpu().tolist(), alt_counts_b, error_probs_b
-            ):
+            error_probs_b = self.error_probabilities_b(batch, germline_mode).cpu()
+            var_types_b = batch.get(Data.VARIANT_TYPE).cpu()
+            for var_type, error_prob in zip(var_types_b.tolist(), error_probs_b.tolist()):
                 error_probs_by_type[var_type].append(error_prob)
-                error_probs_by_type_by_cnt[var_type][alt_count_bin_index(alt_count)].append(error_prob)
 
-        thresholds_by_type = {}
+            # TODO: should this be the original alt counts instead?
+            indices = BatchIndices(
+                sources=torch.zeros_like(var_types_b),
+                labels=torch.full_like(var_types_b, Label.VARIANT),
+                var_types=var_types_b,
+                ref_counts=torch.zeros_like(var_types_b),
+                alt_counts=batch.get(Data.ALT_COUNT).cpu(),
+            )
+            error_logits_b = torch.logit(error_probs_b, eps=LOGIT_EPS)
+            indices.increment_tensor(theoretical_metrics, values=1 - error_probs_b, logits=error_logits_b)
+            artifact_labels_b = torch.full_like(var_types_b, Label.ARTIFACT)
+            indices.increment_tensor(
+                theoretical_metrics, values=error_probs_b, labels=artifact_labels_b, logits=error_logits_b
+            )
+
+        thresholds_by_type = {
+            var_type: best_error_probability_threshold(error_probs_by_type[var_type], recall_weight)
+            for var_type in Variation
+        }
         roc_fig, roc_axes = plt.subplots(1, len(Variation), sharex="all", sharey="all", squeeze=False)
         roc_by_cnt_fig, roc_by_cnt_axes = plt.subplots(
             1, len(Variation), sharex="all", sharey="all", squeeze=False, figsize=(10, 6), dpi=100
         )
+        count_bin_labels = [str(count_from_alt_bin_index(count_bin)) for count_bin in range(NUM_ALT_COUNT_BINS)]
         for var_type in Variation:
-            # plot all count ROC curves for this variant type
-            count_bin_labels = [str(count_from_alt_bin_index(count_bin)) for count_bin in range(NUM_ALT_COUNT_BINS)]
-            _ = plotting.plot_theoretical_roc_on_axis(
-                error_probs_by_type_by_cnt[var_type], count_bin_labels, roc_by_cnt_axes[0, var_type]
-            )
-            best_threshold = plotting.plot_theoretical_roc_on_axis(
-                [error_probs_by_type[var_type]], [""], roc_axes[0, var_type], recall_weight=recall_weight
-            )[0][0]
+            # every curve marks the chosen threshold, and the default error probability of 0.5 (logit 0)
+            threshold_logit = prob_to_logit(thresholds_by_type[var_type])
 
-            # TODO: the theoretical ROC might need to return the best threshold for this
-            thresholds_by_type[var_type] = best_threshold
+            # plot all count ROC curves for this variant type
+            roc_data_by_count = [
+                theoretical_metrics.make_roc_data(None, count_bin, None, var_type, sens_prec=True)
+                for count_bin in range(NUM_ALT_COUNT_BINS)
+            ]
+            thresholds = [threshold_logit] * NUM_ALT_COUNT_BINS
+            plotting.plot_roc_on_axis(
+                roc_data_by_count, count_bin_labels, roc_by_cnt_axes[0, var_type], True, thresholds
+            )
+
+            roc_data = theoretical_metrics.make_roc_data(None, None, None, var_type, sens_prec=True)
+            plotting.plot_roc_on_axis([roc_data], [""], roc_axes[0, var_type], True, [threshold_logit])
 
         variation_types = [var_type.name for var_type in Variation]
         plotting.tidy_subplots(
