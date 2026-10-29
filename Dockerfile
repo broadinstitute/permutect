@@ -1,6 +1,7 @@
 # Base image provides Python 3.12 and CUDA 13.0
-# nvidiaDriverVersion must be at least 570.86.15 on linux to support CUDA 13.0:
+# nvidiaDriverVersion must be at least 580.65.06 on linux to support CUDA 13.0:
 # https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/
+# Cromwell on Google Batch, and so Terra, ignores nvidiaDriverVersion and installs Batch's default driver.
 # Google cloud makes driver version recommendations for GCE VMs here:
 # https://cloud.google.com/compute/docs/gpus/install-drivers-gpu
 FROM pytorch/pytorch:2.10.0-cuda13.0-cudnn9-runtime

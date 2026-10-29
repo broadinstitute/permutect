@@ -30,6 +30,7 @@ from permutect.misc_utils import encode_datum
 from permutect.misc_utils import encode_variant
 from permutect.misc_utils import gpu_if_available
 from permutect.misc_utils import overlapping_filters
+from permutect.misc_utils import report_device
 from permutect.misc_utils import report_memory_usage
 from permutect.misc_utils import tumor_depths
 from permutect.parameters import TrainingParameters
@@ -256,6 +257,7 @@ def make_filtered_vcf(
             contig_index_to_name_map[int(index)] = contig
 
     device = gpu_if_available()
+    report_device(device)
     model = load_model(artifact_model_path, device=device)
 
     annotated_dataset = make_annotated_dataset(

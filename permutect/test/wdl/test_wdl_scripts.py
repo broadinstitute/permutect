@@ -20,6 +20,10 @@ COMPARE_WDL = os.path.join(SCRIPTS_DIR, "compare_permutect_results.wdl")
 CONCATENATE_WDL = os.path.join(SCRIPTS_DIR, "concatenate.wdl")
 EDIT_DATASET_WDL = os.path.join(SCRIPTS_DIR, "permutect_edit_dataset.wdl")
 PERMUTECT_WDL = os.path.join(SCRIPTS_DIR, "permutect.wdl")
+DOCKERFILE = os.path.join(SCRIPTS_DIR, "..", "Dockerfile")
+
+# the minimum NVIDIA driver for each CUDA major version: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/
+MINIMUM_NVIDIA_DRIVERS = {12: (525, 60, 13), 13: (580, 65, 6)}
 
 # a stand-in for gatk SelectVariants: copy the -V input to the -O output and write an index
 FAKE_GATK = """#!/bin/bash
@@ -48,6 +52,22 @@ def test_index_inputs_are_given_index_files():
     assert bindings, "no index-file inputs found; has the WDL syntax changed?"
     wrong = [binding for binding in bindings if "idx" not in binding[3]]
     assert not wrong, f"index inputs bound to something other than an index: {wrong}"
+
+
+def test_gpu_tasks_request_a_driver_for_the_cuda_of_the_docker_image():
+    # PyTorch can't use a GPU whose driver is older than its CUDA version needs, and silently runs on the CPU
+    with open(DOCKERFILE) as file:
+        cuda_major = int(re.search(r"^FROM pytorch/pytorch:\S+-cuda(\d+)\.", file.read(), re.M).group(1))
+    driver_versions = []
+    for wdl in glob.glob(os.path.join(SCRIPTS_DIR, "*.wdl")):
+        with open(wdl) as file:
+            versions = re.findall(r'nvidiaDriverVersion:\s*"([\d.]+)"', file.read())
+        driver_versions += [(os.path.basename(wdl), version) for version in versions]
+
+    assert driver_versions, "no nvidiaDriverVersion found; has the WDL syntax changed?"
+    minimum = MINIMUM_NVIDIA_DRIVERS[cuda_major]
+    too_old = [f"{wdl}: {version}" for wdl, version in driver_versions if tuple(map(int, version.split("."))) < minimum]
+    assert not too_old, f"drivers too old for CUDA {cuda_major}: {too_old}"
 
 
 def test_command_placeholders_start_with_a_tilde():

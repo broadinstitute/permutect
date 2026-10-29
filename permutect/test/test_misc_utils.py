@@ -28,6 +28,7 @@ from permutect.misc_utils import encode_variant
 from permutect.misc_utils import float_dtype
 from permutect.misc_utils import get_first_numeric_element
 from permutect.misc_utils import overlapping_filters
+from permutect.misc_utils import report_device
 from permutect.misc_utils import resolve_device
 from permutect.misc_utils import tumor_depths
 from permutect.utils.enums import Epoch
@@ -482,6 +483,14 @@ def test_vcf_editor(tmp_path):
 def default_device_is_meta(monkeypatch):
     # PyTorch's meta device stands in for a default device that differs from the one when permutect was imported
     monkeypatch.setattr(misc_utils, "gpu_if_available", lambda exploit_mps=False: torch.device("meta"))
+
+
+def test_report_device_explains_running_on_the_cpu(capsys, monkeypatch):
+    # eg the CUDA 13 docker image on a GPU whose driver is too old for CUDA 13
+    monkeypatch.setattr(torch.version, "cuda", "13.0")
+    report_device(torch.device("cpu"))
+    output = capsys.readouterr().out
+    assert "Running on cpu" in output and "CUDA 13.0" in output
 
 
 def test_resolve_device(default_device_is_meta):
