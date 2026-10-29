@@ -91,7 +91,7 @@ class StreamingAverage:
         self._count += weight
         self._sum += value * weight
 
-    def record_sum(self, value_sum: float, count):
+    def record_sum(self, value_sum: float | Tensor, count):
         self._count += count
         self._sum += value_sum
 
