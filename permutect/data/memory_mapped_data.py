@@ -9,6 +9,7 @@ from collections import defaultdict
 from tempfile import NamedTemporaryFile
 from typing import Generator
 from typing import List
+from typing import NamedTuple
 from typing import Set
 
 import cyvcf2
@@ -65,6 +66,26 @@ def stacked_read_offsets(read_counts) -> np.ndarray:
     return offsets
 
 
+class MemoryMapFile(NamedTuple):
+    """
+    The file of a read-only memory map, which reopens it.  Pickling this rather than the memory map, which numpy pickles
+    as a copy of its data, lets another process, such as a DataLoader worker started with spawn or forkserver, map the
+    same file instead of receiving a copy of all the data.
+    """
+
+    filename: str
+    dtype: np.dtype
+    offset: int
+    shape: tuple
+
+    @classmethod
+    def of(cls, mmap: np.memmap) -> MemoryMapFile:
+        return cls(mmap.filename, mmap.dtype, mmap.offset, mmap.shape)
+
+    def open(self) -> np.memmap:
+        return np.memmap(self.filename, dtype=self.dtype, mode="r", offset=self.offset, shape=self.shape)
+
+
 class MemoryMappedData:
     """
     wrapper for
@@ -91,6 +112,21 @@ class MemoryMappedData:
         self.read_offsets = stacked_read_offsets(read_counts)
         if self.read_offsets[-1] != num_reads:
             raise ValueError(f"The data's ref and alt counts add up to {self.read_offsets[-1]} reads, not {num_reads}.")
+
+    # a pickled copy maps the same files.  Their temporary files or directory stay with the original, which keeps the
+    # files on disk while it is in use.
+    def __getstate__(self):
+        state = {key: value for key, value in self.__dict__.items() if key not in ("_temp_dir", "_temp_files")}
+        for key in ("int_mmap", "float_mmap", "reads_mmap"):
+            if isinstance(state[key], np.memmap):
+                state[key] = MemoryMapFile.of(state[key])
+        return state
+
+    def __setstate__(self, state):
+        for key in ("int_mmap", "float_mmap", "reads_mmap"):
+            if isinstance(state[key], MemoryMapFile):
+                state[key] = state[key].open()
+        self.__dict__.update(state)
 
     def __len__(self):
         return self.num_data
@@ -408,10 +444,13 @@ class MemoryMappedData:
         if reads_mmap is not None:
             reads_mmap = np.memmap(reads_mmap.filename, dtype=reads_mmap.dtype, mode="r", shape=reads_mmap.shape)
 
-        return cls(
+        result = cls(
             int_mmap=int_mmap,
             float_mmap=float_mmap,
             num_data=num_data,
             reads_mmap=reads_mmap,
             num_reads=num_reads,
         )
+        # keep the files on disk, so that a pickled copy can map them
+        result._temp_files = [file for file in (int_file, float_file, reads_file) if file is not None]
+        return result
