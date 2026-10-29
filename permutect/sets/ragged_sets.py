@@ -32,9 +32,11 @@ class RaggedSets:
     """
 
     def __init__(self, flattened_tensor_nf: Tensor, lengths_b: IntTensor | LongTensor):
+        # nothing checks that the lengths add up to the number of elements, because on a GPU that makes the CPU wait for
+        # the GPU.  Sets derived from other sets have the right lengths, and sets made from batch data are checked where
+        # they are made, in ArtifactModel.calculate_features.
         self.flattened_tensor_nf = flattened_tensor_nf
         assert lengths_b.dim() == 1
-        assert torch.sum(lengths_b) == len(flattened_tensor_nf)
         self.lengths_b = lengths_b
 
     def batch_size(self) -> int:
@@ -47,7 +49,10 @@ class RaggedSets:
         :param tensor_bf:
         :return:
         """
-        return torch.repeat_interleave(tensor_bf, dim=0, repeats=self.lengths_b)
+        # without the known output size, repeat_interleave makes the CPU wait for the GPU to compute it
+        return torch.repeat_interleave(
+            tensor_bf, dim=0, repeats=self.lengths_b, output_size=len(self.flattened_tensor_nf)
+        )
 
     def apply_elementwise(self, func) -> ThisClass:
         """
@@ -131,12 +136,14 @@ class RaggedSets:
         vii) divide iv) by vi)
         :return: a RaggedSets object with the same shape, but with softmax "normalization" applied
         """
-        maxes_bf = torch.segment_reduce(self.flattened_tensor_nf, reduce="max", axis=0, lengths=self.lengths_b)
+        maxes_bf = torch.segment_reduce(
+            self.flattened_tensor_nf, reduce="max", axis=0, lengths=self.lengths_b, unsafe=True
+        )
         maxes_nf = self.expand_from_b_to_n(maxes_bf)
 
         stable_nf = self.flattened_tensor_nf - maxes_nf
         exp_nf = torch.exp(stable_nf)
-        denom_bf = torch.segment_reduce(exp_nf, reduce="sum", lengths=self.lengths_b, axis=0)
+        denom_bf = torch.segment_reduce(exp_nf, reduce="sum", lengths=self.lengths_b, axis=0, unsafe=True)
         denom_nf = self.expand_from_b_to_n(denom_bf)
         result_nf = exp_nf / denom_nf
         return RaggedSets(result_nf, self.lengths_b)
@@ -155,4 +162,5 @@ class RaggedSets:
         return means_bf
 
     def sums_over_sets(self) -> Tensor:
-        return torch.segment_reduce(self.flattened_tensor_nf, lengths=self.lengths_b, reduce="sum", axis=0)
+        # unsafe=True skips checking the lengths, which makes the CPU wait for the GPU
+        return torch.segment_reduce(self.flattened_tensor_nf, lengths=self.lengths_b, reduce="sum", axis=0, unsafe=True)
