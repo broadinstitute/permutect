@@ -21,14 +21,6 @@ def find_variant_type(v: cyvcf2.Variant):
     return Variation.get_type(ref, alt)
 
 
-def get_variant_type(alt_allele, ref_allele):
-    variant_size = len(alt_allele) - len(ref_allele)
-    if variant_size == 0:
-        return Variation.SNV
-    else:
-        return Variation.INSERTION if variant_size > 0 else Variation.DELETION
-
-
 def count_leading_repeats(sequence: str, unit: str):
     # count how many times a unit string is repeated at the beginning of a larger string
     # eg 'ATATGGG', 'AT' -> 1; 'AGGGGG', 'G' -> 0; 'TTATTATTAGTTA', 'TTA' -> 3

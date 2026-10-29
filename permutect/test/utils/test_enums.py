@@ -1,7 +1,12 @@
+import argparse
+
 import pytest
 import torch
 
+from permutect import constants
 from permutect.architecture.artifact_model import load_model
+from permutect.parameters import add_training_params_to_parser
+from permutect.parameters import parse_training_params
 from permutect.test.test_file_names import PERMUTECT_V0_9_2_ARTIFACT_MODEL
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import ParameterSet
@@ -33,12 +38,17 @@ def test_parameter_set_members():
     assert all(isinstance(getattr(ParameterSet, name), ParameterSet) for name in PARAMETER_SET_NAMES)
 
 
-def test_get_parameter_set():
-    for name in PARAMETER_SET_NAMES:
-        assert ParameterSet.get_parameter_set(name) is getattr(ParameterSet, name)
+def test_trainable_parameter_sets_are_parsed_by_name(capsys):
+    parser = argparse.ArgumentParser()
+    add_training_params_to_parser(parser)
+    args = parser.parse_args(["--" + constants.TRAINABLE_PARAMETERS_NAME] + PARAMETER_SET_NAMES)
+    training_params = parse_training_params(args, default_training_params=[ParameterSet.WHOLE_MODEL])
+    assert training_params.trainable_parameter_sets == list(ParameterSet)
 
-    with pytest.raises(ValueError):
-        ParameterSet.get_parameter_set("NOT_A_PARAMETER_SET")
+    # an invalid name is rejected with the other command line errors, which list the valid names
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--" + constants.TRAINABLE_PARAMETERS_NAME, "CLUSTERING", "NOT_A_PARAMETER_SET"])
+    assert "invalid choice: 'NOT_A_PARAMETER_SET'" in capsys.readouterr().err
 
 
 def test_get_parameters(model):

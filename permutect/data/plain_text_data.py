@@ -111,7 +111,7 @@ def read_raw_unnormalized_data(
     with open(dataset_file) as file:
         n = 0
         while label_str := file.readline().strip():
-            label = Label.get_label(label_str)
+            label = Label[label_str]
             passes_label_filter = label == Label.ARTIFACT or not only_artifacts
             n += 1
 
