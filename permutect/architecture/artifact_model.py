@@ -221,8 +221,8 @@ class ArtifactModel(torch.nn.Module):
     # first by variant within the batch, then the read within the variant
     def calculate_features(self, batch: Batch) -> tuple[RaggedSets, RaggedSets, Tensor]:
         ref_counts_b, alt_counts_b = batch.get(Data.REF_COUNT), batch.get(Data.ALT_COUNT)
-        # the CPU waits for the GPU here, once, to slice the reads and check them against the counts
-        total_ref, total_alt = torch.stack((torch.sum(ref_counts_b), torch.sum(alt_counts_b))).tolist()
+        # the totals are known on the CPU, so slicing the reads and checking them doesn't make the CPU wait for the GPU
+        total_ref, total_alt = batch.ref_and_alt_totals
 
         read_embeddings_re = self.read_embedding.forward(batch.get_reads_re().to(dtype=self._dtype))
         assert total_ref + total_alt == len(read_embeddings_re), "the batch's reads don't match its ref and alt counts"
