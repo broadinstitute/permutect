@@ -461,22 +461,24 @@ def apply_filtering_to_vcf(
             Datum(int_array, float_array)
             for (int_array, float_array) in zip(batch.get_int_array_be(), batch.get_float_array_be())
         ]
+        # copy the results to the CPU once per batch.  Rows of device tensors are read one number at a time for each
+        # variant, which makes the CPU wait for the GPU each time, and they keep every batch in GPU memory until the end.
         # NOTE: for posterior data, batch.get_info_be actually gets the embedding array!!!!!
         # TODO: perhaps make this safer
         for datum, post_probs, error_prob, logit, log_prior, log_spec, log_normal, embedding in zip(
             data,
-            posterior_probs_bc,
+            posterior_probs_bc.tolist(),
             error_probs_b.tolist(),
             artifact_logits,
-            log_priors_bc,
-            spectra_log_lks_bc,
-            normal_log_lks_bc,
-            batch.get_info_be(),
+            log_priors_bc.tolist(),
+            spectra_log_lks_bc.tolist(),
+            normal_log_lks_bc.tolist(),
+            batch.get_info_be().cpu(),
         ):
             encoding = encode_datum(datum, contig_index_to_name_map)
             encoding_to_posterior_results[encoding] = PosteriorResult(
                 artifact_logit=logit,
-                posterior_probabilities=post_probs.tolist(),
+                posterior_probabilities=post_probs,
                 error_probability=error_prob,
                 log_priors=log_prior,
                 spectra_lls=log_spec,
