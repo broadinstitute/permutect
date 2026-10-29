@@ -89,14 +89,6 @@ class ParameterSet(enum.Enum):
     # the entire artifact model -- this could be convenient
     WHOLE_MODEL = (lambda model: model.parameters(),)
 
-    @staticmethod
-    def get_parameter_set(set_str: str):
-        for parameter_set in ParameterSet:
-            if set_str == parameter_set.name:
-                return parameter_set
-
-        raise ValueError("parameter set type is invalid: %s" % set_str)
-
     def __init__(self, parameters_function):
         self.parameters_function = parameters_function
 
@@ -108,19 +100,3 @@ class Label(enum.IntEnum):
     ARTIFACT = 0
     VARIANT = 1
     UNLABELED = 2
-
-    @staticmethod
-    def get_label(label_str: str):
-        for label in Label:
-            if label_str == label.name:
-                return label
-
-        raise ValueError("label is invalid: %s" % label_str)
-
-    @staticmethod
-    def is_label(label_str: str):
-        for label in Label:
-            if label_str == label.name:
-                return True
-
-        return False

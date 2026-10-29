@@ -20,8 +20,7 @@ LOG2PI = math.log(2.0 * math.pi)
 LOGIT_CAP = 20
 
 
-def parallel_and_orthogonal_projections(vectors_re: Tensor, direction_vectors_ke) -> Tuple[Tensor, Tensor]:
-    unit_vectors_ke = direction_vectors_ke / torch.norm(direction_vectors_ke, dim=-1, keepdim=True)
+def parallel_and_orthogonal_projections(vectors_re: Tensor, unit_vectors_ke: Tensor) -> Tuple[Tensor, Tensor]:
     dot_products_rk = vectors_re.matmul(unit_vectors_ke.t())
 
     parallel_projections_rke = dot_products_rk[:, :, None] * unit_vectors_ke[None, :, :]
@@ -85,8 +84,9 @@ class FeatureClustering(nn.Module):
         # assigning data to areas of high probability density.
         outlier_log_lks_r = diagonal_gaussian_log_likelihood(alt_re, stdev_bf=2 * self.nonartifact_stdev_e[None, :])
 
+        # the UnitVector parametrization makes the artifact directions unit vectors
         parallel_projections_rk, orthogonal_projections_rke = parallel_and_orthogonal_projections(
-            vectors_re=alt_re, direction_vectors_ke=self.artifact_directions_ke
+            vectors_re=alt_re, unit_vectors_ke=self.artifact_directions_ke
         )
         orthogonal_dist_rk = torch.norm(orthogonal_projections_rke, dim=-1)
 

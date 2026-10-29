@@ -178,7 +178,7 @@ def parse_training_params(args, default_training_params: List[ParameterSet]) -> 
     training_parameter_sets = (
         default_training_params
         if training_parameter_strings is None
-        else [ParameterSet.get_parameter_set(set_str) for set_str in training_parameter_strings]
+        else [ParameterSet[set_str] for set_str in training_parameter_strings]
     )
 
     return TrainingParameters(
@@ -222,6 +222,7 @@ def add_training_params_to_parser(parser):
         "--" + constants.TRAINABLE_PARAMETERS_NAME,
         nargs="*",
         type=str,
+        choices=[parameter_set.name for parameter_set in ParameterSet],
         required=False,
         help="zero or more parameter set types to be re-fit in test time domain adaptation",
     )
