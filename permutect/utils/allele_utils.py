@@ -23,7 +23,7 @@ def find_variant_type(v: cyvcf2.Variant):
 
 def count_leading_repeats(sequence: str, unit: str):
     # count how many times a unit string is repeated at the beginning of a larger string
-    # eg 'ATATGGG', 'AT' -> 1; 'AGGGGG', 'G' -> 0; 'TTATTATTAGTTA', 'TTA' -> 3
+    # eg 'ATATGGG', 'AT' -> 2; 'AGGGGG', 'G' -> 0; 'TTATTATTAGTTA', 'TTA' -> 3
     result = 0
     idx = 0
     unit_length = len(unit)

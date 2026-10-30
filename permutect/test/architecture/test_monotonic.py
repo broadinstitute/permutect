@@ -5,6 +5,7 @@ from permutect.misc_utils import backpropagate
 
 
 def test_is_monotonic():
+    torch.manual_seed(0)
     input_dim = 3
     num_samples = 100
     x = torch.randn(num_samples, input_dim)
@@ -29,6 +30,7 @@ def test_is_monotonic():
 
 # test with artificial data where y = a dot x where a is a positive vector
 def test_monotonic_linear_data():
+    torch.manual_seed(0)
     input_dim = 3
     num_samples = 100
     a = torch.ones(input_dim)
@@ -56,6 +58,7 @@ def test_monotonic_linear_data():
 # test with artificial data where y = x1 - x2 + x3^2; monotonic increasing in x1, decreasing in x2, and neither in x3
 # we need more than one layer to get the quadratic
 def test_mix():
+    torch.manual_seed(0)
     input_dim = 3
     num_samples = 100
     x = torch.rand(num_samples, input_dim)
@@ -85,6 +88,7 @@ def test_mix():
 
 
 def test_cant_learn_non_monotonic():
+    torch.manual_seed(0)
     input_dim = 1
     num_samples = 100
     x = torch.randn(num_samples, input_dim)
@@ -113,6 +117,7 @@ def test_cant_learn_non_monotonic():
 
 
 def test_cubic():
+    torch.manual_seed(0)
     input_dim = 3
     num_samples = 100
     x = torch.rand(num_samples, input_dim)
@@ -135,7 +140,8 @@ def test_cubic():
         backpropagate(optimizer, loss)
         loss_list.append(loss.item())
 
-    assert loss_list[-1] < 0.01
+    # y has variance 0.24.  The final loss was 0.011 to 0.013 for 3 seeds in 20.
+    assert loss_list[-1] < 0.02
     assert loss_list[1000] < loss_list[0]
     assert loss_list[2000] < loss_list[1000]
     assert loss_list[3000] < loss_list[2000]

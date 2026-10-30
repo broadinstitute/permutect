@@ -1,4 +1,5 @@
 import time
+from types import SimpleNamespace
 
 import cyvcf2
 import numpy as np
@@ -56,7 +57,9 @@ def vcf_line(ref: str, alt: str, pos: int = 100, chrom: str = "chr1", filters: s
 def read_variants(tmp_path, *lines: str) -> list[cyvcf2.Variant]:
     path = tmp_path / "variants.vcf"
     path.write_text(VCF_HEADER + "".join(line + "\n" for line in lines))
-    return list(cyvcf2.VCF(str(path)))
+    # the variants remain usable after the reader is closed
+    with cyvcf2.VCF(str(path)) as vcf:
+        return list(vcf)
 
 
 def make_datum(contig: int, position: int, ref: str, alt: str) -> Datum:
@@ -181,8 +184,7 @@ def test_streaming_average_combines_recording_methods():
 
 
 def test_streaming_average_matches_mean_of_many_values():
-    torch.manual_seed(0)
-    values = torch.randn(10000)
+    values = torch.randn(10000, generator=torch.Generator().manual_seed(0))
     avg = StreamingAverage()
     for value in values.tolist():
         avg.record(value)
@@ -232,10 +234,12 @@ def test_timer_prints_message_on_creation(capsys):
 
 
 def test_timer_reports_elapsed_time(monkeypatch, capsys):
+    # fake the clock only where the Timer reads it, so that nothing else, eg another thread, consumes the fake times
     clock = iter([10.0, 11.5, 13.25])
-    monkeypatch.setattr(time, "perf_counter", lambda: next(clock))
+    monkeypatch.setattr(misc_utils, "time", SimpleNamespace(perf_counter=lambda: next(clock)))
 
     timer = Timer()
+    time.perf_counter()  # other code still reads the real clock
     timer.report("first")
     timer.report("second")
 
@@ -244,13 +248,17 @@ def test_timer_reports_elapsed_time(monkeypatch, capsys):
 
 
 def test_timer_with_real_clock(capsys):
+    start = time.perf_counter()
     timer = Timer()
     timer.report("elapsed")
+    max_elapsed = time.perf_counter() - start
     output = capsys.readouterr().out.strip()
     assert output.startswith("elapsed: ")
     assert output.endswith(" seconds")
     elapsed = float(output.removeprefix("elapsed: ").removesuffix(" seconds"))
-    assert 0 <= elapsed < 1
+    # bounded by the time measured around the Timer, plus rounding to 4 decimals, rather than a fixed time that a
+    # loaded machine could exceed
+    assert 0 <= elapsed <= max_elapsed + 0.00005
 
 
 def test_get_first_numeric_element(tmp_path):
@@ -473,10 +481,10 @@ def test_vcf_editor(tmp_path):
         v.FILTER = "low_score"
     assert depths_by_position == {100: (6, 3), 200: (5, 0)}
 
-    output = cyvcf2.VCF(output_vcf)
-    assert [output.get_header_type(key)["Number"] for key in ("SCORE", "PER_ALT")] == ["1", "A"]
-    assert '##FILTER=<ID=low_score,Description="the score is low">' in output.raw_header
-    assert [(v.POS, v.INFO["SCORE"], v.FILTER) for v in output] == [(100, 1, None), (200, 2, "low_score")]
+    with cyvcf2.VCF(output_vcf) as output:
+        assert [output.get_header_type(key)["Number"] for key in ("SCORE", "PER_ALT")] == ["1", "A"]
+        assert '##FILTER=<ID=low_score,Description="the score is low">' in output.raw_header
+        assert [(v.POS, v.INFO["SCORE"], v.FILTER) for v in output] == [(100, 1, None), (200, 2, "low_score")]
 
 
 @pytest.fixture
