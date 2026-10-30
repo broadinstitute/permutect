@@ -1,3 +1,4 @@
+import pickle
 from collections import defaultdict
 from types import SimpleNamespace
 
@@ -5,14 +6,17 @@ import numpy as np
 import psutil
 import pytest
 from intervaltree import IntervalTree
+from torch.utils.data import DataLoader
 
 from permutect import misc_utils
+from permutect.data.batch import Batch
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.datum import NUMBER_OF_BYTES_IN_PACKED_READ
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.reads_dataset import ReadsDataset
+from permutect.test.test_file_names import PREPROCESSED_DATA
 from permutect.test.test_misc_utils import VCF_HEADER
 from permutect.test.test_misc_utils import make_datum as make_datum_with_alleles
 from permutect.test.test_misc_utils import vcf_line
@@ -157,3 +161,26 @@ def test_restrict_to_folds(num_folds, used_folds):
     assert_same_data(restricted, [datum for index, datum in enumerate(data) if index % num_folds in used_folds])
 
     assert memory_mapped_data.restrict_to_folds(num_folds, used_folds=None) is memory_mapped_data
+
+
+@pytest.mark.parametrize("folds_to_use", [None, [0, 2]])
+def test_pickled_reads_dataset_maps_its_files_instead_of_copying_the_data(folds_to_use):
+    # DataLoader workers started with spawn, the default on macOS, or forkserver, the default on Linux from Python 3.14,
+    # receive a pickled dataset, whose memory maps used to be pickled as copies of all their data.  Without folds the
+    # data are memory maps of a tarfile's files, and with folds they are new memory maps.
+    dataset = ReadsDataset(
+        MemoryMappedData.load_from_tarfile(PREPROCESSED_DATA), num_folds=3, folds_to_use=folds_to_use
+    )
+    pickled = pickle.dumps(dataset)
+    assert len(pickled) < dataset.memory_mapped_data.num_bytes() / 10
+
+    unpickled = pickle.loads(pickled).memory_mapped_data
+    for name in ("int_mmap", "float_mmap", "reads_mmap"):
+        assert getattr(unpickled, name).tobytes() == getattr(dataset.memory_mapped_data, name).tobytes()
+
+
+def test_data_loader_workers_started_with_spawn_read_all_the_data():
+    # each worker maps the dataset's files itself, so they must stay on disk while the dataset is in use
+    dataset = ReadsDataset(MemoryMappedData.load_from_tarfile(PREPROCESSED_DATA), num_folds=10, folds_to_use=[0, 1])
+    loader = DataLoader(dataset, batch_size=64, collate_fn=Batch, num_workers=2, multiprocessing_context="spawn")
+    assert sum(batch.size() for batch in loader) == len(dataset)

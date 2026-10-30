@@ -67,14 +67,6 @@ class ReadsDataset(IterableDataset):
             f"Data occupy {memory_mapped_data.num_bytes() // 1000000} Mb and the system has {available_memory // 1000000} Mb of RAM available."
         )
 
-        self._stacked_reads_re = (
-            np.zeros((0, 0), dtype=COMPRESSED_READS_ARRAY_DTYPE)
-            if self.memory_mapped_data.reads_mmap is None
-            else self.memory_mapped_data.reads_mmap
-        )
-        self._int_array_ve = self.memory_mapped_data.int_mmap
-        self._float_array_ve = self.memory_mapped_data.float_mmap
-
         self._num_read_features, self._num_info_features, self._haplotypes_length = (
             ConsistentValue(),
             ConsistentValue(),
@@ -152,6 +144,11 @@ class ReadsDataset(IterableDataset):
             print(f"Iterating with worker {worker_id} out of {num_workers}.")
             print(f"This worker is responsible for data range [{worker_start_idx}, {worker_end_idx}).")
 
+        # from memory_mapped_data rather than attributes of their own, which would be pickled as copies of all the data
+        int_array_ve, float_array_ve = self.memory_mapped_data.int_mmap, self.memory_mapped_data.float_mmap
+        reads_mmap = self.memory_mapped_data.reads_mmap
+        stacked_reads_re = np.zeros((0, 0), dtype=COMPRESSED_READS_ARRAY_DTYPE) if reads_mmap is None else reads_mmap
+
         for chunk in chunks:
             chunk_start_idx = worker_start_idx + chunk * data_per_chunk
             chunk_end_idx = (
@@ -164,9 +161,9 @@ class ReadsDataset(IterableDataset):
             ram_timer = Timer(f"Worker {worker_id} loading chunk [{chunk_start_idx}, {chunk_end_idx}) into RAM.")
             # TODO: I think the .copy() is necessary to copy the slice of the memory-map from disk into RAM
             # these operations should be really fast because it's all sequential access
-            chunk_int_data_ve = self._int_array_ve[chunk_start_idx:chunk_end_idx].copy()
-            chunk_float_data_ve = self._float_array_ve[chunk_start_idx:chunk_end_idx].copy()
-            chunk_reads_re = self._stacked_reads_re[chunk_read_start_idx:chunk_read_end_idx].copy()
+            chunk_int_data_ve = int_array_ve[chunk_start_idx:chunk_end_idx].copy()
+            chunk_float_data_ve = float_array_ve[chunk_start_idx:chunk_end_idx].copy()
+            chunk_reads_re = stacked_reads_re[chunk_read_start_idx:chunk_read_end_idx].copy()
             chunk_read_offsets = self._read_offsets[chunk_start_idx : chunk_end_idx + 1] - chunk_read_start_idx
             ram_timer.report("Time to load chunk data into RAM")
             report_memory_usage("Chunk data loaded into RAM.")
