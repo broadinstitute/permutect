@@ -8,20 +8,18 @@ from permutect.test.test_file_names import *
 from permutect.tools import pre_permutect_filtering
 
 
-def test_hairpin_filtering_on_seqc2_wes_chr20():
+def run_pre_permutect_filtering(input_vcf: str, reference: str):
+    # the output is a temporary file, deleted when the returned file object is garbage collected
     output_vcf = tempfile.NamedTemporaryFile(suffix=".vcf")
-
-    args = pre_permutect_filtering.parse_arguments(
-        [
-            "--" + constants.INPUT_NAME,
-            MUTECT2_SEQC2_WES_VCF,
-            "--" + constants.REFERENCE_NAME,
-            HG38_CHR20_REFERENCE,
-            "--" + constants.OUTPUT_NAME,
-            output_vcf.name,
-        ]
+    argv = ["--" + constants.INPUT_NAME, input_vcf, "--" + constants.REFERENCE_NAME, reference]
+    pre_permutect_filtering.main_without_parsing(
+        pre_permutect_filtering.parse_arguments(argv + ["--" + constants.OUTPUT_NAME, output_vcf.name])
     )
-    pre_permutect_filtering.main_without_parsing(args)
+    return output_vcf
+
+
+def test_hairpin_filtering_on_seqc2_wes_chr20():
+    output_vcf = run_pre_permutect_filtering(MUTECT2_SEQC2_WES_VCF, HG38_CHR20_REFERENCE)
 
     target_records = [v for v in cyvcf2.VCF(output_vcf.name) if v.CHROM == "chr20" and v.POS == 4932703]
     assert len(target_records) == 1
@@ -35,19 +33,7 @@ def test_hairpin_filtering_on_seqc2_wes_chr20():
 
 def test_vcf_without_format_dp_header():
     # like the output of SplitMultiallelics in permutect.wdl, this VCF has FORMAT/DP values but no FORMAT/DP header line
-    output_vcf = tempfile.NamedTemporaryFile(suffix=".vcf")
-
-    args = pre_permutect_filtering.parse_arguments(
-        [
-            "--" + constants.INPUT_NAME,
-            MUTECT2_CHR20_FILTERED_VCF,
-            "--" + constants.REFERENCE_NAME,
-            HG19_CHR20_REFERENCE,
-            "--" + constants.OUTPUT_NAME,
-            output_vcf.name,
-        ]
-    )
-    pre_permutect_filtering.main_without_parsing(args)
+    output_vcf = run_pre_permutect_filtering(MUTECT2_CHR20_FILTERED_VCF, HG19_CHR20_REFERENCE)
 
     num_input_records = sum(1 for _ in cyvcf2.VCF(MUTECT2_CHR20_FILTERED_VCF))
     assert sum(1 for _ in cyvcf2.VCF(output_vcf.name)) == num_input_records
