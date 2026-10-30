@@ -33,13 +33,19 @@ def flattened_indices(shape: Tuple[int, ...], idx: Tuple[IntTensor, ...]):
 
 
 def index_tensor(tens: Tensor, idx: Tuple[IntTensor, ...]) -> Tensor:
-    return tens.view(-1)[flattened_indices(tens.shape, idx)]
+    # reshape is a view of a contiguous tensor, and copies a non-contiguous one, eg a transpose
+    return tens.reshape(-1)[flattened_indices(tens.shape, idx)]
 
 
-# add in-place
-# note that the flattened view(-1) shares memory with the original tensor
+# add in-place, and return the input tensor
 def add_at_index(tens: Tensor, idx: Tuple[IntTensor, ...], values: Tensor) -> Tensor:
-    return tens.view(-1).index_add_(dim=0, index=flattened_indices(tens.shape, idx), source=values)
+    if tens.is_contiguous():
+        # index_add_ on the flattened view(-1), which shares memory with the original tensor
+        tens.view(-1).index_add_(dim=0, index=flattened_indices(tens.shape, idx), source=values)
+    else:
+        # a non-contiguous tensor, eg a transpose, has no flattened view
+        tens.index_put_(idx, values, accumulate=True)
+    return tens
 
 
 def downsample_tensor(tensor2d: np.ndarray, new_length: int):
@@ -69,6 +75,9 @@ def select_and_sum(x: Tensor, select: dict[int, int] = {}, sum: Tuple[int, ...] 
     # initialize indexing to be complete slices i.e. select everything, then use the given select_indices
     indices = [slice(dim_size) for dim_size in x.shape]
     for select_dim, select_index in select.items():
+        # a negative index counts from the end, but slice(-1, 0) would be empty
+        if select_index < 0:
+            select_index += x.shape[select_dim]
         indices[select_dim] = slice(select_index, select_index + 1)  # one-element slice
 
     selected = x[tuple(indices)]  # retains original dimensions; selected dimensions have length 1
