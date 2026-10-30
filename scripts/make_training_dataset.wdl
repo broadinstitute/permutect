@@ -62,13 +62,16 @@ workflow MakeTrainingDataset {
     File? masks_hack = if (select_first([masked_intervals,""]) == "") then NONE else masked_intervals
     File? gnomad_hack = if select_first([gnomad, ""]) == "" then NONE else gnomad
     File? gnomad_idx_hack = if select_first([gnomad_idx, ""]) == "" then NONE else gnomad_idx
+    File? blacklist_vcf_hack = if select_first([blacklist_vcf, ""]) == "" then NONE else blacklist_vcf
+    File? blacklist_vcf_idx_hack = if select_first([blacklist_vcf_idx, ""]) == "" then NONE else blacklist_vcf_idx
     File? dragstr_model_hack = if select_first([dragstr_model, ""]) == "" then NONE else dragstr_model
+    File? gatk_override_hack = if select_first([gatk_override, ""]) == "" then NONE else gatk_override
     String? gcs_project_for_requester_pays_hack = if select_first([gcs_project_for_requester_pays, ""]) == "" then NONE else gcs_project_for_requester_pays
     File? permutect_training_dataset_truth_vcf_hack = if select_first([permutect_training_dataset_truth_vcf, ""]) == "" then NONE else permutect_training_dataset_truth_vcf
     File? permutect_training_dataset_truth_vcf_idx_hack = if select_first([permutect_training_dataset_truth_vcf_idx, ""]) == "" then NONE else permutect_training_dataset_truth_vcf_idx
     String? cached_plain_text_dataset_hack = if select_first([cached_plain_text_dataset, ""]) == "" then NONE else cached_plain_text_dataset
 
-    if (!defined(cached_plain_text_dataset)) {
+    if (!defined(cached_plain_text_dataset_hack)) {
         call m2.Mutect2 {
             input:
                 intervals = intervals_hack,
@@ -80,8 +83,8 @@ workflow MakeTrainingDataset {
                 tumor_reads_index = reads_index,
                 gnomad = gnomad_hack,
                 gnomad_idx = gnomad_idx_hack,
-                pon = blacklist_vcf,
-                pon_idx = blacklist_vcf_idx,
+                pon = blacklist_vcf_hack,
+                pon_idx = blacklist_vcf_idx_hack,
                 m2_extra_args = m2_extra_args,
                 dragstr_model = dragstr_model_hack,
                 make_bamout = make_bamout,
@@ -91,7 +94,7 @@ workflow MakeTrainingDataset {
                 permutect_training_dataset_truth_vcf_idx = permutect_training_dataset_truth_vcf_idx_hack,
                 skip_filtering = true,
                 gatk_docker = permutect_docker,
-                gatk_override = gatk_override,
+                gatk_override = gatk_override_hack,
                 scatter_count = scatter_count,
                 preemptible = preemptible,
                 max_retries =  max_retries,
@@ -106,7 +109,7 @@ workflow MakeTrainingDataset {
 
     call Preprocess {
         input:
-            training_dataset = select_first([cached_plain_text_dataset, Mutect2.permutect_training_dataset]),
+            training_dataset = select_first([cached_plain_text_dataset_hack, Mutect2.permutect_training_dataset]),
             permutect_docker = permutect_docker
     }
 
@@ -116,7 +119,7 @@ workflow MakeTrainingDataset {
         File? mutect_stats = Mutect2.mutect_stats
         File? permutect_contigs_table = Mutect2.permutect_contigs_table
         File? permutect_read_groups_table = Mutect2.permutect_read_groups_table
-        String plain_text_dataset = select_first([cached_plain_text_dataset, Mutect2.permutect_training_dataset])
+        String plain_text_dataset = select_first([cached_plain_text_dataset_hack, Mutect2.permutect_training_dataset])
         File train_tar = Preprocess.train_tar
     }
 
