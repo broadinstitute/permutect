@@ -138,13 +138,11 @@ class EvaluationMetrics:
         accuracy_metrics: AccuracyMetrics
         for epoch_type, accuracy_metrics in self.accuracy_metrics_by_epoch_type.items():
             for source in sources:
-                acc_fig, acc_axes = plt.subplots(
-                    2,
-                    len(Variation),
-                    sharex="all",
-                    sharey="all",
-                    squeeze=False,
-                    figsize=(2.5 * len(Variation), 2.5 * 2),
+                # make accuracy plots: overall figure is rows = label, columns = variant
+                # each subplot is color map of accuracy where x is ref count, y is alt count
+                acc_fig = plotting.label_and_variant_type_figure(
+                    lambda label, var_type, axis: accuracy_metrics.plot_accuracy(label, var_type, axis, source),
+                    labels=(Label.VARIANT, Label.ARTIFACT),
                 )
                 cal_fig, cal_axes = plt.subplots(
                     len(ref_count_bins),
@@ -162,16 +160,6 @@ class EvaluationMetrics:
                     dpi=200,
                 )
 
-                # make accuracy plots: overall figure is rows = label, columns = variant
-                # each subplot is color map of accuracy where x is ref count, y is alt count
-                accuracy_rows = [Label.VARIANT, Label.ARTIFACT]
-                accuracy_row_names = [label.name for label in accuracy_rows]
-                common_colormesh = None
-                for row, label in enumerate(accuracy_rows):
-                    for col, var_type in enumerate(Variation):
-                        common_colormesh = accuracy_metrics.plot_accuracy(label, var_type, acc_axes[row, col], source)
-                acc_fig.colorbar(common_colormesh)
-
                 for row, ref_count_bin in enumerate(ref_count_bins):
                     for col, alt_count_bin in enumerate(alt_count_bins):
                         accuracy_metrics.plot_calibration(cal_axes[row, col], ref_count_bin, alt_count_bin, source)
@@ -187,15 +175,6 @@ class EvaluationMetrics:
                 nonart_label = "sensitivity" if sens_prec else "non-artifact accuracy"
                 art_label = "precision" if sens_prec else "artifact accuracy"
 
-                variation_types = [var_type.name for var_type in Variation]
-                plotting.tidy_subplots(
-                    acc_fig,
-                    acc_axes,
-                    x_label="alt count",
-                    y_label="ref count",
-                    row_labels=accuracy_row_names,
-                    col_labels=variation_types,
-                )
                 plotting.tidy_subplots(
                     roc_fig,
                     roc_axes,

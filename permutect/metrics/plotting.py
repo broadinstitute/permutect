@@ -31,24 +31,14 @@ def legend_if_applicable(ax):
 def simple_plot(x_y_lab_tuples, x_label, y_label, title):
     fig = plt.figure()
     curve = fig.gca()
-    for x, y, lab in x_y_lab_tuples:
-        if lab is not None:
-            curve.plot(x, y, label=lab)
-        else:
-            curve.plot(x, y)
+    simple_plot_on_axis(curve, x_y_lab_tuples, x_label, y_label)
     curve.set_title(title)
-    curve.set_xlabel(x_label)
-    curve.set_ylabel(y_label)
-    legend_if_applicable(curve)
     return fig, curve
 
 
 def simple_plot_on_axis(ax, x_y_lab_tuples, x_label, y_label):
     for x, y, lab in x_y_lab_tuples:
-        if lab is not None:
-            ax.plot(x, y, label=lab)
-        else:
-            ax.plot(x, y)
+        ax.plot(x, y, label=lab)
     ax.set_xlabel(x_label)
     ax.set_ylabel(y_label)
     legend_if_applicable(ax)
@@ -63,6 +53,12 @@ def color_plot_2d_on_axis(ax, x_bounds, y_bounds, values, x_label, y_label, vmin
     return mesh
 
 
+def count_bins_color_plot_on_axis(ax, values_ra, vmin: float = None, vmax: float = None):
+    # color plot vs alt count (x) and ref count (y) bins of values indexed by ref count bin 'r' and alt count bin 'a'
+    x_bounds, y_bounds = np.array(ALT_COUNT_BIN_BOUNDS), np.array(REF_COUNT_BIN_BOUNDS)
+    return color_plot_2d_on_axis(ax, x_bounds, y_bounds, values_ra, None, None, vmin=vmin, vmax=vmax)
+
+
 def count_plot_on_axis(ax, counts_lra: Tensor, label: Label):
     """
     color plot vs alt count (x) and ref count (y) bins of the counts of one label, given counts indexed by label 'l',
@@ -72,23 +68,22 @@ def count_plot_on_axis(ax, counts_lra: Tensor, label: Label):
     vmin, vmax = -10, 0
     normalized_counts_ra = counts_lra[label] / torch.max(counts_lra) + 0.0001
     log_counts_ra = torch.clip(torch.log(normalized_counts_ra), min=vmin, max=vmax)
-    x_bounds, y_bounds = np.array(ALT_COUNT_BIN_BOUNDS), np.array(REF_COUNT_BIN_BOUNDS)
-    return color_plot_2d_on_axis(ax, x_bounds, y_bounds, log_counts_ra, None, None, vmin=vmin, vmax=vmax)
+    return count_bins_color_plot_on_axis(ax, log_counts_ra, vmin=vmin, vmax=vmax)
 
 
-def label_and_variant_type_figure(plot_on_axis) -> Figure:
+def label_and_variant_type_figure(plot_on_axis, labels=tuple(Label)) -> Figure:
     """
-    figure with a row of subplots for each Label and a column for each Variation, each made by
+    figure with a row of subplots for each of the labels and a column for each Variation, each made by
     plot_on_axis(label, var_type, axis) as a color plot vs alt count (x) and ref count (y) bins with a shared color bar
     """
-    figsize = (2.5 * len(Variation), 2.5 * len(Label))
-    fig, axes = plt.subplots(len(Label), len(Variation), sharex="all", sharey="all", squeeze=False, figsize=figsize)
+    figsize = (2.5 * len(Variation), 2.5 * len(labels))
+    fig, axes = plt.subplots(len(labels), len(Variation), sharex="all", sharey="all", squeeze=False, figsize=figsize)
     common_colormesh = None
-    for label, var_type in itertools.product(Label, Variation):
-        common_colormesh = plot_on_axis(label, var_type, axes[label, var_type])
+    for (row, label), var_type in itertools.product(enumerate(labels), Variation):
+        common_colormesh = plot_on_axis(label, var_type, axes[row, var_type])
     fig.colorbar(common_colormesh)
 
-    row_labels, col_labels = [label.name for label in Label], [var_type.name for var_type in Variation]
+    row_labels, col_labels = [label.name for label in labels], [var_type.name for var_type in Variation]
     tidy_subplots(fig, axes, x_label="alt count", y_label="ref count", row_labels=row_labels, col_labels=col_labels)
     return fig
 

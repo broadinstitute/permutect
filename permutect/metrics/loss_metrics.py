@@ -12,10 +12,8 @@ from torch.utils.tensorboard import SummaryWriter
 from permutect.data.batch import Batch
 from permutect.data.batch import BatchIndexedTensor
 from permutect.data.batch import BatchProperty
-from permutect.data.count_binning import ALT_COUNT_BIN_BOUNDS
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import NUM_LOGIT_BINS
-from permutect.data.count_binning import REF_COUNT_BIN_BOUNDS
 from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.count_binning import logits_from_bin_indices
 from permutect.data.count_binning import top_of_logit_bin
@@ -106,16 +104,7 @@ class LossMetrics:
         totals_ra = select_and_sum(self.totals_slvra, select=selection, sum=sum_dims)
         counts_ra = select_and_sum(self.counts_slvra, select=selection, sum=sum_dims)
         average_ra = masked_ratio(totals_ra, counts_ra)
-        return plotting.color_plot_2d_on_axis(
-            axis,
-            np.array(ALT_COUNT_BIN_BOUNDS),
-            np.array(REF_COUNT_BIN_BOUNDS),
-            average_ra,
-            None,
-            None,
-            vmin=0,
-            vmax=1,
-        )
+        return plotting.count_bins_color_plot_on_axis(axis, average_ra, vmin=0, vmax=1)
 
     def plot_counts(self, label: Label, var_type: Variation, axis, source: int = None):
         """
@@ -291,16 +280,7 @@ class AccuracyMetrics(BatchIndexedTensor):
             torch.sum(false_lrag[label], dim=-1),
         )
         acc_ra = masked_ratio(true_ra, true_ra + false_ra)
-        return plotting.color_plot_2d_on_axis(
-            axis,
-            np.array(ALT_COUNT_BIN_BOUNDS),
-            np.array(REF_COUNT_BIN_BOUNDS),
-            acc_ra,
-            None,
-            None,
-            vmin=0,
-            vmax=1,
-        )
+        return plotting.count_bins_color_plot_on_axis(axis, acc_ra, vmin=0, vmax=1)
 
     def plot_calibration(self, axis, ref_count_bin: int, alt_count_bin: int, source: int):
         sum_dims = (
