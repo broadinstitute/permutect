@@ -340,19 +340,17 @@ class EmbeddingMetrics:
             )
         )
 
-        indices_by_correct_status = defaultdict(list)
-
-        for n, correct_status in enumerate(self.correct_metadata):
-            indices_by_correct_status[correct_status].append(n)
-
-        # note that if we don't have labeled truth, everything is boring
-        all_indices = set(range(len(all_metadata)))
-        interesting_indices = set(
-            indices_by_correct_status[EmbeddingMetrics.TRUE_POSITIVE]
-            + indices_by_correct_status[EmbeddingMetrics.FALSE_POSITIVE]
-            + indices_by_correct_status[EmbeddingMetrics.FALSE_NEGATIVE_ARTIFACT]
+        # note that if we don't have labeled truth, everything is boring.  The order of status, then index, gives the
+        # sets the same iteration order, and so the same random samples, as before.
+        interesting_statuses = (
+            EmbeddingMetrics.TRUE_POSITIVE,
+            EmbeddingMetrics.FALSE_POSITIVE,
+            EmbeddingMetrics.FALSE_NEGATIVE_ARTIFACT,
         )
-        boring_indices = all_indices - interesting_indices
+        interesting_indices = {
+            n for status in interesting_statuses for n, s in enumerate(self.correct_metadata) if s == status
+        }
+        boring_indices = set(range(len(all_metadata))) - interesting_indices
 
         """if is_filter_variants:
             boring_indices = np.array(indices_by_correct_status["unknown"] + indices_by_correct_status[EmbeddingMetrics.TRUE_NEGATIVE_ARTIFACT])
@@ -368,73 +366,27 @@ class EmbeddingMetrics:
         stacked_features = torch.vstack(self.features)
         stacked_ref_features = torch.vstack(self.ref_features) if self.ref_features else None
 
-        # read average embeddings stratified by variant type
-        for variant_type in Variation:
-            variant_name = variant_type.name
-            indices = set([n for n, type_name in enumerate(self.type_metadata) if type_name == variant_name])
-
+        # read average embeddings stratified by variant type, then by alt count
+        groups = [("variant type " + var_type.name, self.type_metadata, var_type.name) for var_type in Variation]
+        count_names = [alt_count_bin_name(count_bin) for count_bin in range(NUM_ALT_COUNT_BINS)]
+        groups += [("alt count " + count_name, self.truncated_count_metadata, count_name) for count_name in count_names]
+        for group_name, group_metadata, group_value in groups:
+            indices = {n for n, value in enumerate(group_metadata) if value == group_value}
             interesting = interesting_indices & indices
             boring = boring_indices & indices
-            boring_count = max(len(interesting) // 3, 100) if is_filter_variants else len(boring)
-            boring_count = min(boring_count, len(boring))
-            if boring_count > 0:
-                boring_to_keep = np.array([int(n) for n in boring])[
-                    np.random.choice(len(boring), size=boring_count, replace=False)
-                ]
-            else:
-                boring_to_keep = np.array([], dtype=int)
+            boring_count = min(max(len(interesting) // 3, 100) if is_filter_variants else len(boring), len(boring))
+            boring_to_keep = np.random.choice(np.fromiter(boring, dtype=int), size=boring_count, replace=False)
+            idx = sample_indices_for_tensorboard(np.hstack((boring_to_keep, np.fromiter(interesting, dtype=int))))
 
-            idx = sample_indices_for_tensorboard(np.hstack((boring_to_keep, np.array([int(n) for n in interesting]))))
-
-            # skip variant types without data, e.g. indels in an SNV-only panel; tensorboard fails on empty embeddings
+            # skip groups without data, e.g. indels in an SNV-only panel; tensorboard fails on empty embeddings
             if len(idx) > 0:
-                summary_writer.add_embedding(
-                    stacked_features[idx],
-                    metadata=[all_metadata[round(n)] for n in idx.tolist()],
-                    metadata_header=["Labels", "Correctness", "Types", "Counts"],
-                    tag=prefix + "embedding for variant type " + variant_name,
-                    global_step=epoch,
-                )
-                if self.ref_features:
-                    summary_writer.add_embedding(
-                        stacked_ref_features[idx],
-                        metadata=[all_metadata[round(n)] for n in idx.tolist()],
-                        metadata_header=["Labels", "Correctness", "Types", "Counts"],
-                        tag=prefix + "ref embedding for variant type " + variant_name,
-                        global_step=epoch,
-                    )
-
-        # read average embeddings stratified by alt count
-        for count_bin in range(NUM_ALT_COUNT_BINS):
-            count_name = alt_count_bin_name(count_bin)
-            indices = set([n for n, alt_count in enumerate(self.truncated_count_metadata) if alt_count == count_name])
-            interesting = interesting_indices & indices
-            boring = boring_indices & indices
-            boring_count = max(len(interesting) // 3, 100) if is_filter_variants else len(boring)
-            boring_count = min(boring_count, len(boring))
-            if boring_count > 0:
-                boring_to_keep = np.array([int(n) for n in boring])[
-                    np.random.choice(len(boring), size=boring_count, replace=False)
-                ]
-            else:
-                boring_to_keep = np.array([], dtype=int)
-
-            idx = sample_indices_for_tensorboard(np.hstack((boring_to_keep, np.array([int(n) for n in interesting]))))
-
-            if len(idx) > 0:
-                summary_writer.add_embedding(
-                    stacked_features[idx],
-                    metadata=[all_metadata[round(n)] for n in idx.tolist()],
-                    metadata_header=["Labels", "Correctness", "Types", "Counts"],
-                    tag=prefix + "embedding for alt count " + count_name,
-                    global_step=epoch,
-                )
-
-                if self.ref_features:
-                    summary_writer.add_embedding(
-                        stacked_ref_features[idx],
-                        metadata=[all_metadata[round(n)] for n in idx.tolist()],
-                        metadata_header=["Labels", "Correctness", "Types", "Counts"],
-                        tag=prefix + "ref embedding for alt count " + count_name,
-                        global_step=epoch,
-                    )
+                metadata = [all_metadata[round(n)] for n in idx.tolist()]
+                for features, kind in ((stacked_features, "embedding"), (stacked_ref_features, "ref embedding")):
+                    if features is not None:
+                        summary_writer.add_embedding(
+                            features[idx],
+                            metadata=metadata,
+                            metadata_header=["Labels", "Correctness", "Types", "Counts"],
+                            tag=prefix + kind + " for " + group_name,
+                            global_step=epoch,
+                        )
