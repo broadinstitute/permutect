@@ -27,7 +27,7 @@ def main_without_parsing(args):
     # optional pretrained model to use as initialization
     pretrained_model_path = getattr(args, constants.PRETRAINED_ARTIFACT_MODEL_NAME)
 
-    pretrained_model = None if pretrained_model_path is None else load_model(pretrained_model_path)
+    model = None if pretrained_model_path is None else load_model(pretrained_model_path)
 
     tensorboard_dir = getattr(args, constants.TENSORBOARD_DIR_NAME)
     summary_writer = SummaryWriter(tensorboard_dir)
@@ -39,11 +39,7 @@ def main_without_parsing(args):
     valid_dataset = ReadsDataset(memory_mapped_data, num_folds=num_folds, folds_to_use=last_fold_only(num_folds))
     subset_timer.report("Time to create training and validation datasets")
 
-    model: ArtifactModel
-    if pretrained_model is not None:
-        pretrained_model.assert_compatible(train_dataset)
-        model = pretrained_model
-    else:
+    if model is None:
         model = ArtifactModel(
             params=params,
             num_read_features=train_dataset.num_read_features(),
@@ -51,6 +47,8 @@ def main_without_parsing(args):
             haplotypes_length=train_dataset.haplotypes_length(),
             device=gpu_if_available(),
         )
+    else:
+        model.assert_compatible(train_dataset)
     report_device(model._device)
 
     train_artifact_model(
