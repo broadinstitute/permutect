@@ -56,11 +56,3 @@ class NormalArtifactSpectrum(nn.Module):
         tumor_log_lks_b = beta_binomial_log_lk(n=tumor_depths_b, k=tumor_alt_counts_b, alpha=alpha_b, beta=beta_b)
 
         return tumor_log_lks_b, normal_log_lks_b
-
-    # TODO: move this method to plotting
-    # def density_plot_on_axis(self, ax):
-    #    tumor_fractions_2d, normal_fractions_2d = self.get_tumor_and_normal_fractions_bs(batch_size=1, num_samples=100000)
-    #    tumor_f = torch.squeeze(tumor_fractions_2d).detach().numpy()
-    #    normal_f = torch.squeeze(normal_fractions_2d).detach().numpy()
-    #
-    #    ax.hist2d(tumor_f, normal_f, bins=(100, 100), range=[[0, 1], [0, 1]], density=True, cmap=plt.cm.jet)
