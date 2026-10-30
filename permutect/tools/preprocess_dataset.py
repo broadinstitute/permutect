@@ -1,5 +1,4 @@
 import argparse
-from typing import List
 
 from permutect import constants
 from permutect.data.plain_text_data import make_normalized_mmap_data
@@ -42,17 +41,9 @@ def parse_arguments(argv=None):
     return args
 
 
-def do_work(plain_text_dataset_files, output_tarfile, sources: List[int]):
-    memory_mapped_data = make_normalized_mmap_data(plain_text_dataset_files, sources=sources)
-    memory_mapped_data.save_to_tarfile(output_tarfile)
-
-
 def main_without_parsing(args):
-    training_datasets = getattr(args, constants.TRAINING_DATASETS_NAME)
-    output_file = getattr(args, constants.OUTPUT_NAME)
-    sources = getattr(args, constants.SOURCES_NAME)
-
-    do_work(training_datasets, output_file, sources)
+    datasets, sources = getattr(args, constants.TRAINING_DATASETS_NAME), getattr(args, constants.SOURCES_NAME)
+    make_normalized_mmap_data(datasets, sources=sources).save_to_tarfile(getattr(args, constants.OUTPUT_NAME))
 
 
 def main():
