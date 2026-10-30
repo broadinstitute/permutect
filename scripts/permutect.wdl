@@ -440,7 +440,7 @@ task Concordance {
     	Int preemptible = 0
 	}
 
-    command {
+    command <<<
         # this shouldn't be necessary but the Terra hacks on top of Terra hacks to deal with all the bugs recently
         # have reached a breaking point
         gatk IndexFeatureFile -I ~{eval_vcf}
@@ -458,31 +458,23 @@ task Concordance {
         echo ~{concordance_header} > TMP
         cat TMP summary_no_header.txt > summary.txt
 
-        grep '#' tpfn.vcf > HEAD
-        grep STATUS=FN tpfn.vcf > BODY
-        cat HEAD BODY > false_negatives.vcf
-
-        grep '#' tpfp.vcf > HEAD
-        grep STATUS=FP tpfp.vcf > BODY
-        cat HEAD BODY > false_positives.vcf
-
-        grep '#' tpfp.vcf > HEAD
-        grep STATUS=TP tpfp.vcf > BODY
-        cat HEAD BODY > true_positives.vcf
-
-        grep '#' ftnfn.vcf > HEAD
-        grep STATUS=FFN ftnfn.vcf > BODY
-        cat HEAD BODY > filtered_false_negatives.vcf
-        grep STATUS=FTN ftnfn.vcf > BODY
-        cat HEAD BODY > filtered_true_negatives.vcf
-
-        for vcf in false_negatives.vcf false_positives.vcf true_positives.vcf filtered_false_negatives.vcf filtered_true_negatives.vcf; do
+        # write the header and the records with a given STATUS of a Concordance output to a new indexed VCF
+        extract_status() {
+            grep '#' $1 > HEAD
+            grep STATUS=$2 $1 > BODY
+            cat HEAD BODY > $3
             #HACK: IndexFeatureFile throws error if vcf is empty, which is possible here especially in the case of false negatives
-            gatk --java-options "-Xmx2g" SelectVariants -V $vcf -O tmp.vcf
-            mv tmp.vcf $vcf
-            mv tmp.vcf.idx $vcf.idx
-        done
-    }
+            gatk --java-options "-Xmx2g" SelectVariants -V $3 -O tmp.vcf
+            mv tmp.vcf $3
+            mv tmp.vcf.idx $3.idx
+        }
+
+        extract_status tpfn.vcf FN false_negatives.vcf
+        extract_status tpfp.vcf FP false_positives.vcf
+        extract_status tpfp.vcf TP true_positives.vcf
+        extract_status ftnfn.vcf FFN filtered_false_negatives.vcf
+        extract_status ftnfn.vcf FTN filtered_true_negatives.vcf
+    >>>
 
     runtime {
         memory: "5 GB"
