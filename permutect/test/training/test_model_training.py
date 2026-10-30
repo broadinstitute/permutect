@@ -1,10 +1,16 @@
+import itertools
+from types import SimpleNamespace
+
 import pytest
 import torch
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.tensorboard import SummaryWriter
 
 from permutect.architecture.artifact_model import load_model
+from permutect.data.batch import Batch
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.reads_dataset import ReadsDataset
+from permutect.test.host_reads import permutect_calls
 from permutect.test.test_file_names import PERMUTECT_V0_9_2_ARTIFACT_MODEL
 from permutect.test.test_file_names import PREPROCESSED_DATA
 from permutect.training import model_training
@@ -82,3 +88,42 @@ def test_evaluation_only_runs_when_plots_are_due(memory_mapped_data, tmp_path, m
         memory_mapped_data, tmp_path, monkeypatch, epoch=1, epochs_per_evaluation=5, last_epoch=2
     )
     assert num_evaluations == 0
+
+
+def count_permutect_item_calls(memory_mapped_data, num_batches: int, tensorboard_dir, monkeypatch) -> int:
+    """
+    the number of .item() calls by permutect's own code in a training epoch with num_batches batches of 16 data
+    """
+    device = torch.device("cpu")
+    model = load_model(PERMUTECT_V0_9_2_ARTIFACT_MODEL, device=device)
+    data = list(itertools.islice(memory_mapped_data.generate(), 16 * num_batches))
+    optimizer = torch.optim.AdamW(model.parameters())
+    with permutect_calls(monkeypatch, "item") as calls:
+        # not the first epoch, which doesn't report very large losses, nor one that makes plots
+        model_training.train_one_epoch(
+            Balancer(num_sources=1, device=device),
+            checkpoint=SimpleNamespace(
+                save_checkpoint_if_needed=lambda *a: None, load_checkpoint_if_needed=lambda *a: None
+            ),
+            device=device,
+            downsampler=Downsampler(num_sources=1),
+            epoch=2,
+            epoch_type=Epoch.TRAIN,
+            epochs_per_evaluation=5,
+            last_epoch=3,
+            model=model,
+            num_sources=1,
+            summary_writer=SummaryWriter(tensorboard_dir),
+            train_loader=[Batch(data[n * 16 : (n + 1) * 16]) for n in range(num_batches)],
+            train_optimizer=optimizer,
+            train_scheduler=ReduceLROnPlateau(optimizer),
+            valid_loader=None,
+        )
+    return len(calls)
+
+
+def test_training_reads_no_values_for_each_batch(memory_mapped_data, tmp_path, monkeypatch):
+    # .item() makes the CPU wait for the GPU, so permutect's training code reads values once per epoch, not for each
+    # batch.  PyTorch's optimizers also call .item() every step, but on step counters on the CPU, which don't wait.
+    one_batch = count_permutect_item_calls(memory_mapped_data, 1, tmp_path / "one", monkeypatch)
+    assert count_permutect_item_calls(memory_mapped_data, 3, tmp_path / "three", monkeypatch) == one_batch

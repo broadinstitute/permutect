@@ -11,6 +11,7 @@ from permutect.architecture.artifact_model import ArtifactModel
 from permutect.architecture.artifact_model import load_model
 from permutect.architecture.posterior_model import PosteriorModel
 from permutect.data.datum import Data
+from permutect.metrics.posterior_result import PosteriorResult
 from permutect.test.architecture.test_posterior_model_priors import make_batch
 from permutect.test.test_file_names import *
 from permutect.tools import filter_variants
@@ -19,7 +20,7 @@ from permutect.utils.enums import Call
 from permutect.utils.enums import Variation
 
 
-def test_filtering_on_dream1_chr20():
+def test_filtering_on_dream1_chr20(monkeypatch, capsys):
     artifact_model = PERMUTECT_V0_9_2_ARTIFACT_MODEL
 
     permutect_vcf = tempfile.NamedTemporaryFile()
@@ -54,7 +55,26 @@ def test_filtering_on_dream1_chr20():
         ]
     )
 
+    # every PosteriorResult that filter_variants makes
+    posterior_results = []
+
+    class RecordedPosteriorResult(PosteriorResult):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            posterior_results.append(self)
+
+    monkeypatch.setattr(filter_variants, "PosteriorResult", RecordedPosteriorResult)
     filter_variants.main_without_parsing(filtering_args)
+    # the log says which device it ran on, so that a job with a GPU that runs on the CPU is visible
+    assert "Running on " in capsys.readouterr().out
+
+    # the values written to the VCF are plain numbers copied from the device once per batch.  Rows of device tensors
+    # were read number by number while writing the VCF, which made the CPU wait for the GPU many times per variant.
+    assert posterior_results
+    for result in posterior_results:
+        for values in (result.posterior_probabilities, result.log_priors, result.spectra_lls, result.normal_lls):
+            assert isinstance(values, list) and all(isinstance(value, float) for value in values)
+        assert result.embedding.device.type == "cpu"
 
     # the output has one record per input record, in order.  Variants without a Permutect posterior, such as those
     # missing from the dataset, keep the filters they had in the input instead of becoming PASS

@@ -10,6 +10,7 @@ from permutect.architecture.posterior_model import best_error_probability_thresh
 from permutect.architecture.posterior_model_priors import PosteriorModelPriors
 from permutect.data.datum import Data
 from permutect.test.architecture.test_posterior_model_priors import make_batch
+from permutect.test.host_reads import permutect_calls
 from permutect.utils.enums import Call
 from permutect.utils.enums import Variation
 
@@ -150,3 +151,26 @@ def test_theoretical_roc_has_sensitivity_on_x(monkeypatch):
             sensitivity, precision = np.array(curve.get_xdata()), np.array(curve.get_ydata())
             assert np.all(np.diff(sensitivity) >= 0) and np.all(np.diff(precision) <= 1e-6), tag
             assert sensitivity[-1] > sensitivity[0] and not math.isnan(precision[0]), tag
+
+
+def posterior_loader(num_batches: int) -> list:
+    values = {Data.ORIGINAL_DEPTH: 30, Data.ORIGINAL_ALT_COUNT: 5, Data.ORIGINAL_NORMAL_DEPTH: 30, Data.MAF: 0.5}
+    return [make_batch([0.01, 0.1, 0.5], values) for _ in range(num_batches)]
+
+
+@pytest.mark.parametrize("posterior_pass", ["learn_priors_and_spectra", "calculate_probability_thresholds"])
+def test_posterior_passes_read_no_values_for_each_batch(monkeypatch, posterior_pass):
+    # copying values to the CPU makes the CPU wait for the GPU, so the passes over the posterior data copy values for
+    # each iteration or at the end, not for every batch
+    def num_copies(num_batches: int) -> int:
+        model = make_posterior_model(torch.device("cpu"))
+        # the context-dependent priors' M step fits a PyMC model, which is slow and doesn't depend on the batches
+        monkeypatch.setattr(model.priors, "enable_context_dependent_snv_priors", lambda: None)
+        with permutect_calls(monkeypatch, "item", "tolist", "cpu") as calls:
+            if posterior_pass == "learn_priors_and_spectra":
+                model.learn_priors_and_spectra(posterior_loader(num_batches), 2, ignored_to_non_ignored_ratio=10)
+            else:
+                model.calculate_probability_thresholds(posterior_loader(num_batches))
+        return len(calls)
+
+    assert num_copies(1) == num_copies(3)

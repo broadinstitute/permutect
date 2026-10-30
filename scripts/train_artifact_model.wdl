@@ -109,7 +109,9 @@ task Train {
         cpu: select_first([cpu, 1])
         gpuType: "nvidia-tesla-t4"
         gpuCount: select_first([gpu_count, 1])
-        nvidiaDriverVersion: "535.183.01"
+        # at least the driver that the docker image's CUDA needs.  Cromwell on Google Batch, and so Terra, ignores this
+        # and installs Batch's default driver.
+        nvidiaDriverVersion: "580.65.06"
         zones : ["us-central1-a", "us-central1-b", "us-central1-c"]
     }
 

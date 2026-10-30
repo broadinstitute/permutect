@@ -140,6 +140,9 @@ def train_one_epoch(
     loss_recorder = LossRecorder(device, num_sources)
     model.set_epoch_type(epoch_type, trainable_params)
     loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
+    # very large losses are tracked on the device, so that checking each batch doesn't make the CPU wait for the GPU
+    largest_average_loss = torch.zeros((), device=model._device)
+    num_very_large_losses = torch.zeros((), device=model._device, dtype=torch.long)
 
     parent_batch: Batch
     for parent_batch in tqdm(prefetch_generator(loader, device=model._device), mininterval=60, total=len(loader)):
@@ -152,13 +155,15 @@ def train_one_epoch(
             loss_recorder.record(output, losses, batch)
 
             if epoch_type == Epoch.TRAIN:
-                average_loss = losses.total_loss.item() / batch.size()
-                if epoch > 1 and average_loss > 100.0:
-                    print(f"Very large batch loss {average_loss:.2f}.")
+                average_loss = losses.total_loss.detach() / batch.size()
+                largest_average_loss = torch.maximum(largest_average_loss, average_loss)
+                num_very_large_losses += average_loss > 100.0
 
                 backpropagate(train_optimizer, losses.total_loss, params_to_clip=model.parameters())
         # done with this downsampled batch
     # done with this parent batch
+    if epoch_type == Epoch.TRAIN and epoch > 1 and num_very_large_losses.item() > 0:
+        print(f"{num_very_large_losses.item()} batches had very large losses, up to {largest_average_loss.item():.2f}.")
     check_for_nan(model)
     if epoch_type == Epoch.TRAIN:
         mean_loss = loss_recorder.mean_loss()

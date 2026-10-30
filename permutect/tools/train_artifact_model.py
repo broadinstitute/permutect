@@ -11,6 +11,7 @@ from permutect.data.reads_dataset import all_but_last_fold
 from permutect.data.reads_dataset import last_fold_only
 from permutect.misc_utils import Timer
 from permutect.misc_utils import gpu_if_available
+from permutect.misc_utils import report_device
 from permutect.misc_utils import report_memory_usage
 from permutect.parameters import add_model_params_to_parser
 from permutect.parameters import add_training_params_to_parser
@@ -50,6 +51,7 @@ def main_without_parsing(args):
             haplotypes_length=train_dataset.haplotypes_length(),
             device=gpu_if_available(),
         )
+    report_device(model._device)
 
     train_artifact_model(
         model,

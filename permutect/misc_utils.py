@@ -58,6 +58,22 @@ def resolve_device(device=None) -> torch.device:
     return gpu_if_available() if device is None else torch.device(device)
 
 
+def report_device(device: torch.device):
+    """
+    Print the device a tool runs on, so that a job with a GPU that runs on the CPU instead is visible in its log.  That
+    happens, for example, when the GPU driver is older than the CUDA version of PyTorch requires.
+    """
+    if device.type == "cuda":
+        print(f"Running on GPU {torch.cuda.get_device_name(device)} with CUDA {torch.version.cuda}.")
+    elif torch.version.cuda is None:
+        print(f"Running on {device.type}.")
+    else:
+        print(
+            f"Running on {device.type}.  This PyTorch was built for CUDA {torch.version.cuda}, but CUDA is unavailable: "
+            "there is no GPU, or its driver is too old for this CUDA version."
+        )
+
+
 def float_dtype(device=None) -> torch.dtype:
     """
     The floating-point dtype of models and of batches sent to them on a device
@@ -91,7 +107,7 @@ class StreamingAverage:
         self._count += weight
         self._sum += value * weight
 
-    def record_sum(self, value_sum: float, count):
+    def record_sum(self, value_sum: float | Tensor, count):
         self._count += count
         self._sum += value_sum
 

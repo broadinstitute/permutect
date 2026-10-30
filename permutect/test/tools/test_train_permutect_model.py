@@ -10,7 +10,7 @@ from permutect.tools import train_artifact_model
 MAKE_NEW_ARTIFACT_MODEL = False
 
 
-def test_train_artifact_model():
+def test_train_artifact_model(capsys):
     saved_model = tempfile.NamedTemporaryFile() if not MAKE_NEW_ARTIFACT_MODEL else SMALL_ARTIFACT_MODEL
     training_tensorboard_dir = tempfile.TemporaryDirectory()
 
@@ -46,6 +46,8 @@ def test_train_artifact_model():
     argv += ["--" + constants.TENSORBOARD_DIR_NAME, training_tensorboard_dir.name]
 
     train_artifact_model.main_without_parsing(train_artifact_model.parse_arguments(argv))
+    # the log says which device it ran on, so that a job with a GPU that runs on the CPU is visible
+    assert "Running on " in capsys.readouterr().out
 
     events = EventAccumulator(training_tensorboard_dir.name)
     events.Reload()

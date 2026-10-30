@@ -56,6 +56,8 @@ class Batch:
 
         # assert that the decompression got the expected tensor shape
         assert self.reads_re.shape[1] == data[0].num_read_features()
+        # the numbers of ref and alt reads, known here on the CPU so that using them doesn't make the CPU wait for the GPU
+        self.ref_and_alt_totals = (int(torch.sum(self.get(Data.REF_COUNT))), int(torch.sum(self.get(Data.ALT_COUNT))))
         self._finish_initialization_from_arrays()
 
     def _finish_initialization_from_arrays(self):
@@ -393,10 +395,10 @@ class DownsampledBatch(Batch):
             original_batch.get(Data.REF_COUNT),
             original_batch.get(Data.ALT_COUNT),
         )
-        old_total_ref, old_total_alt = torch.sum(old_ref_counts), torch.sum(old_alt_counts)
+        old_total_ref, old_total_alt = original_batch.ref_and_alt_totals
 
-        ref_probs_r = torch.repeat_interleave(ref_fracs_b, dim=0, repeats=old_ref_counts)
-        alt_probs_r = torch.repeat_interleave(alt_fracs_b, dim=0, repeats=old_alt_counts)
+        ref_probs_r = torch.repeat_interleave(ref_fracs_b, dim=0, repeats=old_ref_counts, output_size=old_total_ref)
+        alt_probs_r = torch.repeat_interleave(alt_fracs_b, dim=0, repeats=old_alt_counts, output_size=old_total_alt)
         keep_ref_mask = torch.zeros(old_total_ref, device=self.device, dtype=torch.int64)
         keep_ref_mask.bernoulli_(p=ref_probs_r)  # fills in-place with Bernoulli samples
         keep_alt_mask = torch.zeros(old_total_alt, device=self.device, dtype=torch.int64)
@@ -409,25 +411,26 @@ class DownsampledBatch(Batch):
         # gives mask indices 1, 4, 10, 15 to set to 1
         random_int = randint(0, 100)
         alt_ends = torch.cumsum(old_alt_counts, dim=0)
-        alt_override_idx = (
-            alt_ends
-            - torch.remainder(torch.tensor([random_int], device=self.device, dtype=torch.int64), old_alt_counts)
-            - 1
-        )
+        alt_override_idx = alt_ends - torch.remainder(random_int, old_alt_counts) - 1
         keep_alt_mask[alt_override_idx] = 1
 
         # the alt counts are the sums of the mask within the ranges of each datum
         self.ref_counts = (
-            torch.segment_reduce(keep_ref_mask.float(), reduce="sum", lengths=old_ref_counts).round().int()
+            torch.segment_reduce(keep_ref_mask.float(), reduce="sum", lengths=old_ref_counts, unsafe=True).round().int()
         )
         self.alt_counts = (
-            torch.segment_reduce(keep_alt_mask.float(), reduce="sum", lengths=old_alt_counts).round().int()
+            torch.segment_reduce(keep_alt_mask.float(), reduce="sum", lengths=old_alt_counts, unsafe=True).round().int()
         )
         # randomly assign ref reads to keep
 
+        # the number of kept reads is random, so the CPU waits for the GPU once, here, to size the downsampled reads
+        self.ref_and_alt_totals = tuple(torch.stack((torch.sum(self.ref_counts), torch.sum(self.alt_counts))).tolist())
+        kept_ref, kept_alt = self.ref_and_alt_totals
+
+        # a stable sort puts the indices of the kept reads first, in order, without waiting for the GPU like torch.nonzero.
         # reads_re holds all ref reads of the batch followed by all alt reads, so alt indices start after the refs
-        kept_ref_indices = torch.nonzero(keep_ref_mask).view(-1)
-        kept_alt_indices = old_total_ref + torch.nonzero(keep_alt_mask).view(-1)
+        kept_ref_indices = torch.argsort(keep_ref_mask, descending=True, stable=True)[:kept_ref]
+        kept_alt_indices = old_total_ref + torch.argsort(keep_alt_mask, descending=True, stable=True)[:kept_alt]
 
         self.read_indices = torch.hstack((kept_ref_indices, kept_alt_indices))
 

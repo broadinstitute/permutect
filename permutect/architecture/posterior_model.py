@@ -206,7 +206,8 @@ class PosteriorModel(torch.nn.Module):
 
                 backpropagate(optimizer, loss)
 
-                epoch_loss.record_sum(batch.size() * loss.detach().item(), batch.size())
+                # the sum stays on the device, so that recording it doesn't make the CPU wait for the GPU
+                epoch_loss.record_sum(batch.size() * loss.detach(), batch.size())
             # iteration over posterior dataloader finished
 
             self.priors.update_priors_m_step(
@@ -252,20 +253,21 @@ class PosteriorModel(torch.nn.Module):
         recall_weight: float = 1.0,
     ):
         self.train(False)
-        error_probs_by_type = {var_type: [] for var_type in Variation}  # includes both artifact and seq errors
+        # of each batch, on the device until the end; errors are artifacts and seq errors
+        error_probs, var_types = [], []
 
         # expected counts for the theoretical ROC curves, ie the ROC curves if the error probabilities were perfectly
         # calibrated: a variant with error probability p counts as 1 - p non-errors (VARIANT) and p errors (ARTIFACT)
-        theoretical_metrics = AccuracyMetrics.create(num_sources=1, device=torch.device("cpu"))
+        theoretical_metrics = AccuracyMetrics.create(num_sources=1, device=self._device)
 
         batch: Batch
         batches = prefetch_generator(posterior_loader, device=self._device)
         for batch in tqdm(batches, mininterval=10, total=len(posterior_loader)):
             # 0th column is true variant, subtract it from 1 to get error prob
-            error_probs_b = self.error_probabilities_b(batch, germline_mode).cpu()
-            var_types_b = batch.get(Data.VARIANT_TYPE).cpu()
-            for var_type, error_prob in zip(var_types_b.tolist(), error_probs_b.tolist()):
-                error_probs_by_type[var_type].append(error_prob)
+            error_probs_b = self.error_probabilities_b(batch, germline_mode)
+            var_types_b = batch.get(Data.VARIANT_TYPE)
+            error_probs.append(error_probs_b)
+            var_types.append(var_types_b)
 
             # TODO: should this be the original alt counts instead?
             indices = BatchIndices(
@@ -273,7 +275,7 @@ class PosteriorModel(torch.nn.Module):
                 labels=torch.full_like(var_types_b, Label.VARIANT),
                 var_types=var_types_b,
                 ref_counts=torch.zeros_like(var_types_b),
-                alt_counts=batch.get(Data.ALT_COUNT).cpu(),
+                alt_counts=batch.get(Data.ALT_COUNT),
             )
             error_logits_b = torch.logit(error_probs_b, eps=LOGIT_EPS)
             indices.increment_tensor(theoretical_metrics, values=1 - error_probs_b, logits=error_logits_b)
@@ -282,8 +284,12 @@ class PosteriorModel(torch.nn.Module):
                 theoretical_metrics, values=error_probs_b, labels=artifact_labels_b, logits=error_logits_b
             )
 
+        # copied to the CPU once, rather than for every batch, which would make the CPU wait for the GPU each time
+        error_probs_n = torch.cat(error_probs).cpu() if error_probs else torch.zeros(0)
+        var_types_n = torch.cat(var_types).cpu() if var_types else torch.zeros(0, dtype=torch.long)
+        theoretical_metrics = theoretical_metrics.cpu()
         thresholds_by_type = {
-            var_type: best_error_probability_threshold(error_probs_by_type[var_type], recall_weight)
+            var_type: best_error_probability_threshold(error_probs_n[var_types_n == var_type].tolist(), recall_weight)
             for var_type in Variation
         }
         roc_fig, roc_axes = plt.subplots(1, len(Variation), sharex="all", sharey="all", squeeze=False)
