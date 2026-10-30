@@ -117,7 +117,6 @@ def test_add_at_index_edge_cases():
 
 
 def test_downsample_tensor():
-    np.random.seed(0)
     x = np.arange(20).reshape(10, 2)
     result = downsample_tensor(x, 4)
     assert result.shape == (4, 2)
@@ -130,8 +129,8 @@ def test_downsample_tensor():
 
 
 def test_downsample_tensor_is_random():
-    np.random.seed(0)
     x = np.arange(100).reshape(50, 2)
+    # ten draws all being the same ordered 5 of 50 rows has probability about 10^-76
     subsets = {tuple(downsample_tensor(x, 5)[:, 0]) for _ in range(10)}
     assert len(subsets) > 1
 
