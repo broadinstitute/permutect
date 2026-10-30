@@ -61,8 +61,6 @@ def parse_model_params(args) -> ModelParameters:
 def add_model_params_to_parser(parser):
     parser.add_argument(
         "--" + constants.PRETRAINED_ARTIFACT_MODEL_NAME,
-        required=False,
-        type=str,
         help="optional pretrained model to initialize training",
     )
     parser.add_argument(
@@ -110,7 +108,6 @@ def add_model_params_to_parser(parser):
     parser.add_argument(
         "--" + constants.REF_SEQ_LAYER_STRINGS_NAME,
         nargs="+",
-        type=str,
         default=DEFAULT_REF_SEQ_LAYERS,
         help="list of strings specifying convolution layers of the reference sequence embedding.  For example "
         "convolution/kernel_size=3/out_channels=64 pool/kernel_size=2 leaky_relu "
@@ -169,7 +166,7 @@ def add_training_params_to_parser(parser):
         default=0.0,
         help="weight decay",
     )
-    parser.add_argument("--" + constants.BATCH_SIZE_NAME, type=int, default=2048, required=False, help="batch size")
+    parser.add_argument("--" + constants.BATCH_SIZE_NAME, type=int, default=2048, help="batch size")
     parser.add_argument(
         "--" + constants.NUM_WORKERS_NAME,
         type=int,
@@ -186,8 +183,6 @@ def add_training_params_to_parser(parser):
     parser.add_argument(
         "--" + constants.TRAINABLE_PARAMETERS_NAME,
         nargs="*",
-        type=str,
         choices=[parameter_set.name for parameter_set in ParameterSet],
-        required=False,
         help="zero or more parameter set types to be re-fit in test time domain adaptation",
     )

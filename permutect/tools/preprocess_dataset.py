@@ -17,7 +17,6 @@ def parse_arguments(argv=None):
     parser.add_argument(
         "--" + constants.TRAINING_DATASETS_NAME,
         nargs="+",
-        type=str,
         required=True,
         help="list of plain text data files",
     )
@@ -25,13 +24,10 @@ def parse_arguments(argv=None):
         "--" + constants.SOURCES_NAME,
         nargs="+",
         type=int,
-        required=False,
         help="integer sources corresponding to plain text data files for distinguishing different sequencing conditions",
     )
     parser.add_argument(
         "--" + constants.OUTPUT_NAME,
-        type=str,
-        default=None,
         required=True,
         help="path to output tarfile of training data",
     )

@@ -84,37 +84,31 @@ def parse_arguments(argv=None):
     parser.add_argument("--" + constants.OUTPUT_NAME, required=True, help="path to output filtered VCF")
     parser.add_argument(
         "--" + constants.TENSORBOARD_DIR_NAME,
-        type=str,
         default="tensorboard",
-        required=False,
         help="path to output tensorboard",
     )
     parser.add_argument(
         "--" + constants.NUM_SPECTRUM_ITERATIONS_NAME,
         type=int,
         default=10,
-        required=False,
         help="number of epochs for fitting allele fraction spectra",
     )
     parser.add_argument(
         "--" + constants.SPECTRUM_LEARNING_RATE_NAME,
         type=float,
         default=0.001,
-        required=False,
         help="learning rate for fitting allele fraction spectra",
     )
     parser.add_argument(
         "--" + constants.INITIAL_LOG_VARIANT_PRIOR_NAME,
         type=float,
         default=-10.0,
-        required=False,
         help="initial value for natural log prior of somatic variants",
     )
     parser.add_argument(
         "--" + constants.INITIAL_LOG_ARTIFACT_PRIOR_NAME,
         type=float,
         default=-10.0,
-        required=False,
         help="initial value for natural log prior of artifacts",
     )
     parser.add_argument(
@@ -126,13 +120,11 @@ def parse_arguments(argv=None):
     )
     parser.add_argument(
         "--" + constants.MAF_SEGMENTS_NAME,
-        required=False,
         help="minor allele fraction segmentation from GATK ModelSegments (modelFinal.seg) or CalculateContamination.  "
         "Useful for modeling germline variation as the minor allele fraction determines the distribution of germline allele counts.",
     )
     parser.add_argument(
         "--" + constants.NORMAL_MAF_SEGMENTS_NAME,
-        required=False,
         help="minor allele fraction segmentation of the normal/control sample, in the same formats as --"
         + constants.MAF_SEGMENTS_NAME,
     )
@@ -147,13 +139,11 @@ def parse_arguments(argv=None):
         "--" + constants.RECALL_WEIGHT_NAME,
         type=float,
         default=1.0,
-        required=False,
         help="Relative weight of recall vs precision in optimizing F_beta score.",
     )
     parser.add_argument(
         "--" + constants.HET_BETA_NAME,
         type=float,
-        required=False,
         help="beta shape parameter for germline spectrum beta binomial if we want to override binomial",
     )
 
