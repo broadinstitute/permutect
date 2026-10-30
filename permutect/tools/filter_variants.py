@@ -499,6 +499,8 @@ def apply_filtering_to_vcf(
         )
     }
     info_fields[ARTIFACT_LOD_INFO_KEY] = ("Float", "A", "Permutect artifact log odds")
+    # INFO values to 3 decimal places, separated by commas
+    format_values = lambda values: ",".join(f"{value:.3f}" for value in values)
     filter_descriptions = {name: name for n, name in enumerate(FILTER_NAMES) if n != passing_call_type}
     editor = VcfEditor(input_vcf, output_vcf, info_fields, filter_descriptions)
 
@@ -517,17 +519,13 @@ def apply_filtering_to_vcf(
         if encoding in encoding_to_posterior_results:
             posterior_result = encoding_to_posterior_results[encoding]
             post_probs = posterior_result.posterior_probabilities
-            v.INFO[POST_PROB_INFO_KEY] = ",".join(map(lambda prob: "{:.3f}".format(prob), post_probs))
-            v.INFO[LOG_PRIOR_INFO_KEY] = ",".join(map(lambda pri: "{:.3f}".format(pri), posterior_result.log_priors))
-            v.INFO[SPECTRA_LOG_LIKELIHOOD_INFO_KEY] = ",".join(
-                map(lambda ll: "{:.3f}".format(ll), posterior_result.spectra_lls)
-            )
+            v.INFO[POST_PROB_INFO_KEY] = format_values(post_probs)
+            v.INFO[LOG_PRIOR_INFO_KEY] = format_values(posterior_result.log_priors)
+            v.INFO[SPECTRA_LOG_LIKELIHOOD_INFO_KEY] = format_values(posterior_result.spectra_lls)
             # known artifacts have an infinite artifact logit, which doesn't come from the artifact model
             if math.isfinite(posterior_result.artifact_logit):
-                v.INFO[ARTIFACT_LOD_INFO_KEY] = "{:.3f}".format(posterior_result.artifact_logit)
-            v.INFO[NORMAL_LOG_LIKELIHOOD_INFO_KEY] = ",".join(
-                map(lambda ll: "{:.3f}".format(ll), posterior_result.normal_lls)
-            )
+                v.INFO[ARTIFACT_LOD_INFO_KEY] = f"{posterior_result.artifact_logit:.3f}"
+            v.INFO[NORMAL_LOG_LIKELIHOOD_INFO_KEY] = format_values(posterior_result.normal_lls)
 
             label = Label(posterior_result.label)  # this is the Label enum, might be UNLABELED
             variant_type = find_variant_type(v)
