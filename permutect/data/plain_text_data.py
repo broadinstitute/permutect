@@ -40,6 +40,7 @@ from typing import List
 import numpy as np
 import torch
 from sklearn.preprocessing import QuantileTransformer
+from tqdm import tqdm
 
 from permutect.data.count_binning import cap_alt_count
 from permutect.data.count_binning import cap_ref_count
@@ -109,19 +110,14 @@ def read_raw_unnormalized_data(
     generator that yields data from a plain text dataset file.
     """
     with open(dataset_file) as file:
-        n = 0
         while label_str := file.readline().strip():
             label = Label[label_str]
             passes_label_filter = label == Label.ARTIFACT or not only_artifacts
-            n += 1
 
             # contig:position,ref->alt
             variant_line = file.readline().strip()
             locus, mutation = variant_line.split(",")
             contig, position = map(int, locus.split(":"))  # contig is an integer *index* from a sequence dictionary
-            # TODO: replace with tqdm progress bar by counting file in initial pass.  It can't be that expensive.
-            if n % 100000 == 0:
-                print(f"{contig}:{position}")
             ref_allele, alt_allele = mutation.strip().split("->")
 
             ref_sequence_string = file.readline().strip()
@@ -196,8 +192,10 @@ def write_raw_unnormalized_data_to_memory_maps(dataset_files, sources: List[int]
         total_num_data += num_data
         total_num_reads += num_reads
 
+    # the counts that size the memory maps also give the progress bar its total
+    raw_data = tqdm(generate_raw_data_from_text_files(dataset_files, sources), total=total_num_data, mininterval=60)
     memory_mapped_data = MemoryMappedData.from_generator(
-        reads_datum_source=generate_raw_data_from_text_files(dataset_files, sources),
+        reads_datum_source=raw_data,
         estimated_num_data=total_num_data,
         estimated_num_reads=total_num_reads,
     )
