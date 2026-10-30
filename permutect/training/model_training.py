@@ -19,10 +19,10 @@ from permutect.architecture.artifact_model import ArtifactModel
 from permutect.architecture.artifact_model import record_embeddings
 from permutect.data.batch import Batch
 from permutect.data.batch import DownsampledBatch
+from permutect.data.batches_on_device import batches_on_device
 from permutect.data.count_binning import round_alt_count_to_bin_center
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
-from permutect.data.prefetch_generator import prefetch_generator
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.misc_utils import Timer
@@ -145,7 +145,7 @@ def train_one_epoch(
     num_very_large_losses = torch.zeros((), device=model._device, dtype=torch.long)
 
     parent_batch: Batch
-    for parent_batch in tqdm(prefetch_generator(loader, device=model._device), mininterval=60, total=len(loader)):
+    for parent_batch in tqdm(batches_on_device(loader, device=model._device), mininterval=60, total=len(loader)):
         batch: DownsampledBatch
         for downsampling_iteration in range(2):
             ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
@@ -217,7 +217,7 @@ def collect_evaluation_data(
         loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
 
         parent_batch: Batch
-        for parent_batch in tqdm(prefetch_generator(loader, device=model._device), mininterval=60, total=len(loader)):
+        for parent_batch in tqdm(batches_on_device(loader, device=model._device), mininterval=60, total=len(loader)):
             # TODO: magic constant
             for _ in range(3):
                 ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)

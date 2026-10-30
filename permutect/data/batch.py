@@ -161,7 +161,7 @@ class Batch:
         )  # don't cast dtype -- needs to stay integral!
         new_batch.float_tensor = self.float_tensor.to(
             device, non_blocking=is_cuda
-        )  # don't cast dtype -- needs to stay integral!
+        )  # don't cast dtype -- it's already float32, from __init__
         return new_batch
 
     def get_int_array_be(self) -> np.ndarray:

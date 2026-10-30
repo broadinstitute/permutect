@@ -12,10 +12,10 @@ from permutect.architecture.posterior_model_priors import PosteriorModelPriors
 from permutect.architecture.spectra.posterior_model_spectra import PosteriorModelSpectra
 from permutect.data.batch import Batch
 from permutect.data.batch import BatchIndices
+from permutect.data.batches_on_device import batches_on_device
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import count_from_alt_bin_index
 from permutect.data.datum import Data
-from permutect.data.prefetch_generator import prefetch_generator
 from permutect.metrics import plotting
 from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.misc_utils import StreamingAverage
@@ -186,7 +186,7 @@ class PosteriorModel(torch.nn.Module):
             snv_context_totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra(device=self._device)
 
             batch: Batch
-            batches = prefetch_generator(posterior_loader, device=self._device)
+            batches = batches_on_device(posterior_loader, device=self._device)
             for batch in tqdm(batches, mininterval=10, total=len(posterior_loader)):
                 relative_posteriors = self.log_relative_posteriors_bc(batch)
                 log_evidence = torch.logsumexp(relative_posteriors, dim=1)
@@ -261,7 +261,7 @@ class PosteriorModel(torch.nn.Module):
         theoretical_metrics = AccuracyMetrics.create(num_sources=1, device=self._device)
 
         batch: Batch
-        batches = prefetch_generator(posterior_loader, device=self._device)
+        batches = batches_on_device(posterior_loader, device=self._device)
         for batch in tqdm(batches, mininterval=10, total=len(posterior_loader)):
             # 0th column is true variant, subtract it from 1 to get error prob
             error_probs_b = self.error_probabilities_b(batch, germline_mode)
