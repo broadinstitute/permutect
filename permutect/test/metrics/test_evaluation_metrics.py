@@ -113,6 +113,23 @@ def test_each_evaluation_figure_is_written_once(num_sources):
     assert len(summary_writer.tags) == len(epoch_types) * (3 * num_source_plots + 1)
 
 
+def test_unlabeled_data_appear_in_the_logit_histograms_but_not_the_roc_curves():
+    # accuracy, calibration and ROC curves need labels and read only the ARTIFACT and VARIANT rows, while the logit
+    # histograms show the logits of each label, including unlabeled data, which used to be recorded with zero weight
+    labeled, unlabeled = [make_datum(Label.ARTIFACT, 0), make_datum(Label.VARIANT, 0)], [make_datum(Label.UNLABELED, 0)]
+    roc_data = []
+    for data, logits in ((labeled, [2.0, -1.5]), (labeled + unlabeled * 3, [2.0, -1.5, 0.5, 3.0, -2.0])):
+        metrics = EvaluationMetrics(num_sources=1, device=torch.device("cpu"))
+        metrics.record_batch(Epoch.VALID, Batch(data), logits=torch.tensor(logits))
+        accuracy_metrics = metrics.put_on_cpu().accuracy_metrics_by_epoch_type[Epoch.VALID]
+        roc_data.append(accuracy_metrics.make_roc_data(None, None, None, Variation.SNV, sens_prec=True))
+    assert roc_data[0] == roc_data[1]
+
+    histograms_fig, _ = accuracy_metrics.make_logit_histograms()
+    assert "UNLABELED" in {line.get_label() for axis in histograms_fig.axes for line in axis.get_lines()}
+    plt.close(histograms_fig)
+
+
 def test_record_batch_metadata():
     metrics = EmbeddingMetrics()
     labels = [Label.ARTIFACT, Label.VARIANT, Label.UNLABELED.value]  # enums or their int values
