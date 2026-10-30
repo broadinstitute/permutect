@@ -93,11 +93,10 @@ class LossMetrics:
 
     def plot_losses(self, label: Label, var_type: Variation, axis, source: int = None):
         """
-        for given Label and Variation, plot color map of accuracy vs ref (x axis) and alt (y axis) counts
+        for given Label and Variation, plot color map of average loss vs alt (x axis) and ref (y axis) counts
         :return:
         """
         assert self.has_been_sent_to_cpu, "Can't make plots before sending to CPU"
-        # TODO: only if include logits
         sum_dims = (BatchProperty.SOURCE,) if source is None else ()
         selection = ({} if source is None else {BatchProperty.SOURCE: source}) | {
             BatchProperty.VARIANT_TYPE: var_type,
@@ -118,14 +117,12 @@ class LossMetrics:
             vmax=1,
         )
 
-    # TODO: maybe move this to BatchIndexedTotals
     def plot_counts(self, label: Label, var_type: Variation, axis, source: int = None):
         """
-        for given Label and Variation, plot color map of (effective) data counts vs ref (x axis) and alt (y axis) counts
+        for given Label and Variation, plot color map of (effective) data counts vs alt (x axis) and ref (y axis) counts
         :return:
         """
         assert self.has_been_sent_to_cpu, "Can't make plots before sending to CPU"
-        # TODO: only if include logits
         sum_dims = (BatchProperty.SOURCE,) if source is None else ()
         selection = ({} if source is None else {BatchProperty.SOURCE: source}) | {BatchProperty.VARIANT_TYPE: var_type}
 
@@ -238,41 +235,24 @@ class AccuracyMetrics(BatchIndexedTensor):
             | {BatchProperty.VARIANT_TYPE: variant_type}
         )
 
-        totals_lg = select_and_sum(self, select=selection, sum=sum_dims)
-        # starting point is threshold below bottom bin, hence everything is considered artifact, hence 1) everything labeled
-        # non-artifact is a false negative, 2) there are no true positives, 3) there are no false positives
-        true_positive, false_positive = 0, 0
-        true_negative, false_negative = (
-            torch.sum(totals_lg[Label.ARTIFACT]).item(),
-            torch.sum(totals_lg[Label.VARIANT]).item(),
-        )
-        # last bin is clipped, so the top of the last bin isn't meaningful; likewise for the bottom of the first bin
-        result = []
-        # TODO: replace some of this logic with cumulative sums?
-        for logit_bin in range(NUM_LOGIT_BINS - 1):
-            # logit threshold below which everything is considered non-artifact and above which everything is considered artifact
-            threshold = top_of_logit_bin(logit_bin)
+        totals_lg = select_and_sum(self, select=selection, sum=sum_dims).double()
+        # at the threshold at the top of each logit bin, the data in it and in lower bins are called non-artifacts and the
+        # rest are called artifacts.  The last bin is clipped, so the top of the last bin isn't a meaningful threshold.
+        true_positive_g = torch.cumsum(totals_lg[Label.VARIANT], dim=0)[:-1]
+        false_positive_g = torch.cumsum(totals_lg[Label.ARTIFACT], dim=0)[:-1]
+        false_negative_g = torch.sum(totals_lg[Label.VARIANT]) - true_positive_g
+        true_negative_g = torch.sum(totals_lg[Label.ARTIFACT]) - false_positive_g
 
-            # the artifacts in this logit bin go from true negatives to false positives, while the non-artifacts go
-            # from false negatives to true positives
-            true_positive += totals_lg[Label.VARIANT, logit_bin].item()
-            false_negative -= totals_lg[Label.VARIANT, logit_bin].item()
-            false_positive += totals_lg[Label.ARTIFACT, logit_bin].item()
-            true_negative -= totals_lg[Label.ARTIFACT, logit_bin].item()
-
-            if (
-                (true_positive + false_negative) > 0
-                and (true_positive + false_positive) > 0
-                and (true_negative + false_positive) > 0
-            ):
-                nonartifact_metric = true_positive / (true_positive + false_negative)
-                artifact_metric = (
-                    (true_positive / (true_positive + false_positive))
-                    if sens_prec
-                    else (true_negative / (true_negative + false_positive))
-                )
-                result.append((threshold, nonartifact_metric, artifact_metric))
-        return result
+        nonartifact_metric_g = true_positive_g / (true_positive_g + false_negative_g)
+        if sens_prec:
+            artifact_metric_g = true_positive_g / (true_positive_g + false_positive_g)
+        else:
+            artifact_metric_g = true_negative_g / (true_negative_g + false_positive_g)
+        # only thresholds where the metrics are defined
+        defined_g = (true_positive_g + false_negative_g > 0) & (true_positive_g + false_positive_g > 0)
+        defined_g &= true_negative_g + false_positive_g > 0
+        points = zip(nonartifact_metric_g.tolist(), artifact_metric_g.tolist(), defined_g.tolist())
+        return [(top_of_logit_bin(g), nonart, art) for g, (nonart, art, defined) in enumerate(points) if defined]
 
     def plot_roc(
         self,

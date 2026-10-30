@@ -2,11 +2,13 @@ import math
 
 import matplotlib
 import numpy as np
+import pytest
 import torch
 from matplotlib import pyplot as plt
 
 from permutect.data.batch import BatchIndexedTensor
 from permutect.data.batch import BatchProperty
+from permutect.data.count_binning import top_of_logit_bin
 from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.metrics.loss_metrics import LossMetrics
 from permutect.training.balancer import Balancer
@@ -104,3 +106,30 @@ def test_heatmaps_leave_empty_cells_blank():
     unlabeled_values = accuracy_metrics.plot_accuracy(Label.UNLABELED, Variation.SNV, axis, source=0).get_array()
     assert np.ma.count_masked(unlabeled_values) == unlabeled_values.size
     plt.close("all")
+
+
+def test_roc_data_by_hand():
+    # 3 variants in logit bin 5, 1 variant in bin 15, and 2 artifacts each in bins 12 and 18.  Below the threshold at the
+    # top of bin 5 nothing is called a non-artifact, so precision is undefined there.
+    metrics = AccuracyMetrics.create(num_sources=1, device=CPU)
+    for label, logit_bin, count in (
+        (Label.VARIANT, 5, 3),
+        (Label.VARIANT, 15, 1),
+        (Label.ARTIFACT, 12, 2),
+        (Label.ARTIFACT, 18, 2),
+    ):
+        metrics[0, label, Variation.SNV, 0, 0, logit_bin] = count
+
+    # sensitivity, precision and artifact accuracy at the threshold at the top of each bin
+    expected = {logit_bin: (0.75, 1.0, 1.0) for logit_bin in range(5, 12)}
+    expected |= {logit_bin: (0.75, 0.6, 0.5) for logit_bin in range(12, 15)}
+    expected |= {logit_bin: (1.0, 4 / 6, 0.5) for logit_bin in range(15, 18)}
+    expected |= {logit_bin: (1.0, 0.5, 0.0) for logit_bin in range(18, 20)}
+    for sens_prec in (True, False):
+        roc_data = metrics.make_roc_data(None, None, None, Variation.SNV, sens_prec=sens_prec)
+        assert [threshold for threshold, _, _ in roc_data] == [top_of_logit_bin(logit_bin) for logit_bin in expected]
+        for (_, nonartifact_metric, artifact_metric), (sensitivity, precision, artifact_accuracy) in zip(
+            roc_data, expected.values()
+        ):
+            assert nonartifact_metric == pytest.approx(sensitivity)
+            assert artifact_metric == pytest.approx(precision if sens_prec else artifact_accuracy)
