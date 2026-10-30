@@ -4069,7 +4069,7 @@ packages:
 - pypi: ./
   name: permutect
   version: 0.1.0
-  sha256: 2dfc05efb876d1b2212c33f8707bef1c02d13622e83045ab3c4aba2ff0649624
+  sha256: 474ef2df9216bc40a4f02f35a11dc371345b96e471d8410d4cfa0e215a0a00af
   requires_dist:
   - torch>=2.10.0,<2.11
   - tensorboard>=2.8.0
@@ -4085,7 +4085,7 @@ packages:
   - dill>=0.3.7
   - pysam>=0.24.1
   - seqfold>=0.10.2
-  - pytest>=7.0 ; extra == 'dev'
+  - pytest>=7.4 ; extra == 'dev'
   - ruff>=0.14 ; extra == 'dev'
   requires_python: '>=3.10'
 - pypi: https://files.pythonhosted.org/packages/43/e3/fdc657359e919462369869f1c9f0e973f353f9a9ee295a39b1fea8ee1a77/pillow-12.2.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl

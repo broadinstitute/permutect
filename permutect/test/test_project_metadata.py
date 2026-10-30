@@ -1,5 +1,6 @@
 """
-Checks that the console scripts in pyproject.toml and the README agree with the code and the files in the repo.
+Checks that the console scripts in pyproject.toml and the README agree with the code and the files in the repo, and
+that pyproject.toml agrees with itself.
 """
 
 import importlib
@@ -15,9 +16,13 @@ tomllib = pytest.importorskip("tomllib")  # from Python 3.11
 REPO_DIR = os.path.abspath(os.path.join(test_dir, "..", ".."))
 
 
-def console_scripts() -> dict:
+def pyproject() -> dict:
     with open(os.path.join(REPO_DIR, "pyproject.toml"), "rb") as file:
-        return tomllib.load(file)["project"]["scripts"]
+        return tomllib.load(file)
+
+
+def console_scripts() -> dict:
+    return pyproject()["project"]["scripts"]
 
 
 def readme() -> str:
@@ -44,3 +49,9 @@ def test_readme_sections_about_files_name_files_that_exist():
     assert file_headings, "no README sections about files found"
     missing = [heading for heading in file_headings if not os.path.exists(os.path.join(REPO_DIR, heading))]
     assert not missing, f"README sections about files that don't exist: {missing}"
+
+
+def test_dev_extra_requires_the_pytest_minversion():
+    # otherwise installing the dev extra could give a pytest too old to run the tests
+    minversion = pyproject()["tool"]["pytest"]["ini_options"]["minversion"]
+    assert f"pytest>={minversion}" in pyproject()["project"]["optional-dependencies"]["dev"]
