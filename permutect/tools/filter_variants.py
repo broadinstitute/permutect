@@ -519,7 +519,6 @@ def apply_filtering_to_vcf(
 
         filters = overlapping_filters(v, TRUSTED_ARTIFACT_FILTERS)
 
-        # TODO: in germline mode, somatic doesn't exist (or is just highly irrelevant) and germline is not an error!
         encoding = encode_variant(v, zero_based=True)  # cyvcf2 is zero-based
         if encoding in encoding_to_posterior_results:
             posterior_result = encoding_to_posterior_results[encoding]
@@ -577,8 +576,7 @@ def apply_filtering_to_vcf(
                             correctness_label = EmbeddingMetrics.FALSE_NEGATIVE_ARTIFACT
                     else:
                         correctness_label = EmbeddingMetrics.FALSE_POSITIVE
-                    # TODO: this is only right for somatic calling
-                    bad_call = error_call if called_as_error else Call.SOMATIC
+                    bad_call = error_call if called_as_error else passing_call_type
                     evaluation_metrics.record_mistake(posterior_result, bad_call)
 
             # TODO: we don't yet record ref features but we could eventually. . .

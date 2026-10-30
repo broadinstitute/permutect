@@ -1,3 +1,4 @@
+import math
 import random
 import tempfile
 
@@ -5,18 +6,25 @@ import cyvcf2
 import numpy as np
 import pytest
 import torch
+from torch.utils.tensorboard import SummaryWriter
 
 from permutect import constants
 from permutect.architecture.artifact_model import ArtifactModel
 from permutect.architecture.artifact_model import load_model
 from permutect.architecture.posterior_model import PosteriorModel
+from permutect.data.batch import Batch
 from permutect.data.datum import Data
+from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.metrics.posterior_result import PosteriorResult
 from permutect.test.architecture.test_posterior_model_priors import make_batch
 from permutect.test.test_file_names import *
+from permutect.test.test_misc_utils import VCF_HEADER
+from permutect.test.test_misc_utils import make_datum as make_datum_with_alleles
+from permutect.test.test_misc_utils import vcf_line
 from permutect.tools import filter_variants
 from permutect.tools import pre_permutect_filtering
 from permutect.utils.enums import Call
+from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
 
 
@@ -232,6 +240,35 @@ def test_filtering_checks_germline_mode_like_the_posterior_model(tmp_path):
         filter_variants.apply_filtering_to_vcf(
             MUTECT2_CHR20_FILTERED_VCF, output_vcf, {0: "20"}, thresholds, loader, model, None, germline_mode=True
         )
+
+
+def test_germline_mode_records_a_missed_artifact_as_a_germline_call(tmp_path, monkeypatch):
+    # with a truth label, an artifact that passes is a mistake whose call is the passing call type, which in germline
+    # mode is germline.  It used to be recorded as somatic.
+    datum = make_datum_with_alleles(0, 100, "C", "T")
+    for data_field, value in ((Data.LABEL, Label.ARTIFACT), (Data.LOG_ALLELE_FREQUENCY, math.log(0.01))):
+        datum.set(data_field, value)
+    for data_field in (Data.MAF, Data.NORMAL_MAF):
+        datum.set(data_field, 0.5)
+    datum.set(Data.CACHED_ARTIFACT_LOGIT, 0.0)
+    input_vcf = tmp_path / "input.vcf"
+    input_vcf.write_text(VCF_HEADER + vcf_line("C", "T", pos=100) + "\n")
+
+    mistaken_calls = []
+    monkeypatch.setattr(EvaluationMetrics, "record_mistake", lambda self, result, call: mistaken_calls.append(call))
+    model = PosteriorModel(-10, -10, device=torch.device("cpu"))
+    nothing_is_an_error = {var_type: 1.0 for var_type in Variation}
+    filter_variants.apply_filtering_to_vcf(
+        str(input_vcf),
+        str(tmp_path / "filtered.vcf"),
+        {0: "chr1"},
+        nothing_is_an_error,
+        [Batch([datum])],
+        model,
+        SummaryWriter(str(tmp_path / "tensorboard")),
+        germline_mode=True,
+    )
+    assert mistaken_calls == [Call.GERMLINE]
 
 
 def test_load_model_returns_model_in_eval_mode():
