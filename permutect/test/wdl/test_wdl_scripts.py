@@ -105,26 +105,6 @@ def test_runtime_attributes_guard_optional_inputs():
     assert not unguarded, f"optional inputs used in runtime attributes without select_first or defined: {unguarded}"
 
 
-def test_workflow_inputs_are_used():
-    # e.g. Permutect.split_intervals_extra_args was declared but never passed to Mutect2, so setting it did nothing
-    unused = []
-    for wdl in glob.glob(os.path.join(SCRIPTS_DIR, "*.wdl")):
-        with open(wdl) as file:
-            text = re.sub(r"#[^\n]*", "", file.read())
-        workflow = re.search(r"^workflow \w+ \{.*?(?=^task |\Z)", text, re.M | re.S).group(0)
-        inputs = re.search(r"\binput\s*\{(.*?)\n\s*\}", workflow, re.S).group(1)
-        rest_of_workflow = workflow.replace(inputs, "")
-        for name in re.findall(r"^\s*[\w\[\], ]+\??\s+(\w+)\s*(?:=|$)", inputs, re.M):
-            if not re.search(r"\b" + name + r"\b", rest_of_workflow):
-                unused.append(f"{os.path.basename(wdl)}: {name}")
-
-    assert not unused, f"workflow inputs that are never used: {unused}"
-
-
-# an input's empty-string hack, eg File? gnomad_hack = if select_first([gnomad, ""]) == "" then NONE else gnomad
-HACK_DECLARATION = r"^\s*\w+\?\s+(\w+_hack)\s*=\s*if\s*\(?\s*select_first\(\[\s*(\w+)\s*,.*$"
-
-
 def workflow_inputs_and_body(wdl_path: str) -> tuple[str, str]:
     """
     The input section of a WDL's workflow and the rest of the workflow, without comments
@@ -134,6 +114,22 @@ def workflow_inputs_and_body(wdl_path: str) -> tuple[str, str]:
     workflow = re.search(r"^workflow \w+ \{.*?(?=^task |\Z)", text, re.M | re.S).group(0)
     inputs = re.search(r"\binput\s*\{(.*?)\n\s*\}", workflow, re.S).group(1)
     return inputs, workflow.replace(inputs, "")
+
+
+def test_workflow_inputs_are_used():
+    # e.g. Permutect.split_intervals_extra_args was declared but never passed to Mutect2, so setting it did nothing
+    unused = []
+    for wdl in glob.glob(os.path.join(SCRIPTS_DIR, "*.wdl")):
+        inputs, rest_of_workflow = workflow_inputs_and_body(wdl)
+        for name in re.findall(r"^\s*[\w\[\], ]+\??\s+(\w+)\s*(?:=|$)", inputs, re.M):
+            if not re.search(r"\b" + name + r"\b", rest_of_workflow):
+                unused.append(f"{os.path.basename(wdl)}: {name}")
+
+    assert not unused, f"workflow inputs that are never used: {unused}"
+
+
+# an input's empty-string hack, eg File? gnomad_hack = if select_first([gnomad, ""]) == "" then NONE else gnomad
+HACK_DECLARATION = r"^\s*\w+\?\s+(\w+_hack)\s*=\s*if\s*\(?\s*select_first\(\[\s*(\w+)\s*,.*$"
 
 
 def test_inputs_with_empty_string_hacks_are_used_only_through_them():
@@ -242,13 +238,19 @@ def compare_command(working_dir) -> str:
     return fill_placeholders(task_command(COMPARE_WDL, "Compare"), inputs)
 
 
-def run_compare(working_dir, gatk_script: str) -> subprocess.CompletedProcess:
+def run_bash(command: str, working_dir, fake_tools: dict = None) -> subprocess.CompletedProcess:
+    # run a shell command in working_dir, with the given fake tools, each a name and a script, first on the PATH
     bin_dir = working_dir / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "gatk").write_text(gatk_script)
-    (bin_dir / "gatk").chmod(0o755)
+    for name, script in (fake_tools or {}).items():
+        bin_dir.mkdir(exist_ok=True)
+        (bin_dir / name).write_text(script)
+        (bin_dir / name).chmod(0o755)
     env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ["PATH"])
-    return subprocess.run(["bash", "-c", compare_command(working_dir)], cwd=working_dir, env=env, capture_output=True)
+    return subprocess.run(["bash", "-c", command], cwd=working_dir, env=env, capture_output=True)
+
+
+def run_compare(working_dir, gatk_script: str) -> subprocess.CompletedProcess:
+    return run_bash(compare_command(working_dir), working_dir, {"gatk": gatk_script})
 
 
 def test_compare_summary_has_labeled_counts(tmp_path):
@@ -288,7 +290,7 @@ def test_concatenate_sorts_by_heading_and_creates_no_stray_files(tmp_path):
         inputs.append(str(path))
     command = task_command(CONCATENATE_WDL, "concatenate").replace("~{sep=' ' inputs}", " ".join(inputs))
 
-    result = subprocess.run(["bash", "-c", command], cwd=tmp_path, capture_output=True)
+    result = run_bash(command, tmp_path)
     assert result.returncode == 0, result.stderr.decode()
     assert {path.name for path in tmp_path.iterdir()} == {"zebra.txt", "Apple.txt", "TMP", "result.txt"}
     assert (tmp_path / "result.txt").read_text() == "Apple heading\nbody of Apple\n\nzebra heading\nbody of zebra\n\n"
@@ -304,13 +306,7 @@ def run_with_fake_tools(working_dir, command: str, fake_tools: dict) -> tuple[bo
     Run a task's command with the given fake tools on the PATH.
     Returns whether the command succeeded and the names of the fake tools it called, in order.
     """
-    bin_dir = working_dir / "bin"
-    bin_dir.mkdir()
-    for name, script in fake_tools.items():
-        (bin_dir / name).write_text(script)
-        (bin_dir / name).chmod(0o755)
-    env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ["PATH"])
-    result = subprocess.run(["bash", "-c", command], cwd=working_dir, env=env, capture_output=True)
+    result = run_bash(command, working_dir, fake_tools)
     calls_file = working_dir / "calls.txt"
     calls = calls_file.read_text().split() if calls_file.exists() else []
     return result.returncode == 0, calls
@@ -378,7 +374,7 @@ def test_archive_and_extract_m2_outputs(tmp_path, with_segments):
             m2_outputs[name] = None
 
     archive_command = fill_placeholders(task_command(PERMUTECT_WDL, "ArchiveM2Outputs"), m2_outputs)
-    result = subprocess.run(["bash", "-c", archive_command], cwd=archive_dir, capture_output=True)
+    result = run_bash(archive_command, archive_dir)
     assert result.returncode == 0, result.stderr.decode()
     archive = archive_dir / task_output_files(PERMUTECT_WDL, "ArchiveM2Outputs")["m2_outputs"]
 
@@ -387,7 +383,7 @@ def test_archive_and_extract_m2_outputs(tmp_path, with_segments):
         assert all(member.isfile() or member.isdir() for member in tar.getmembers())
 
     extract_command = fill_placeholders(task_command(PERMUTECT_WDL, "ExtractM2Outputs"), {"cached_m2_outputs": archive})
-    result = subprocess.run(["bash", "-c", extract_command], cwd=extract_dir, capture_output=True)
+    result = run_bash(extract_command, extract_dir)
     assert result.returncode == 0, result.stderr.decode()
 
     # each archived Mutect2 output is extracted as the ExtractM2Outputs output of the same name
