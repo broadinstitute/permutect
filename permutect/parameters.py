@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import List
 
 from permutect import constants
@@ -21,6 +22,7 @@ DEFAULT_REF_SEQ_LAYERS = [
 ]
 
 
+@dataclass
 class ModelParameters:
     """
     note that read layers and info layers exclude the input dimension
@@ -31,49 +33,28 @@ class ModelParameters:
     num_transformer_layers: number of layers of read transformer
     """
 
-    def __init__(
-        self,
-        read_layers: List[int],
-        self_attention_hidden_dimension: int,
-        num_self_attention_layers: int,
-        info_layers: List[int],
-        aggregation_layers: List[int],
-        num_artifact_clusters: int,
-        ref_seq_layers_strings: List[str],
-        dropout_p: float,
-        batch_normalize: bool = False,
-    ):
-        self.read_layers = read_layers
-        self.info_layers = info_layers
-        self.ref_seq_layer_strings = ref_seq_layers_strings
-        self.self_attention_hidden_dimension = self_attention_hidden_dimension
-        self.num_self_attention_layers = num_self_attention_layers
-        self.aggregation_layers = aggregation_layers
-        self.num_artifact_clusters = num_artifact_clusters
-        self.dropout_p = dropout_p
-        self.batch_normalize = batch_normalize
+    read_layers: List[int]
+    self_attention_hidden_dimension: int
+    num_self_attention_layers: int
+    info_layers: List[int]
+    aggregation_layers: List[int]
+    num_artifact_clusters: int
+    ref_seq_layer_strings: List[str]
+    dropout_p: float
+    batch_normalize: bool = False
 
 
 def parse_model_params(args) -> ModelParameters:
-    read_layers = getattr(args, constants.READ_LAYERS_NAME)
-    info_layers = getattr(args, constants.INFO_LAYERS_NAME)
-    ref_seq_layer_strings = getattr(args, constants.REF_SEQ_LAYER_STRINGS_NAME)
-    self_attention_hidden_dimension = getattr(args, constants.SELF_ATTENTION_HIDDEN_DIMENSION_NAME)
-    num_self_attention_layers = getattr(args, constants.NUM_SELF_ATTENTION_LAYERS_NAME)
-    aggregation_layers = getattr(args, constants.AGGREGATION_LAYERS_NAME)
-    num_artifact_clusters = getattr(args, constants.NUM_ARTIFACT_CLUSTERS_NAME)
-    dropout_p = getattr(args, constants.DROPOUT_P_NAME)
-    batch_normalize = getattr(args, constants.BATCH_NORMALIZE_NAME)
     return ModelParameters(
-        read_layers,
-        self_attention_hidden_dimension,
-        num_self_attention_layers,
-        info_layers,
-        aggregation_layers,
-        num_artifact_clusters,
-        ref_seq_layer_strings,
-        dropout_p,
-        batch_normalize,
+        read_layers=getattr(args, constants.READ_LAYERS_NAME),
+        self_attention_hidden_dimension=getattr(args, constants.SELF_ATTENTION_HIDDEN_DIMENSION_NAME),
+        num_self_attention_layers=getattr(args, constants.NUM_SELF_ATTENTION_LAYERS_NAME),
+        info_layers=getattr(args, constants.INFO_LAYERS_NAME),
+        aggregation_layers=getattr(args, constants.AGGREGATION_LAYERS_NAME),
+        num_artifact_clusters=getattr(args, constants.NUM_ARTIFACT_CLUSTERS_NAME),
+        ref_seq_layer_strings=getattr(args, constants.REF_SEQ_LAYER_STRINGS_NAME),
+        dropout_p=getattr(args, constants.DROPOUT_P_NAME),
+        batch_normalize=getattr(args, constants.BATCH_NORMALIZE_NAME),
     )
 
 
@@ -149,45 +130,29 @@ def add_model_params_to_parser(parser):
 
 
 # common parameters for training models
+@dataclass
 class TrainingParameters:
-    def __init__(
-        self,
-        batch_size: int,
-        num_epochs: int,
-        learning_rate: float,
-        weight_decay: float,
-        num_workers: int,
-        trainable_parameter_sets: List[ParameterSet],
-    ):
-        self.batch_size = batch_size
-        self.num_epochs = num_epochs
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.num_workers = num_workers
-        self.trainable_parameter_sets = trainable_parameter_sets
+    batch_size: int
+    num_epochs: int
+    learning_rate: float
+    weight_decay: float
+    num_workers: int
+    trainable_parameter_sets: List[ParameterSet]
 
 
 def parse_training_params(args, default_training_params: List[ParameterSet]) -> TrainingParameters:
-    learning_rate = getattr(args, constants.LEARNING_RATE_NAME)
-    weight_decay = getattr(args, constants.WEIGHT_DECAY_NAME)
-    batch_size = getattr(args, constants.BATCH_SIZE_NAME)
-    num_epochs = getattr(args, constants.NUM_EPOCHS_NAME)
-    num_workers = getattr(args, constants.NUM_WORKERS_NAME)
-
     training_parameter_strings = getattr(args, constants.TRAINABLE_PARAMETERS_NAME)
-    training_parameter_sets = (
-        default_training_params
-        if training_parameter_strings is None
-        else [ParameterSet[set_str] for set_str in training_parameter_strings]
-    )
-
     return TrainingParameters(
-        batch_size,
-        num_epochs,
-        learning_rate,
-        weight_decay,
-        num_workers,
-        training_parameter_sets,
+        batch_size=getattr(args, constants.BATCH_SIZE_NAME),
+        num_epochs=getattr(args, constants.NUM_EPOCHS_NAME),
+        learning_rate=getattr(args, constants.LEARNING_RATE_NAME),
+        weight_decay=getattr(args, constants.WEIGHT_DECAY_NAME),
+        num_workers=getattr(args, constants.NUM_WORKERS_NAME),
+        trainable_parameter_sets=(
+            default_training_params
+            if training_parameter_strings is None
+            else [ParameterSet[set_str] for set_str in training_parameter_strings]
+        ),
     )
 
 
