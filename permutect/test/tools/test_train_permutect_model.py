@@ -1,5 +1,6 @@
 import tempfile
 
+import torch
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 from permutect import constants
@@ -52,8 +53,11 @@ def test_train_artifact_model(capsys):
     events = EventAccumulator(training_tensorboard_dir.name)
     events.Reload()
 
-    loaded_model = load_model(saved_model)
-    assert loaded_model is not None
+    # the saved model has the requested hyperparameters, and training wrote its losses to TensorBoard
+    params = load_model(saved_model)._params
+    assert (params.read_layers, params.info_layers, params.aggregation_layers) == ([10, 10, 10], [10, 10], [20, 20, 20])
+    assert params.num_artifact_clusters == 4 and params.ref_seq_layer_strings == cnn_layer_strings
+    assert events.Tags()["scalars"]
 
 
 def test_refine_artifact_model():
@@ -77,4 +81,8 @@ def test_refine_artifact_model():
     events = EventAccumulator(training_tensorboard_dir.name)
     events.Reload()
 
-    load_model(saved_model)
+    # the refined model keeps the pretrained model's hyperparameters, not the defaults, and training changed its weights
+    pretrained, refined = load_model(PERMUTECT_V0_9_2_ARTIFACT_MODEL), load_model(saved_model)
+    assert vars(refined._params) == vars(pretrained._params)
+    assert any(not torch.equal(p, q) for p, q in zip(refined.parameters(), pretrained.parameters()))
+    assert events.Tags()["scalars"]

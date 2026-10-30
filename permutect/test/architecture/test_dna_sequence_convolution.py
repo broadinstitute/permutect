@@ -21,7 +21,8 @@ def test_constructor():
     model = DNASequenceConvolution(layer_strings, input_length)
 
     data = torch.randn(8, INITIAL_NUM_CHANNELS, input_length)
-    model(data)
+    assert model.output_dimension() == 10  # the last layer is linear/out_features=10
+    assert model(data).shape == (8, 10)
 
 
 def test_constructor_with_padding():
