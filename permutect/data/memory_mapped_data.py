@@ -93,14 +93,15 @@ class MemoryMappedData:
         2) memory-mapped numpy file for 2D stacked reads array.  The rows of this array are the ref reads of the 0th Datum,
             the alt reads of the 0th Datum, the ref reads of the 1st Datum etc.
 
-        NOTE: the memory-mapped files may be larger than necessary.  That is, there may be junk space in the files that
-        does not correspond to actual data.  The num_data and num_reads tell us how far into the files is actual data.
+        NOTE: the memory-mapped files may be larger than necessary, with junk space after the data from growing them
+        as data are added.  The arrays here are views of only the first num_data and num_reads rows.
     """
 
     def __init__(self, int_mmap, float_mmap, num_data, reads_mmap, num_reads):
-        self.int_mmap = int_mmap
-        self.float_mmap = float_mmap
-        self.reads_mmap = reads_mmap
+        # leave out the files' unused capacity, which would otherwise be saved and counted by num_bytes()
+        self.int_mmap = int_mmap[:num_data]
+        self.float_mmap = float_mmap[:num_data]
+        self.reads_mmap = None if reads_mmap is None else reads_mmap[:num_reads]
         self.num_data = num_data
         self.num_reads = num_reads
 
@@ -350,15 +351,10 @@ class MemoryMappedData:
         num_data, int_array_dim, float_array_dim, num_reads, reads_dim = loaded_metadata[:5]
 
         assert len(reads_files) == (0 if num_reads == 0 else 1)
-        # NOTE: the original file may have had excess space due to the O(N) amortized growing scheme
-        # if we load the same file with the actual num_data, as opposed to the capacity, it DOES work correctly
-        int_mmap = np.lib.format.open_memmap(int_array_files[0], mode="r", shape=(num_data, int_array_dim))
-        float_mmap = np.lib.format.open_memmap(float_array_files[0], mode="r", shape=(num_data, float_array_dim))
-        reads_mmap = (
-            None
-            if num_reads == 0
-            else np.lib.format.open_memmap(reads_files[0], mode="r", shape=(num_reads, reads_dim))
-        )
+        # files saved before only the data were saved may have unused capacity after the data, which __init__ leaves out
+        int_mmap = np.lib.format.open_memmap(int_array_files[0], mode="r")
+        float_mmap = np.lib.format.open_memmap(float_array_files[0], mode="r")
+        reads_mmap = None if num_reads == 0 else np.lib.format.open_memmap(reads_files[0], mode="r")
         loading_timer.report("Time to load data from tarfile")
 
         result = cls(
