@@ -281,6 +281,7 @@ def make_filtered_vcf(
             summary_writer=summary_writer,
             epochs_per_evaluation=5,
         )
+        summary_writer.close()
 
     posterior_model = PosteriorModel(
         initial_log_variant_prior,
@@ -325,6 +326,9 @@ def make_filtered_vcf(
         summary_writer=summary_writer,
         germline_mode=germline_mode,
     )
+    # a SummaryWriter writes events from a background thread that stops when the program exits, so without closing it
+    # the final plots, written just before the program exits, can be lost
+    summary_writer.close()
 
 
 @torch.inference_mode()

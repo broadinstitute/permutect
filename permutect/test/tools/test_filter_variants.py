@@ -72,9 +72,28 @@ def test_filtering_on_dream1_chr20(monkeypatch, capsys):
             posterior_results.append(self)
 
     monkeypatch.setattr(filter_variants, "PosteriorResult", RecordedPosteriorResult)
+
+    # every SummaryWriter that filter_variants makes
+    writers = []
+
+    class RecordedSummaryWriter(SummaryWriter):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.closed = False
+            writers.append(self)
+
+        def close(self):
+            super().close()
+            self.closed = True
+
+    monkeypatch.setattr(filter_variants, "SummaryWriter", RecordedSummaryWriter)
     filter_variants.main_without_parsing(filtering_args)
     # the log says which device it ran on, so that a job with a GPU that runs on the CPU is visible
     assert "Running on " in capsys.readouterr().out
+
+    # the writers for test-time adaptation and for the posterior model are closed, so that their last events, such as
+    # the final plots, aren't lost when the program exits
+    assert len(writers) == 2 and all(writer.closed for writer in writers)
 
     # the values written to the VCF are plain numbers copied from the device once per batch.  Rows of device tensors
     # were read number by number while writing the VCF, which made the CPU wait for the GPU many times per variant.
