@@ -502,13 +502,13 @@ def apply_filtering_to_vcf(
     info_fields = {
         info_key: ("Float", len(Call), description + " {" + ", ".join(all_types) + "}")
         for info_key, description in (
-            (POST_PROB_INFO_KEY, "Mutect3 posterior probability of"),
+            (POST_PROB_INFO_KEY, "Permutect posterior probability of"),
             (LOG_PRIOR_INFO_KEY, "Log priors of"),
             (SPECTRA_LOG_LIKELIHOOD_INFO_KEY, "Log spectra likelihoods of"),
             (NORMAL_LOG_LIKELIHOOD_INFO_KEY, "Log normal likelihoods of"),
         )
     }
-    info_fields[ARTIFACT_LOD_INFO_KEY] = ("Float", "A", "Mutect3 artifact log odds")
+    info_fields[ARTIFACT_LOD_INFO_KEY] = ("Float", "A", "Permutect artifact log odds")
     filter_descriptions = {name: name for n, name in enumerate(FILTER_NAMES) if n != passing_call_type}
     editor = VcfEditor(input_vcf, output_vcf, info_fields, filter_descriptions)
 

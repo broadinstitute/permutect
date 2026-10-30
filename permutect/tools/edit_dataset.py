@@ -16,7 +16,7 @@ class EditType(Enum):
     KEEP_EVERYTHING = "keep_everything"
 
 
-# generates BaseDatum(s) from the original dataset that *pass* the pruning thresholds
+# generates the data of the original datasets with the edit applied, and with the new source if one is given
 def generate_edited_data(memory_mapped_datas, edit_type: str, source: int):
     for memory_mapped_data in memory_mapped_datas:
         for reads_datum in memory_mapped_data.generate():
@@ -49,12 +49,16 @@ def generate_edited_data(memory_mapped_datas, edit_type: str, source: int):
 
 
 def parse_arguments(argv=None):
-    parser = argparse.ArgumentParser(description="train the Mutect3 artifact model")
+    parser = argparse.ArgumentParser(
+        description="edit preprocessed datasets, eg unlabel or remove artifacts or variants or give them a new source, "
+        "and combine them into one dataset"
+    )
     parser.add_argument(
         "--" + constants.DATASET_EDIT_TYPE_NAME,
         type=str,
         required=True,
-        help="how to modify the dataset",
+        choices=[edit_type.value for edit_type in EditType],
+        help="how to edit the data's labels, or keep_everything to only change the source or combine datasets",
     )
     parser.add_argument("--" + constants.SOURCE_NAME, type=int, required=False, help="new source integer to apply")
 
@@ -66,7 +70,7 @@ def parse_arguments(argv=None):
         required=True,
         help="tarfile(s) of training/validation datasets produced by preprocess_dataset.py",
     )
-    parser.add_argument("--" + constants.OUTPUT_NAME, type=str, required=True, help="path to pruned dataset file")
+    parser.add_argument("--" + constants.OUTPUT_NAME, type=str, required=True, help="path to output dataset tarfile")
 
     return parser.parse_args(argv)
 

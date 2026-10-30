@@ -37,6 +37,15 @@ def test_console_scripts_point_to_functions():
         assert callable(getattr(module, function_name, None)), f"{name}: {entry_point} is not a function"
 
 
+def test_tool_help_uses_the_current_name(capsys):
+    # Permutect was once called Mutect3
+    for name, entry_point in console_scripts().items():
+        module = importlib.import_module(entry_point.split(":")[0])
+        with pytest.raises(SystemExit):
+            module.parse_arguments(["--help"])
+        assert "Mutect3" not in capsys.readouterr().out, name
+
+
 def test_readme_lists_the_console_scripts():
     match = re.search(r"This installs the command line tools \(([^)]*)\)", readme())
     assert match is not None, "the README no longer lists the command line tools"

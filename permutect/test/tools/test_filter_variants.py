@@ -114,6 +114,10 @@ def test_filtering_on_dream1_chr20(monkeypatch, capsys):
             assert record_filters(output_record) >= record_filters(input_record)
     assert num_unscored > 0
 
+    # the INFO descriptions name Permutect, not its old name Mutect3
+    for key in (filter_variants.POST_PROB_INFO_KEY, filter_variants.ARTIFACT_LOD_INFO_KEY):
+        assert "Permutect" in output_records.get_header_type(key)["Description"]
+
 
 def record_filters(record) -> set:
     # cyvcf2 gives None for PASS and for a missing FILTER
