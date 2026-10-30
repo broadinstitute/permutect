@@ -35,8 +35,9 @@ class ConsistentValue:
     def check(self, value):
         if self.value is None:
             self.value = value
-        else:
-            assert self.value == value, "inconsistent values"
+        elif self.value != value:
+            # an error rather than an assert, which python -O skips
+            raise ValueError(f"inconsistent values: {value} differs from the earlier {self.value}")
 
 
 def gpu_if_available(exploit_mps=False) -> torch.device:
@@ -101,7 +102,7 @@ class StreamingAverage:
         return self._count == 0.0
 
     def get(self) -> float:
-        return self._sum / (self._count + 0.0001)
+        return 0.0 if self.is_empty() else self._sum / self._count
 
     def record(self, value: float, weight: float = 1):
         self._count += weight
@@ -142,7 +143,9 @@ def backpropagate(optimizer: torch.optim.Optimizer, loss: Tensor, params_to_clip
 
 
 def get_first_numeric_element(variant, key):
-    tuple_or_scalar = variant.INFO[key]
+    tuple_or_scalar = variant.INFO.get(key)
+    if tuple_or_scalar is None:
+        raise ValueError(f"the variant at {variant.CHROM}:{variant.POS} has no {key} INFO field")
     return tuple_or_scalar[0] if type(tuple_or_scalar) is tuple else tuple_or_scalar
 
 
@@ -159,11 +162,11 @@ def encode_datum(datum: Datum, contig_index_to_name_map):
     return encode(contig_name, datum.get(Data.POSITION), datum.get_ref_allele(), datum.get_alt_allele())
 
 
-def encode_variant(v: cyvcf2.Variant, zero_based=False):
+def encode_variant(v: cyvcf2.Variant):
+    # the one-based VCF position, as in a Datum, not cyvcf2's zero-based v.start
     alt = v.ALT[0]  # TODO: we're assuming biallelic
     ref = v.REF
-    start = (v.start + 1) if zero_based else v.start
-    return encode(v.CHROM, start, ref, alt)
+    return encode(v.CHROM, v.POS, ref, alt)
 
 
 def overlapping_filters(v: cyvcf2.Variant, filters_set: Set[str]) -> Set[str]:

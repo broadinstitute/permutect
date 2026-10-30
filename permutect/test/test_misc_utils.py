@@ -98,14 +98,14 @@ def test_consistent_value():
     cv.check(5)
     assert cv.value == 5
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         cv.check(6)
 
 
 def test_consistent_value_with_initial_value():
     cv = ConsistentValue(3)
     cv.check(3)
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         cv.check(4)
 
 
@@ -114,13 +114,13 @@ def test_consistent_value_edge_cases():
     cv = ConsistentValue()
     cv.check(0)
     assert cv.value == 0
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         cv.check(1)
 
     # a failed check doesn't change the stored value
     cv = ConsistentValue()
     cv.check(7)
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         cv.check(8)
     assert cv.value == 7
 
@@ -128,7 +128,7 @@ def test_consistent_value_edge_cases():
     cv = ConsistentValue()
     cv.check((2, 3))
     cv.check((2, 3))
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         cv.check((3, 2))
 
 
@@ -189,6 +189,13 @@ def test_streaming_average_matches_mean_of_many_values():
     for value in values.tolist():
         avg.record(value)
     assert avg.get() == pytest.approx(values.mean().item(), rel=1e-3, abs=1e-6)
+
+
+def test_streaming_average_with_small_total_weight():
+    # the exact mean, not one biased towards zero
+    avg = StreamingAverage()
+    avg.record(5.0, weight=0.001)
+    assert avg.get() == pytest.approx(5.0)
 
 
 def test_streaming_average_edge_cases():
@@ -284,8 +291,8 @@ def test_get_first_numeric_element_edge_cases(tmp_path):
     # zero is a real value, not a missing one
     assert get_first_numeric_element(zero, "POPAF") == 0
 
-    # a missing INFO field raises an error rather than returning a default
-    with pytest.raises(KeyError):
+    # a missing INFO field raises an error naming the variant, rather than returning a default
+    with pytest.raises(ValueError, match="chr1:200 has no POPAF INFO field"):
         get_first_numeric_element(missing, "POPAF")
 
 
@@ -359,13 +366,10 @@ def test_encode_variant(tmp_path):
         vcf_line("ACG", "A", pos=200),
         vcf_line("C", "CTT", pos=300, chrom="chrX"),
     )
-    # cyvcf2's start is zero-based, and zero_based=True converts it back to the one-based VCF position
-    assert encode_variant(snv, zero_based=True) == "chr1:100:A:T"
-    assert encode_variant(deletion, zero_based=True) == "chr1:200:ACG:A"
-    assert encode_variant(insertion, zero_based=True) == "chrX:300:C:CTT"
-
-    # without zero_based=True, the zero-based start is used as is
-    assert encode_variant(snv) == "chr1:99:A:T"
+    # the one-based VCF position, not cyvcf2's zero-based start
+    assert encode_variant(snv) == "chr1:100:A:T"
+    assert encode_variant(deletion) == "chr1:200:ACG:A"
+    assert encode_variant(insertion) == "chrX:300:C:CTT"
 
 
 def test_encode_variant_edge_cases(tmp_path):
@@ -378,15 +382,14 @@ def test_encode_variant_edge_cases(tmp_path):
         vcf_line("A", "T", pos=1),
     )
     # only the first alt allele is encoded
-    assert encode_variant(multiallelic, zero_based=True) == "chr1:100:G:C"
+    assert encode_variant(multiallelic) == "chr1:100:G:C"
 
     # alleles are trimmed and truncated
-    assert encode_variant(non_minimal, zero_based=True) == "chr1:200:C:T"
-    assert encode_variant(long, zero_based=True) == "chr1:300:A:" + long_insertion[:13]
+    assert encode_variant(non_minimal) == "chr1:200:C:T"
+    assert encode_variant(long) == "chr1:300:A:" + long_insertion[:13]
 
     # the first base of a contig
-    assert encode_variant(first_base, zero_based=True) == "chr1:1:A:T"
-    assert encode_variant(first_base) == "chr1:0:A:T"
+    assert encode_variant(first_base) == "chr1:1:A:T"
 
 
 def test_vcf_and_dataset_encodings_agree(tmp_path):
@@ -413,7 +416,7 @@ def test_vcf_and_dataset_encodings_agree(tmp_path):
     encodings = []
     for (chrom, pos, ref, alt), v in zip(variants, vcf_variants):
         datum = make_datum(contig_indices[chrom], pos, ref, alt)
-        assert encode_variant(v, zero_based=True) == encode_datum(datum, contig_names)
+        assert encode_variant(v) == encode_datum(datum, contig_names)
         encodings.append(encode_datum(datum, contig_names))
 
     # different variants must not share an encoding, or one's allele frequency, filters and posterior go to the other

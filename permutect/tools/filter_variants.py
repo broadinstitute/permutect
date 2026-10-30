@@ -519,7 +519,7 @@ def apply_filtering_to_vcf(
 
         filters = overlapping_filters(v, TRUSTED_ARTIFACT_FILTERS)
 
-        encoding = encode_variant(v, zero_based=True)  # cyvcf2 is zero-based
+        encoding = encode_variant(v)
         if encoding in encoding_to_posterior_results:
             posterior_result = encoding_to_posterior_results[encoding]
             post_probs = posterior_result.posterior_probabilities

@@ -222,7 +222,7 @@ class MemoryMappedData:
         print("recording filters and allele frequencies from input VCF")
         pbar = tqdm(enumerate(cyvcf2.VCF(input_vcf)), mininterval=60)
         for n, v in pbar:
-            encoding = encode_variant(v, zero_based=True)
+            encoding = encode_variant(v)
             # POPAF is -log10(AF); we convert to natural log without exponentiating to avoid underflow
             log_allele_frequencies[encoding] = -math.log(10) * get_first_numeric_element(v, "POPAF")
             if overlapping_filters(v, filters_to_exclude):

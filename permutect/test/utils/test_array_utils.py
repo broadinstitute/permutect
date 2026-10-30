@@ -68,6 +68,10 @@ def test_index_tensor_edge_cases():
     cols = LongTensor([[3, 0], [1, 1]])
     assert torch.equal(index_tensor(x, (rows, cols)), x[rows, cols])
 
+    # non-contiguous tensors, eg a transpose
+    t = torch.arange(12).reshape(3, 4).t()
+    assert torch.equal(index_tensor(t, (LongTensor([0, 3]), LongTensor([1, 2]))), t[[0, 3], [1, 2]])
+
 
 def test_add_to_array():
     x = torch.zeros(4, 5).int()
@@ -107,13 +111,15 @@ def test_add_at_index_edge_cases():
     add_at_index(x, (LongTensor([]), LongTensor([])), Tensor([]))
     assert torch.equal(x, torch.ones(2, 2))
 
-    # the return value is a flattened view that shares memory with the input
+    # the input tensor is returned, modified in place
     x = torch.zeros(2, 3)
-    result = add_at_index(x, (LongTensor([1]), LongTensor([2])), Tensor([9]))
-    assert result.shape == (6,)
-    assert result[5] == 9
-    result[0] = 1
-    assert x[0, 0] == 1
+    assert add_at_index(x, (LongTensor([1]), LongTensor([2])), Tensor([9])) is x
+    assert x[1, 2] == 9
+
+    # non-contiguous tensors, eg a transpose, are modified in place, with repeated indices accumulated
+    x = torch.zeros(3, 4).t()
+    add_at_index(x, (LongTensor([0, 3, 3]), LongTensor([1, 2, 2])), Tensor([1, 2, 3]))
+    assert x[0, 1] == 1 and x[3, 2] == 5 and torch.sum(x) == 6
 
 
 def test_downsample_tensor():
@@ -204,6 +210,10 @@ def test_select_and_sum_edge_cases():
     # negative dimensions
     assert torch.equal(select_and_sum(x, sum=(-1,)), x.sum(dim=-1))
     assert torch.equal(select_and_sum(x, select={-1: 2}), x[:, :, 2])
+
+    # negative indices count from the end
+    assert torch.equal(select_and_sum(x, select={0: -1}), x[1])
+    assert torch.equal(select_and_sum(x, select={2: -1}, sum=(1,)), x[:, :, 3].sum(dim=1))
 
     # size-1 dimensions
     y = torch.arange(6).reshape(1, 6, 1)
