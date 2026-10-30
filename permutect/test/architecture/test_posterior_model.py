@@ -8,6 +8,8 @@ from permutect import constants
 from permutect.architecture.posterior_model import PosteriorModel
 from permutect.architecture.posterior_model import best_error_probability_threshold
 from permutect.architecture.posterior_model_priors import PosteriorModelPriors
+from permutect.data.count_binning import COUNT_BIN_SKIP
+from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.datum import Data
 from permutect.test.architecture.test_posterior_model_priors import make_batch
 from permutect.test.host_reads import permutect_calls
@@ -131,8 +133,10 @@ def test_theoretical_roc_has_sensitivity_on_x(monkeypatch):
     model = make_posterior_model(torch.device("cpu"))
     rng = np.random.default_rng(seed=1)
     probs_by_type = {var_type: rng.beta(0.5, 2.0, size=200).astype(np.float32) for var_type in Variation}
+    # like posterior data, which have no reads and so an ALT_COUNT of 0.  Each variant type has its own alt count bin.
     loader = [
-        make_batch([1e-3] * 200, {Data.VARIANT_TYPE: var_type, Data.ALT_COUNT: 1 + var_type}) for var_type in Variation
+        make_batch([1e-3] * 200, {Data.VARIANT_TYPE: var_type, Data.ORIGINAL_ALT_COUNT: 1 + COUNT_BIN_SKIP * var_type})
+        for var_type in Variation
     ]
     batch_probs = iter(torch.from_numpy(probs_by_type[var_type]) for var_type in Variation)
     monkeypatch.setattr(model, "error_probabilities_b", lambda batch, germline_mode=False: next(batch_probs))
@@ -151,6 +155,13 @@ def test_theoretical_roc_has_sensitivity_on_x(monkeypatch):
             sensitivity, precision = np.array(curve.get_xdata()), np.array(curve.get_ydata())
             assert np.all(np.diff(sensitivity) >= 0) and np.all(np.diff(precision) <= 1e-6), tag
             assert sensitivity[-1] > sensitivity[0] and not math.isnan(precision[0]), tag
+
+    # each variant type's subplot of the ROC by alt count has a curve only for the bin of its original alt counts.  The
+    # alt counts used to be ALT_COUNT, which is 0 for posterior data, so every curve was in the first bin.
+    by_alt_count_figure = summary_writer.figures["theoretical ROC by variant type and alt count "]
+    for var_type, axis in zip(Variation, by_alt_count_figure.axes):
+        curve_bins = [line.get_label() for line in axis.get_lines() if len(line.get_xdata()) > 1]
+        assert curve_bins == [alt_count_bin_name(var_type)], var_type.name
 
 
 def posterior_loader(num_batches: int) -> list:
