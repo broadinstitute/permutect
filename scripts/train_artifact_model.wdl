@@ -21,11 +21,21 @@ workflow TrainArtifactModel {
         String? extra_args
     }
 
+    # WDL version 1.0 does not have an empty Optional literal.  Such a literal is very useful because Terra has a bug
+    # where whenever a data table is updated, empty values silently and invisibly get converted to empty strings "".
+    # Thus it is useful to recognize empty strings and declare empty Optionals.  A declaration inside a conditional is
+    # an Optional outside of it, so NONE is always an empty Optional.
+    if (false) {
+        File NONE = ""
+    }
+
+    File? pretrained_model_hack = if select_first([pretrained_model, ""]) == "" then NONE else pretrained_model
+
     call Train {
         input:
             permutect_docker = permutect_docker,
             train_tar = train_tar,
-            pretrained_model = pretrained_model,
+            pretrained_model = pretrained_model_hack,
             num_epochs = num_epochs,
             batch_size = batch_size,
             num_workers = num_workers,

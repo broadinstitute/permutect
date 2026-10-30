@@ -1,3 +1,4 @@
+import os
 import pickle
 from collections import defaultdict
 from types import SimpleNamespace
@@ -64,6 +65,26 @@ def test_capacity_grows_to_fit(estimated_num_data, estimated_num_reads):
     data = [make_datum(index, num_reads) for index, num_reads in enumerate(read_counts)]
     memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data, estimated_num_reads)
     assert_same_data(memory_mapped_data, data)
+
+
+def test_unused_capacity_is_left_out(tmp_path):
+    # from_generator grows its memory maps beyond the data, as a list grows
+    data = [make_datum(index, num_reads=3) for index in range(10)]
+    memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=1000, estimated_num_reads=5000)
+    tarfile = str(tmp_path / "data.tar")
+    memory_mapped_data.save_to_tarfile(tarfile)
+    loaded = MemoryMappedData.load_from_tarfile(tarfile)
+
+    datum_bytes = data[0].get_int_array().nbytes + data[0].get_float_array().nbytes
+    for mmd in (memory_mapped_data, loaded):
+        assert len(mmd.int_mmap) == len(mmd.float_mmap) == 10 and len(mmd.reads_mmap) == 30
+        assert mmd.num_bytes() == 10 * datum_bytes + data[0].reads_re.nbytes * 10
+    assert_same_data(loaded, data)
+
+    # the saved tarfile is as small as one of the same data made with exactly enough capacity
+    exact_tarfile = str(tmp_path / "exact.tar")
+    MemoryMappedData.from_generator(data, estimated_num_data=10, estimated_num_reads=30).save_to_tarfile(exact_tarfile)
+    assert os.path.getsize(tarfile) == os.path.getsize(exact_tarfile)
 
 
 def test_reads_must_match_counts():

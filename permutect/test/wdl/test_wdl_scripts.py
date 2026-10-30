@@ -121,6 +121,54 @@ def test_workflow_inputs_are_used():
     assert not unused, f"workflow inputs that are never used: {unused}"
 
 
+# an input's empty-string hack, eg File? gnomad_hack = if select_first([gnomad, ""]) == "" then NONE else gnomad
+HACK_DECLARATION = r"^\s*\w+\?\s+(\w+_hack)\s*=\s*if\s*\(?\s*select_first\(\[\s*(\w+)\s*,.*$"
+
+
+def workflow_inputs_and_body(wdl_path: str) -> tuple[str, str]:
+    """
+    The input section of a WDL's workflow and the rest of the workflow, without comments
+    """
+    with open(wdl_path) as file:
+        text = re.sub(r"#[^\n]*", "", file.read())
+    workflow = re.search(r"^workflow \w+ \{.*?(?=^task |\Z)", text, re.M | re.S).group(0)
+    inputs = re.search(r"\binput\s*\{(.*?)\n\s*\}", workflow, re.S).group(1)
+    return inputs, workflow.replace(inputs, "")
+
+
+def test_inputs_with_empty_string_hacks_are_used_only_through_them():
+    # Terra turns unset inputs into "", which counts as defined, so an input whose hack turns "" back into an empty
+    # Optional must be used only through the hack.  e.g. MakeTrainingDataset checked defined(cached_plain_text_dataset)
+    # and never used cached_plain_text_dataset_hack, so on Terra an unset cached dataset skipped Mutect2
+    num_hacks, misused = 0, []
+    for wdl in glob.glob(os.path.join(SCRIPTS_DIR, "*.wdl")):
+        _, body = workflow_inputs_and_body(wdl)
+        rest_of_workflow = re.sub(HACK_DECLARATION, "", body, flags=re.M)
+        for hack, name in re.findall(HACK_DECLARATION, body, re.M):
+            num_hacks += 1
+            # a use of the input itself, not the name of a call input that the hack is bound to
+            if re.search(r"\b" + name + r"\b(?!\s*=[^=])", rest_of_workflow):
+                misused.append(f"{os.path.basename(wdl)}: {name} is used instead of {hack}")
+            if not re.search(r"\b" + hack + r"\b", rest_of_workflow):
+                misused.append(f"{os.path.basename(wdl)}: {hack} is never used")
+
+    assert num_hacks > 0, "no empty-string hacks found; has the WDL syntax changed?"
+    assert not misused, f"inputs used without their empty-string hacks: {misused}"
+
+
+def test_optional_file_inputs_have_empty_string_hacks():
+    # Terra turns an unset File? input into "", which a task then fails to localize, eg blacklist_vcf in
+    # MakeTrainingDataset
+    missing = []
+    for wdl in glob.glob(os.path.join(SCRIPTS_DIR, "*.wdl")):
+        inputs, body = workflow_inputs_and_body(wdl)
+        hacked = {name for _, name in re.findall(HACK_DECLARATION, body, re.M)}
+        optional_files = re.findall(r"^\s*File\?\s+(\w+)", inputs, re.M)
+        missing += [f"{os.path.basename(wdl)}: {name}" for name in optional_files if name not in hacked]
+
+    assert not missing, f"optional File inputs without an empty-string hack: {missing}"
+
+
 def task_command(wdl_path: str, task_name: str) -> str:
     with open(wdl_path) as file:
         wdl = file.read()

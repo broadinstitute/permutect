@@ -14,31 +14,41 @@ workflow ComparePermutect {
     	# runtime
     	String gatk_docker
     	File? gatk_override
-
-        File? obscene_hack_leave_unset
     }
+
+    # WDL version 1.0 does not have an empty Optional literal.  Such a literal is very useful because Terra has a bug
+    # where whenever a data table is updated, empty values silently and invisibly get converted to empty strings "".
+    # Thus it is useful to recognize empty strings and declare empty Optionals.  A declaration inside a conditional is
+    # an Optional outside of it, so NONE is always an empty Optional.
+    if (false) {
+        File NONE = ""
+    }
+
+    File? intervals_hack = if select_first([intervals, ""]) == "" then NONE else intervals
+    File? masks_hack = if select_first([masks, ""]) == "" then NONE else masks
+    File? gatk_override_hack = if select_first([gatk_override, ""]) == "" then NONE else gatk_override
 
     call Concordance as PermutectConcordance {
         input:
-            intervals = intervals,
-            masks = if (defined(masks) && masks == "") then obscene_hack_leave_unset else masks,
+            intervals = intervals_hack,
+            masks = masks_hack,
             truth_vcf = truth_vcf,
             truth_vcf_idx = truth_vcf_idx,
             eval_vcf = permutect_vcf,
             eval_vcf_idx = permutect_vcf_idx,
-            gatk_override = gatk_override,
+            gatk_override = gatk_override_hack,
             gatk_docker = gatk_docker
     }
 
     call Concordance as OtherConcordance {
         input:
-            intervals = intervals,
-            masks = if (defined(masks) && masks == "") then obscene_hack_leave_unset else masks,
+            intervals = intervals_hack,
+            masks = masks_hack,
             truth_vcf = truth_vcf,
             truth_vcf_idx = truth_vcf_idx,
             eval_vcf = other_vcf,
             eval_vcf_idx = other_vcf_idx,
-            gatk_override = gatk_override,
+            gatk_override = gatk_override_hack,
             gatk_docker = gatk_docker
     }
 
@@ -57,7 +67,7 @@ workflow ComparePermutect {
             permutect_summary = PermutectConcordance.summary,
             other_summary = OtherConcordance.summary,
 
-            gatk_override = gatk_override,
+            gatk_override = gatk_override_hack,
             gatk_docker = gatk_docker
     }
 

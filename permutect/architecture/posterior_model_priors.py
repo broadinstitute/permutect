@@ -132,7 +132,7 @@ class PosteriorModelPriors(nn.Module):
     def log_priors_bc(self, batch: Batch) -> torch.Tensor:
         variant_types_b = batch.get(Data.VARIANT_TYPE).long()
         log_allele_frequencies_b = batch.get(Data.LOG_ALLELE_FREQUENCY)
-        is_snv_b = (variant_types_b == Variation.SNV).float()
+        is_snv_b = variant_types_b == Variation.SNV
 
         # seq error and germline initialized to 0 or IMPOSSIBLE_LOG_PROB as discussed above
         log_priors_bc = self.log_priors_vc[variant_types_b.long(), :]
@@ -144,8 +144,10 @@ class PosteriorModelPriors(nn.Module):
         )  # 1 minus hom ref probability: 1 - (1 - AF)^2 = AF (2 - AF)
 
         if self.use_context_dependent_snv_priors:
-            log_priors_bc[:, Call.SOMATIC] = (
-                is_snv_b * self.somatic_snv_log_priors(batch) + (1 - is_snv_b) * log_priors_bc[:, Call.SOMATIC]
+            # torch.where rather than mask arithmetic, which gives 0 * -inf = NaN when a log prior is -inf, eg the SNV
+            # priors of a dataset without SNVs
+            log_priors_bc[:, Call.SOMATIC] = torch.where(
+                is_snv_b, self.somatic_snv_log_priors(batch), log_priors_bc[:, Call.SOMATIC]
             )
         return torch.nn.functional.log_softmax(log_priors_bc, dim=-1)
 

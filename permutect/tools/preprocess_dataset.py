@@ -5,14 +5,14 @@ from permutect import constants
 from permutect.data.plain_text_data import make_normalized_mmap_data
 
 """
-This tool takes as input a list of text file Mutect3 training datasets, reads them in chunks that fit in memory,
-normalizes each chunk, outputs each chunk as a binary PyTorch file, and bundles the output as a tarfile.
+This tool takes as input a list of plain text Permutect training datasets made by Mutect2, normalizes their data, and
+saves it as a tarfile of memory-mapped binary arrays.
 """
 
 
 def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(
-        description="preprocess plain text training dataset into tarfile of nprmalized binary data"
+        description="preprocess plain text training datasets into a tarfile of normalized binary data"
     )
     parser.add_argument(
         "--" + constants.TRAINING_DATASETS_NAME,
@@ -35,7 +35,15 @@ def parse_arguments(argv=None):
         required=True,
         help="path to output tarfile of training data",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    datasets, sources = getattr(args, constants.TRAINING_DATASETS_NAME), getattr(args, constants.SOURCES_NAME)
+    # one source for all datasets, or one for each.  Otherwise reading the data would fail partway through.
+    if sources is not None and len(sources) not in (1, len(datasets)):
+        parser.error(
+            f"--{constants.SOURCES_NAME} must be one source or one for each of the {len(datasets)} "
+            f"--{constants.TRAINING_DATASETS_NAME}, not {len(sources)}"
+        )
+    return args
 
 
 def do_work(plain_text_dataset_files, output_tarfile, sources: List[int]):

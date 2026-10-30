@@ -14,9 +14,9 @@ from permutect.architecture.feature_clustering import FeatureClustering
 from permutect.architecture.gated_mlp import GatedRefAltMLP
 from permutect.architecture.mlp import MLP
 from permutect.data.batch import Batch
+from permutect.data.batches_on_device import batches_on_device
 from permutect.data.count_binning import MAX_ALT_COUNT
 from permutect.data.datum import Data
-from permutect.data.prefetch_generator import prefetch_generator
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.metrics.evaluation_metrics import EmbeddingMetrics
 from permutect.misc_utils import float_dtype
@@ -347,7 +347,7 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
     ref_alt_seq_metrics = EmbeddingMetrics()
 
     batch: Batch
-    for batch in tqdm(prefetch_generator(loader, device=model._device), mininterval=60, total=len(loader)):
+    for batch in tqdm(batches_on_device(loader, device=model._device), mininterval=60, total=len(loader)):
         ref_bre, alt_bre, ref_alt_seq_embeddings_be = model.calculate_features(batch)
 
         alt_means_be = alt_bre.means_over_sets().cpu()

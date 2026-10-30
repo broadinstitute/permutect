@@ -88,6 +88,7 @@ workflow Permutect {
     File? common_hets_for_segmentation_hack = if select_first([common_hets_for_segmentation, ""]) == "" then NONE else common_hets_for_segmentation
     File? test_dataset_truth_vcf_hack = if select_first([test_dataset_truth_vcf, ""]) == "" then NONE else test_dataset_truth_vcf
     File? test_dataset_truth_vcf_idx_hack = if select_first([test_dataset_truth_vcf_idx, ""]) == "" then NONE else test_dataset_truth_vcf_idx
+    File? gatk_override_hack = if select_first([gatk_override, ""]) == "" then NONE else gatk_override
 
     String? cached_m2_outputs_hack = if (select_first([cached_m2_outputs,""]) == "") then NONE else cached_m2_outputs
 
@@ -131,7 +132,7 @@ workflow Permutect {
 
                 gatk_docker = permutect_docker,
                 gcs_project_for_requester_pays = gcs_project_for_requester_pays_hack,
-                gatk_override = gatk_override,
+                gatk_override = gatk_override_hack,
                 preemptible = preemptible,
                 max_retries = max_retries
         }

@@ -14,11 +14,11 @@ from permutect.architecture.artifact_model import load_model
 from permutect.architecture.posterior_model import PosteriorModel
 from permutect.data import plain_text_data
 from permutect.data.batch import Batch
+from permutect.data.batches_on_device import batches_on_device
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.data.memory_mapped_data import MemoryMappedData
-from permutect.data.prefetch_generator import prefetch_generator
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.metrics.evaluation_metrics import EmbeddingMetrics
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
@@ -281,6 +281,7 @@ def make_filtered_vcf(
             summary_writer=summary_writer,
             epochs_per_evaluation=5,
         )
+        summary_writer.close()
 
     posterior_model = PosteriorModel(
         initial_log_variant_prior,
@@ -325,6 +326,9 @@ def make_filtered_vcf(
         summary_writer=summary_writer,
         germline_mode=germline_mode,
     )
+    # a SummaryWriter writes events from a background thread that stops when the program exits, so without closing it
+    # the final plots, written just before the program exits, can be lost
+    summary_writer.close()
 
 
 @torch.inference_mode()
@@ -338,7 +342,7 @@ def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_
 
     print("creating posterior data...")
     batch: Batch
-    for batch in tqdm(prefetch_generator(loader, device=model._device), mininterval=60, total=len(loader)):
+    for batch in tqdm(batches_on_device(loader, device=model._device), mininterval=60, total=len(loader)):
         output = model.compute_batch_output(batch)
         for int_array, float_array, logit, embedding in zip(
             batch.get_int_array_be(),
@@ -432,7 +436,7 @@ def apply_filtering_to_vcf(
     encoding_to_posterior_results = {}
 
     batch: Batch
-    batches = prefetch_generator(posterior_loader, device=device)
+    batches = batches_on_device(posterior_loader, device=device)
     for batch in tqdm(batches, mininterval=60, total=len(posterior_loader)):
         # posterior, along with intermediate tensors for debugging/interpretation
         log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, log_posteriors_bc = (
@@ -498,13 +502,13 @@ def apply_filtering_to_vcf(
     info_fields = {
         info_key: ("Float", len(Call), description + " {" + ", ".join(all_types) + "}")
         for info_key, description in (
-            (POST_PROB_INFO_KEY, "Mutect3 posterior probability of"),
+            (POST_PROB_INFO_KEY, "Permutect posterior probability of"),
             (LOG_PRIOR_INFO_KEY, "Log priors of"),
             (SPECTRA_LOG_LIKELIHOOD_INFO_KEY, "Log spectra likelihoods of"),
             (NORMAL_LOG_LIKELIHOOD_INFO_KEY, "Log normal likelihoods of"),
         )
     }
-    info_fields[ARTIFACT_LOD_INFO_KEY] = ("Float", "A", "Mutect3 artifact log odds")
+    info_fields[ARTIFACT_LOD_INFO_KEY] = ("Float", "A", "Permutect artifact log odds")
     filter_descriptions = {name: name for n, name in enumerate(FILTER_NAMES) if n != passing_call_type}
     editor = VcfEditor(input_vcf, output_vcf, info_fields, filter_descriptions)
 
