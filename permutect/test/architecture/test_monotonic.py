@@ -1,7 +1,7 @@
 import torch
 
 from permutect.architecture.monotonic import MonoDense
-from permutect.misc_utils import backpropagate
+from permutect.test.architecture.test_mlp import train
 
 
 def test_is_monotonic():
@@ -38,16 +38,7 @@ def test_monotonic_linear_data():
     y = torch.sum(x * a, dim=1)  # row-by-row dot product
 
     model = MonoDense(input_dimension=input_dim, output_dimensions=[1], num_increasing=input_dim, num_decreasing=0)
-    loss_func = torch.nn.MSELoss(reduction="mean")
-    optimizer = torch.optim.Adam(model.parameters())
-    loss_list = []
-
-    num_epochs = 10000
-    for epoch in range(num_epochs):
-        prediction = model.forward(x).resize_as(y)
-        loss = loss_func(prediction, y)
-        backpropagate(optimizer, loss)
-        loss_list.append(loss.item())
+    loss_list = train(model, x, y, torch.nn.MSELoss(reduction="mean"))
 
     assert loss_list[-1] < 0.01
     assert loss_list[1000] < loss_list[0]
@@ -70,16 +61,7 @@ def test_mix():
         num_increasing=1,
         num_decreasing=1,
     )
-    loss_func = torch.nn.MSELoss(reduction="mean")
-    optimizer = torch.optim.Adam(model.parameters())
-    loss_list = []
-
-    num_epochs = 10000
-    for epoch in range(num_epochs):
-        prediction = model.forward(x).resize_as(y)
-        loss = loss_func(prediction, y)
-        backpropagate(optimizer, loss)
-        loss_list.append(loss.item())
+    loss_list = train(model, x, y, torch.nn.MSELoss(reduction="mean"))
 
     assert loss_list[-1] < 0.01
     assert loss_list[1000] < loss_list[0]
@@ -101,19 +83,8 @@ def test_cant_learn_non_monotonic():
         num_decreasing=0,
     )
     loss_func = torch.nn.MSELoss(reduction="mean")
-    optimizer = torch.optim.Adam(model.parameters())
-    loss_list = []
-
-    num_epochs = 10000
-    for epoch in range(num_epochs):
-        prediction = model.forward(x).resize_as(y)
-        loss = loss_func(prediction, y)
-        backpropagate(optimizer, loss)
-        loss_list.append(loss.item())
-
-    prediction = model.forward(x).resize_as(y)
-    loss = loss_func(prediction, y)
-    assert loss.item() > 0.1
+    train(model, x, y, loss_func)
+    assert loss_func(model.forward(x).reshape(y.shape), y).item() > 0.1
 
 
 def test_cubic():
@@ -129,16 +100,7 @@ def test_cubic():
         num_increasing=input_dim,
         num_decreasing=0,
     )
-    loss_func = torch.nn.MSELoss(reduction="mean")
-    optimizer = torch.optim.Adam(model.parameters())
-    loss_list = []
-
-    num_epochs = 10000
-    for epoch in range(num_epochs):
-        prediction = model.forward(x).resize_as(y)
-        loss = loss_func(prediction, y)
-        backpropagate(optimizer, loss)
-        loss_list.append(loss.item())
+    loss_list = train(model, x, y, torch.nn.MSELoss(reduction="mean"))
 
     # y has variance 0.24.  The final loss was 0.011 to 0.013 for 3 seeds in 20.
     assert loss_list[-1] < 0.02

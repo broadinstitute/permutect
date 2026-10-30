@@ -4,6 +4,17 @@ from permutect.architecture.mlp import MLP
 from permutect.misc_utils import backpropagate
 
 
+def train(model, x, y, loss_func, num_epochs: int = 10000) -> list[float]:
+    # train with Adam on all of the data at every step, and return the loss of each step
+    optimizer = torch.optim.Adam(model.parameters())
+    losses = []
+    for _ in range(num_epochs):
+        loss = loss_func(model.forward(x).reshape(y.shape), y)
+        backpropagate(optimizer, loss)
+        losses.append(loss.item())
+    return losses
+
+
 # test with artificial data where a*x = 0 is a perfect linear separator, with a margin around it
 def test_linearly_separable_data():
     torch.manual_seed(0)
@@ -19,16 +30,7 @@ def test_linearly_separable_data():
     layer_sizes = [input_dim, 1]
     model = MLP(layer_sizes)
 
-    loss_func = torch.nn.BCEWithLogitsLoss(reduction="mean")
-    optimizer = torch.optim.Adam(model.parameters())
-    loss_list = []
-
-    num_epochs = 10000
-    for epoch in range(num_epochs):
-        prediction = model.forward(x)
-        loss = loss_func(prediction, y)
-        backpropagate(optimizer, loss)
-        loss_list.append(loss.item())
+    loss_list = train(model, x, y, torch.nn.BCEWithLogitsLoss(reduction="mean"))
 
     assert loss_list[-1] < 0.1
     assert loss_list[1000] < loss_list[0]
@@ -57,16 +59,7 @@ def test_annular_data():
     layer_sizes = [input_dim, 5, 5, 5, 5, 1]
     model = MLP(layer_sizes)
 
-    loss_func = torch.nn.BCEWithLogitsLoss(reduction="mean")
-    optimizer = torch.optim.Adam(model.parameters())
-    loss_list = []
-
-    num_epochs = 10000
-    for epoch in range(num_epochs):
-        prediction = model.forward(x)
-        loss = loss_func(torch.squeeze(prediction), y)
-        backpropagate(optimizer, loss)
-        loss_list.append(loss.item())
+    loss_list = train(model, x, y, torch.nn.BCEWithLogitsLoss(reduction="mean"))
 
     assert loss_list[-1] < 0.2
 
@@ -92,16 +85,7 @@ def test_xor_data():
     layer_sizes = [2, 8, 1]
     model = MLP(layer_sizes)
 
-    loss_func = torch.nn.BCEWithLogitsLoss(reduction="mean")
-    optimizer = torch.optim.Adam(model.parameters())
-    loss_list = []
-
-    num_epochs = 10000
-    for epoch in range(num_epochs):
-        prediction = model.forward(x)
-        loss = loss_func(prediction.squeeze(), y)
-        backpropagate(optimizer, loss)
-        loss_list.append(loss.item())
+    loss_list = train(model, x, y, torch.nn.BCEWithLogitsLoss(reduction="mean"))
 
     assert loss_list[-1] < 0.15
     assert loss_list[1000] < loss_list[0]
