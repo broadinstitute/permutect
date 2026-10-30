@@ -147,7 +147,7 @@ def get_first_numeric_element(variant, key):
 
 
 def encode(contig: str, position: int, ref: str, alt: str):
-    # TODO: contigs stored as integer index must be converted back to string to compare VCF variants with dataset variants!!!
+    # contig is a name such as chr1; encode_datum converts a Datum's contig index to its name
     # both alleles are needed to distinguish eg AT>A from ATT>A.  They are truncated like the alleles stored in a Datum.
     trimmed_ref, trimmed_alt = trim_alleles_on_right(ref, alt)
     encoded_alleles = truncate_bases_if_necessary(trimmed_ref) + ":" + truncate_bases_if_necessary(trimmed_alt)

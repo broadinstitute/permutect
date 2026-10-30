@@ -329,8 +329,8 @@ def make_filtered_vcf(
 
 @torch.inference_mode()
 def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_workers: int):
-    # pass through the dataset, running the artifact model
-    # to get artifact logits, which we record in a dict keyed by variant strings.  These will later be added to PosteriorDatum objects.
+    # pass through the dataset, running the artifact model, and yield the data of the posterior model: each datum without
+    # its reads, with the artifact logit cached and the artifact model's features as its INFO vector
     loader = dataset.make_data_loader(batch_size, pin_memory=model._device.type == "cuda", num_workers=num_workers)
 
     # test-time adaptation leaves the model in training mode, which would turn on dropout and batch norm updates
@@ -519,7 +519,6 @@ def apply_filtering_to_vcf(
 
         filters = overlapping_filters(v, TRUSTED_ARTIFACT_FILTERS)
 
-        # TODO: in germline mode, somatic doesn't exist (or is just highly irrelevant) and germline is not an error!
         encoding = encode_variant(v, zero_based=True)  # cyvcf2 is zero-based
         if encoding in encoding_to_posterior_results:
             posterior_result = encoding_to_posterior_results[encoding]
@@ -554,32 +553,25 @@ def apply_filtering_to_vcf(
             correctness_label = EmbeddingMetrics.UNKNOWN
             if label != Label.UNLABELED:
                 labeled_truth = True
-
-                # TODO: this is sloppy -- it only works because when we label the posterior dataset (if truth is available)
-                # TODO: we stretch the definitions so that "Label.ARTIFACT" simply means "something we shouldn't call", including
-                # TODO: artifact or germline (in the somatic calling case), and "Label.VARIANT" means "something we should call"
-                is_correct = (called_as_error and label == Label.ARTIFACT) or (
-                    not called_as_error and label == Label.VARIANT
-                )
-
-                # TODO: double-check the logic here
-                if is_correct:
-                    if label == Label.VARIANT:
-                        correctness_label = EmbeddingMetrics.TRUE_POSITIVE
-                    elif error_call == Call.ARTIFACT or error_call == Call.NORMAL_ARTIFACT:
-                        correctness_label = EmbeddingMetrics.TRUE_NEGATIVE_ARTIFACT
-                    # elif error_call == Call.SEQ_ERROR:
-                    #    correctness_label = EmbeddingMetrics.TRUE_NEGATIVE_SEQ_ERROR
-                    # we don't do anything for germline (in somatic mode) or seq error --
-                else:
-                    if called_as_error:
-                        if error_call == Call.ARTIFACT or error_call == Call.NORMAL_ARTIFACT:
-                            correctness_label = EmbeddingMetrics.FALSE_NEGATIVE_ARTIFACT
-                    else:
-                        correctness_label = EmbeddingMetrics.FALSE_POSITIVE
-                    # TODO: this is only right for somatic calling
-                    bad_call = error_call if called_as_error else Call.SOMATIC
-                    evaluation_metrics.record_mistake(posterior_result, bad_call)
+                # with a truth VCF, labels say what should happen to a variant rather than what it is: ARTIFACT means it
+                # should be filtered, whether it's an artifact or eg a germline variant in somatic calling, and VARIANT
+                # means it should pass
+                should_be_filtered = label == Label.ARTIFACT
+                if called_as_error != should_be_filtered:
+                    evaluation_metrics.record_mistake(
+                        posterior_result, error_call if called_as_error else passing_call_type
+                    )
+                if not called_as_error:
+                    correctness_label = (
+                        EmbeddingMetrics.FALSE_POSITIVE if should_be_filtered else EmbeddingMetrics.TRUE_POSITIVE
+                    )
+                elif error_call in (Call.ARTIFACT, Call.NORMAL_ARTIFACT):
+                    correctness_label = (
+                        EmbeddingMetrics.TRUE_NEGATIVE_ARTIFACT
+                        if should_be_filtered
+                        else EmbeddingMetrics.FALSE_NEGATIVE_ARTIFACT
+                    )
+                # variants filtered for other reasons, such as sequencing errors, have no correctness label
 
             # TODO: we don't yet record ref features but we could eventually. . .
             embedding_metrics.record_batch(

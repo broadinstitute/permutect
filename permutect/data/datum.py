@@ -76,8 +76,8 @@ class Data(enum.Enum):
     # after this, at the end of the int16 array comes the sub-array containing the ref sequence haplotype
 
     # float array elements
-    # log allele frequency, maf, normal maf, and cached artifact logit are not used until the posterior model
-    # are are set to
+    # log allele frequency, maf, normal maf, and cached artifact logit are not used until the posterior model.  They are
+    # NaN until filter_variants sets them from the VCF, the segmentations and the artifact model.
     # allele frequency is stored as its natural log because population allele frequencies can be too small for float16
     SEQ_ERROR_LOG_LK = (FLOAT_DTYPE, 0)
     NORMAL_SEQ_ERROR_LOG_LK = (FLOAT_DTYPE, 1)
@@ -85,8 +85,6 @@ class Data(enum.Enum):
     MAF = (FLOAT_DTYPE, 3)
     NORMAL_MAF = (FLOAT_DTYPE, 4)
     CACHED_ARTIFACT_LOGIT = (FLOAT_DTYPE, 5)  # +inf marks a known artifact, eg from a trusted upstream filter
-    # TODO: left off here -- I added these constants to the enum but haven't yet initialized them in the constructor
-    # TODO: nor have I cleaned up how they interact with the posterior datum
     # after this, at the end of the float16 array comes the sub-array containing the INFO vector
 
     def __init__(self, dtype: np.dtype, idx: int):

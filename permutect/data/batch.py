@@ -344,7 +344,6 @@ class BatchIndexedTensor(Tensor):
         self.resize_(BatchIndexedTensor.shape_for(new_num_sources, self.has_logits()))
         self[old_num_sources:] = 0
 
-    # TODO: move to subclass as in comments below
     def record_datum(self, datum: Datum, value: float = 1.0, grow_source_if_necessary: bool = True):
         assert not self.has_logits(), "this only works when not including logits"
         source = datum.get(Data.SOURCE)
@@ -359,7 +358,6 @@ class BatchIndexedTensor(Tensor):
 
         self[source, datum.get(Data.LABEL), datum.get(Data.VARIANT_TYPE), ref_idx, alt_idx] += value
 
-    # TODO: move to a metrics subclass -- this class should really only be for indexing, not recording
     def record(self, batch: Batch, values: Tensor, logits: Tensor = None, use_original_counts: bool = False):
         batch.batch_indices(use_original_counts).increment_tensor(self, values=values, logits=logits)
 

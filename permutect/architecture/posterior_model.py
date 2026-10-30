@@ -269,13 +269,12 @@ class PosteriorModel(torch.nn.Module):
             error_probs.append(error_probs_b)
             var_types.append(var_types_b)
 
-            # TODO: should this be the original alt counts instead?
             indices = BatchIndices(
                 sources=torch.zeros_like(var_types_b),
                 labels=torch.full_like(var_types_b, Label.VARIANT),
                 var_types=var_types_b,
                 ref_counts=torch.zeros_like(var_types_b),
-                alt_counts=batch.get(Data.ALT_COUNT),
+                alt_counts=batch.get(Data.ORIGINAL_ALT_COUNT),
             )
             error_logits_b = torch.logit(error_probs_b, eps=LOGIT_EPS)
             indices.increment_tensor(theoretical_metrics, values=1 - error_probs_b, logits=error_logits_b)

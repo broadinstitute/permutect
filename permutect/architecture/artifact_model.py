@@ -239,7 +239,6 @@ class ArtifactModel(torch.nn.Module):
         info_and_seq_re = torch.vstack((ref_info_and_seq_re, alt_info_and_seq_re))
         reads_info_seq_re = torch.hstack((read_embeddings_re, info_and_seq_re))
 
-        # TODO: might be a bug if every datum in batch has zero ref reads?
         ref_bre = RaggedSets(flattened_tensor_nf=reads_info_seq_re[:total_ref], lengths_b=ref_counts_b)
         alt_bre = RaggedSets(flattened_tensor_nf=reads_info_seq_re[total_ref:], lengths_b=alt_counts_b)
         transformed_ref_bre, transformed_alt_bre = self.ref_alt_reads_encoder.forward(ref_bre, alt_bre)

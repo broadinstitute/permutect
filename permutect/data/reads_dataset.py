@@ -1,4 +1,3 @@
-import gc
 import random
 from typing import List
 
@@ -120,11 +119,13 @@ class ReadsDataset(IterableDataset):
 
         # The way multiple DataLoader workers work in PyTorch is not so obvious.
         # 1) There is an original Dataset
-        # 2) There is a DataLoader associated with that Dataset that creates one copy of the Dataset for each worker
-        #    process.  I believe that tensors and numpy arrays in RAM are deep-copied in this process, and I'm pretty
-        #   sure that the memory-map file backing the dataset is not copied.
-        # 3) when iter() is called it is usually done so implicitly via the DataLoader, in which case "self" refers to
-        # one of the copies and we are only responsible for part of the memory-mapped data.
+        # 2) The DataLoader gives each worker process its own copy of the Dataset.  With fork (the Linux default through
+        #    Python 3.13) a worker shares the original's memory copy-on-write.  With spawn (the macOS default) or
+        #    forkserver (the Linux default from Python 3.14) it gets a pickled copy, in which numpy arrays are copied,
+        #    tensors are moved to shared memory, and memory maps are reopened from their files rather than copied.
+        # 3) With num_workers > 0 the DataLoader calls iter() in each worker on its copy, which is responsible for only
+        #    part of the memory-mapped data.  With num_workers = 0, the default, iter() runs on the original Dataset in
+        #    the main process, which is responsible for all of it.
         # 4) this part of the memory-mapped data might be too big for available RAM, so we load one contiguous chunk
         # (this is a chunk within the subset of data that this worker is responsible for) into RAM at a time.
 
@@ -159,8 +160,9 @@ class ReadsDataset(IterableDataset):
             chunk_read_end_idx = self._read_offsets[chunk_end_idx]
 
             ram_timer = Timer(f"Worker {worker_id} loading chunk [{chunk_start_idx}, {chunk_end_idx}) into RAM.")
-            # TODO: I think the .copy() is necessary to copy the slice of the memory-map from disk into RAM
-            # these operations should be really fast because it's all sequential access
+            # copying reads each chunk from the memory-mapped files in one sequential pass, so that the shuffled access
+            # below is to RAM rather than to the files.  The copies aren't needed for correctness: a slice of a memory
+            # map is read from its file when used, and Datum copies its int and float arrays anyway.
             chunk_int_data_ve = int_array_ve[chunk_start_idx:chunk_end_idx].copy()
             chunk_float_data_ve = float_array_ve[chunk_start_idx:chunk_end_idx].copy()
             chunk_reads_re = stacked_reads_re[chunk_read_start_idx:chunk_read_end_idx].copy()
@@ -182,13 +184,12 @@ class ReadsDataset(IterableDataset):
                 # assert datum.get_ref_count() + datum.get_alt_count() == len(datum.get_reads_array_re())
                 yield datum
 
-            # we have finished yielding all the data in this chunk.  Because this is such a large amount of data,
-            # we explicitly free memory (delete objects and garbage collect) before loading the next chunk
+            # free this chunk's arrays before the next chunk is copied into RAM, rather than only when the names are
+            # reassigned after that copy.  Each Datum's reads are views of chunk_reads_re, which therefore stays in
+            # memory until this chunk's data have all been batched.
             del chunk_int_data_ve
             del chunk_float_data_ve
             del chunk_reads_re
-            del indices
-            gc.collect()
 
     def num_sources(self) -> int:
         return self.totals_slvra.num_sources()

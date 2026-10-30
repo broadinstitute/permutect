@@ -47,7 +47,6 @@ class EvaluationMetrics:
         self.has_been_sent_to_cpu = True
         return self
 
-    # TODO: currently doesn't record unlabeled data at all
     def record_batch(
         self,
         epoch_type: Epoch,
@@ -57,11 +56,10 @@ class EvaluationMetrics:
         use_original_counts: bool = False,
     ):
         assert not self.has_been_sent_to_cpu, "Can't record after already sending to CPU"
-        is_labeled = batch.batch_indices(use_original_counts).labels != Label.UNLABELED
-        weights_with_labeled_mask = is_labeled * (weights if weights is not None else torch.ones_like(logits))
+        # unlabeled data only appear in the logit histograms, since accuracy, calibration and ROC curves need labels
         self.accuracy_metrics_by_epoch_type[epoch_type].record(
             batch,
-            values=weights_with_labeled_mask,
+            values=weights if weights is not None else torch.ones_like(logits),
             logits=logits,
             use_original_counts=use_original_counts,
         )
