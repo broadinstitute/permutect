@@ -329,8 +329,8 @@ def make_filtered_vcf(
 
 @torch.inference_mode()
 def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_workers: int):
-    # pass through the dataset, running the artifact model
-    # to get artifact logits, which we record in a dict keyed by variant strings.  These will later be added to PosteriorDatum objects.
+    # pass through the dataset, running the artifact model, and yield the data of the posterior model: each datum without
+    # its reads, with the artifact logit cached and the artifact model's features as its INFO vector
     loader = dataset.make_data_loader(batch_size, pin_memory=model._device.type == "cuda", num_workers=num_workers)
 
     # test-time adaptation leaves the model in training mode, which would turn on dropout and batch norm updates
