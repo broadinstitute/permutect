@@ -1,8 +1,6 @@
-singular
-jukebox
-all_dream
-masks
-dream-vcfs
-seq-error
-.git
-.idea
+# The Dockerfile copies only these, so leave everything else, eg .pixi and local data, out of the build context.
+# podman, which docker_command.sh uses, sends the whole build context to its VM.
+*
+!pyproject.toml
+!permutect/
+**/__pycache__

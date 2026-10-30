@@ -1,6 +1,6 @@
 """
-Checks that the console scripts in pyproject.toml and the README agree with the code and the files in the repo, and
-that pyproject.toml agrees with itself.
+Checks that the console scripts in pyproject.toml and the README agree with the code and the files in the repo, that
+pyproject.toml agrees with itself, and that the .dockerignore agrees with the Dockerfile.
 """
 
 import importlib
@@ -55,3 +55,15 @@ def test_dev_extra_requires_the_pytest_minversion():
     # otherwise installing the dev extra could give a pytest too old to run the tests
     minversion = pyproject()["tool"]["pytest"]["ini_options"]["minversion"]
     assert f"pytest>={minversion}" in pyproject()["project"]["optional-dependencies"]["dev"]
+
+
+def test_docker_build_context_is_only_what_the_dockerfile_copies():
+    # a COPY of something the .dockerignore leaves out would fail the build, and anything else not left out is sent to
+    # the build for nothing
+    with open(os.path.join(REPO_DIR, "Dockerfile")) as file:
+        copy_lines = [line.split()[1:-1] for line in file if line.startswith("COPY ")]
+    copied = {source.rstrip("/") for sources in copy_lines for source in sources if not source.startswith("--")}
+    with open(os.path.join(REPO_DIR, ".dockerignore")) as file:
+        patterns = [line.strip() for line in file if line.strip() and not line.startswith("#")]
+    assert patterns[0] == "*"
+    assert {pattern[1:].rstrip("/") for pattern in patterns if pattern.startswith("!")} == copied
