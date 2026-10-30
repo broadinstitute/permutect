@@ -57,3 +57,24 @@ def test_downsampled_forward_pass_reads_device_data_on_the_cpu_once(monkeypatch)
 
     assert host_reads == [(2,)]
     assert len(downsampled.get_reads_re()) == 3 + 9
+
+
+def test_batch_without_ref_reads():
+    # every ref tensor is empty, and the ref features of each datum come from the regularizer of its empty set
+    model = load_model(PERMUTECT_V0_9_2_ARTIFACT_MODEL, device=torch.device("cpu"))
+    data = []
+    for datum in first_data(16):
+        alt_only = Datum(datum.int_array.copy(), datum.float_array.copy(), datum.get_alt_reads_re(), compressed=True)
+        alt_only.set(Data.REF_COUNT, 0)
+        data.append(alt_only)
+    batch = Batch(data)
+    assert batch.ref_and_alt_totals[0] == 0
+
+    keep_half_b = torch.full((batch.size(),), 0.5)
+    for batch_to_check in (batch, DownsampledBatch(batch, ref_fracs_b=keep_half_b, alt_fracs_b=keep_half_b)):
+        model.zero_grad()
+        output = model.compute_batch_output(batch_to_check)
+        losses = model.compute_batch_losses(output, batch_to_check)
+        losses.total_losses_b.sum().backward()
+        assert torch.isfinite(output.ref_features_be).all() and torch.isfinite(losses.total_losses_b).all()
+        assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
