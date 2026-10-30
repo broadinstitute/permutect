@@ -49,6 +49,56 @@ def test_impossible_calls_use_the_shared_impossible_log_prob(monkeypatch):
     assert torch.all(model.priors.log_priors_vc[:, Call.GERMLINE] == impossible)
 
 
+# depths and counts for which every call is plausible
+PLAUSIBLE_VALUES = {
+    Data.ORIGINAL_DEPTH: 30,
+    Data.ORIGINAL_ALT_COUNT: 5,
+    Data.ORIGINAL_NORMAL_DEPTH: 30,
+    Data.ORIGINAL_NORMAL_ALT_COUNT: 2,
+    Data.MAF: 0.5,
+    Data.NORMAL_MAF: 0.5,
+    Data.SEQ_ERROR_LOG_LK: -10,
+}
+
+
+def assert_no_nan(model: PosteriorModel, batch):
+    # in the posteriors, or in the loss of learn_priors_and_spectra and its gradients for the spectra
+    assert not torch.isnan(model.posterior_probabilities_bc(batch)).any()
+    loss = -torch.mean(torch.logsumexp(model.log_relative_posteriors_bc(batch), dim=1))
+    loss.backward()
+    assert torch.isfinite(loss)
+    for name, param in model.spectra.named_parameters():
+        assert param.grad is None or not torch.isnan(param.grad).any(), name
+
+
+def test_dataset_without_snvs_has_no_nan_posteriors():
+    # learn_priors_and_spectra starts without context-dependent SNV priors, and its M step gives a dataset without SNVs
+    # an SNV somatic log prior of log(0) = -inf.  Once context-dependent priors were enabled, the somatic log prior of
+    # every indel was 0 * -inf = NaN, and so were its posteriors and the gradients of every spectrum.
+    model = make_posterior_model(torch.device("cpu"))
+    model.priors.disable_context_dependent_snv_priors()
+    totals_vc = torch.ones(len(Variation), len(Call))
+    totals_vc[Variation.SNV] = 0
+    no_snvs_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra()
+    model.priors.update_priors_m_step(totals_vc, no_snvs_rrra, no_snvs_rrra, ignored_to_non_ignored_ratio=10)
+    assert model.priors.log_priors_vc[Variation.SNV, Call.SOMATIC] == -math.inf
+
+    model.priors.enable_context_dependent_snv_priors()
+    assert_no_nan(model, make_batch([0.01, 0.1], PLAUSIBLE_VALUES | {Data.VARIANT_TYPE: Variation.INSERTION}))
+
+
+# minor allele fractions of 0 or 1, eg from copy-neutral LOH, and population allele frequencies of 0 or 1 used to give
+# 0 * log(0) = NaN
+@pytest.mark.parametrize(
+    "allele_frequency, values",
+    [(0.01, {Data.MAF: 0.0}), (0.01, {Data.MAF: 1.0}), (0.01, {Data.NORMAL_MAF: 0.0}), (0.01, {Data.NORMAL_MAF: 1.0})]
+    + [(0.0, {}), (1.0, {})],
+)
+def test_extreme_allele_fractions_have_no_nan_posteriors(allele_frequency, values):
+    model = make_posterior_model(torch.device("cpu"))
+    assert_no_nan(model, make_batch([allele_frequency] * 2, PLAUSIBLE_VALUES | values))
+
+
 def test_spectra_use_the_posterior_model_device():
     model = make_posterior_model(META)
     assert model.spectra._device == META
