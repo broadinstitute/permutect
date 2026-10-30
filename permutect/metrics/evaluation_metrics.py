@@ -81,70 +81,41 @@ class EvaluationMetrics:
 
         mistake_calls = posterior_result_mistakes_by_call_and_var_type.keys()
         num_rows = len(mistake_calls)
-
-        af_fig, af_axes = plt.subplots(num_rows, len(Variation), sharex="all", sharey="none", squeeze=False)
-        logit_fig, logit_axes = plt.subplots(num_rows, len(Variation), sharex="all", sharey="none", squeeze=False)
-        ac_fig, ac_axes = plt.subplots(num_rows, len(Variation), sharex="all", sharey="none", squeeze=False)
-        prob_fig, prob_axes = plt.subplots(num_rows, len(Variation), sharex="all", sharey="none", squeeze=False)
-
-        for row_idx, mistake_call in enumerate(mistake_calls):
-            for var_type in Variation:
-                posterior_results = posterior_result_mistakes_by_call_and_var_type[mistake_call][var_type]
-
-                af_data = [pr.alt_count / pr.depth for pr in posterior_results]
-                plotting.simple_histograms_on_axis(af_axes[row_idx, var_type], [af_data], [""], 20)
-
-                ac_data = [pr.alt_count for pr in posterior_results]
-                plotting.simple_histograms_on_axis(ac_axes[row_idx, var_type], [ac_data], [""], 20)
-
-                # known artifacts have infinite artifact logits, which can't be histogrammed
-                logit_data = [pr.artifact_logit for pr in posterior_results if math.isfinite(pr.artifact_logit)]
-                plotting.simple_histograms_on_axis(logit_axes[row_idx, var_type], [logit_data], [""], 20)
-
-                # posterior probability assigned to this incorrect call
-                prob_data = [pr.posterior_probabilities[mistake_call] for pr in posterior_results]
-                plotting.simple_histograms_on_axis(prob_axes[row_idx, var_type], [prob_data], [""], 20)
-
         variation_types = [var_type.name for var_type in Variation]
         row_names = [mistake.name for mistake in mistake_calls]
 
-        plotting.tidy_subplots(
-            af_fig,
-            af_axes,
-            x_label="alt allele fraction",
-            y_label="",
-            row_labels=row_names,
-            col_labels=variation_types,
+        # each figure's tag, x-axis label, and data for the posterior results of the mistakes with a given call
+        histograms = (
+            (
+                "mistake allele fractions",
+                "alt allele fraction",
+                lambda prs, call: [pr.alt_count / pr.depth for pr in prs],
+            ),
+            ("mistake alt counts", "alt count", lambda prs, call: [pr.alt_count for pr in prs]),
+            # known artifacts have infinite artifact logits, which can't be histogrammed
+            (
+                "mistake artifact logits",
+                "artifact logit",
+                lambda prs, call: [pr.artifact_logit for pr in prs if math.isfinite(pr.artifact_logit)],
+            ),
+            # posterior probability assigned to this incorrect call
+            (
+                "probability assigned to mistake calls",
+                "mistake call probability",
+                lambda prs, call: [pr.posterior_probabilities[call] for pr in prs],
+            ),
         )
-        plotting.tidy_subplots(
-            ac_fig,
-            ac_axes,
-            x_label="alt count",
-            y_label="",
-            row_labels=row_names,
-            col_labels=variation_types,
-        )
-        plotting.tidy_subplots(
-            logit_fig,
-            logit_axes,
-            x_label="artifact logit",
-            y_label="",
-            row_labels=row_names,
-            col_labels=variation_types,
-        )
-        plotting.tidy_subplots(
-            prob_fig,
-            prob_axes,
-            x_label="mistake call probability",
-            y_label="",
-            row_labels=row_names,
-            col_labels=variation_types,
-        )
-
-        summary_writer.add_figure("mistake allele fractions", af_fig)
-        summary_writer.add_figure("mistake alt counts", ac_fig)
-        summary_writer.add_figure("mistake artifact logits", logit_fig)
-        summary_writer.add_figure("probability assigned to mistake calls", prob_fig)
+        for tag, x_label, histogram_data in histograms:
+            fig, axes = plt.subplots(num_rows, len(Variation), sharex="all", sharey="none", squeeze=False)
+            for row_idx, mistake_call in enumerate(mistake_calls):
+                for var_type in Variation:
+                    posterior_results = posterior_result_mistakes_by_call_and_var_type[mistake_call][var_type]
+                    data = histogram_data(posterior_results, mistake_call)
+                    plotting.simple_histograms_on_axis(axes[row_idx, var_type], [data], [""], 20)
+            plotting.tidy_subplots(
+                fig, axes, x_label=x_label, y_label="", row_labels=row_names, col_labels=variation_types
+            )
+            summary_writer.add_figure(tag, fig)
 
     def make_plots(
         self,
