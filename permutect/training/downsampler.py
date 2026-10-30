@@ -1,3 +1,5 @@
+import itertools
+
 import torch
 from torch import IntTensor
 from torch import Tensor
@@ -21,6 +23,30 @@ from permutect.misc_utils import backpropagate
 from permutect.utils.stats_utils import beta_binomial_log_lk
 
 
+def binned_transitions(max_count: int, num_bins: int, bin_index, alpha_k11: Tensor, beta_k11: Tensor) -> Tensor:
+    """
+    The probabilities of downsampling each count bin to each count bin under each beta binomial basis component 'k',
+    indexed by k, the original count bin and the downsampled count bin
+    """
+    counts = IntTensor(range(max_count + 1))
+    counts_k1d, downsampled_counts_k1d = counts.view(1, -1, 1), counts.view(1, 1, -1)  # dummy indices for broadcasting
+    trans_kcd = torch.where(
+        counts_k1d >= downsampled_counts_k1d,
+        torch.exp(beta_binomial_log_lk(n=counts_k1d, k=downsampled_counts_k1d, alpha=alpha_k11, beta=beta_k11)),
+        0,
+    )
+
+    # now we need to bin this.  If you think about it carefully, the appropriate thing to do is *sum* over downsampled
+    # counts that correspond to the same bin and to *average* over original counts.  We could do this in some fancy vectorized
+    # way, but because this is a one-time cost during construction we employ a slower but clearer approach.
+    # we implement the average by summing over everything and dividing by the count bin skip, which is the number
+    # of counts per bin
+    binned_trans_kbb = torch.zeros(len(alpha_k11), num_bins, num_bins)
+    for count, downsampled_count in itertools.product(range(max_count + 1), repeat=2):
+        binned_trans_kbb[:, bin_index(count), bin_index(downsampled_count)] += trans_kcd[:, count, downsampled_count]
+    return binned_trans_kbb / COUNT_BIN_SKIP
+
+
 class Downsampler(Module):
     # downsampling is done as a mixture of beta binomials with a *fixed* set of basis beta distributions
     BETA_BASIS_SHAPES = torch.tensor([[1.0, 1.0], [1.0, 5.0], [5.0, 1.0], [5.0, 5.0]])
@@ -36,55 +62,16 @@ class Downsampler(Module):
         alpha_k11 = self.beta_basis[:, 0].view(-1, 1, 1)
         beta_k11 = self.beta_basis[:, 1].view(-1, 1, 1)
 
-        # these are 'raw' as opposed to binned
-        raw_ref_counts_r = IntTensor(range(MAX_REF_COUNT + 1))
-        raw_alt_counts_a = IntTensor(range(MAX_ALT_COUNT + 1))
-
-        # we're about to have a lot of indices.  'r' and 'a' denote ref and alt counts as usual.  'y' and 'z' denote downsampled
-        # ref and alt counts, so for example an alt downsampling transition matrix is indexed as k, a, v, where k is the
-        # basis index.  "trans," by the way, is short for "transition" in the sense of transition to downsampled read counts
-
-        ref_kry = raw_ref_counts_r.view(1, -1, 1)  # k, y are dummy indices for broadcasting
-        downref_kry = raw_ref_counts_r.view(1, 1, -1)  # k, r are dummy indices for broadcasting
-        alt_haz = raw_alt_counts_a.view(1, -1, 1)  # h, v are dummy indices for broadcasting
-        downalt_haz = raw_alt_counts_a.view(1, 1, -1)  # H, a are dummy indices for broadcasting
-
-        ref_trans_kry = torch.where(
-            ref_kry >= downref_kry,
-            torch.exp(beta_binomial_log_lk(n=ref_kry, k=downref_kry, alpha=alpha_k11, beta=beta_k11)),
-            0,
+        # transitions to downsampled count bins, indexed by basis 'k', then ref (r) and downsampled ref (y) count bins, or
+        # alt (a) and downsampled alt (z) count bins
+        self.binned_ref_trans_kry = Buffer(
+            binned_transitions(MAX_REF_COUNT, NUM_REF_COUNT_BINS, ref_count_bin_index, alpha_k11, beta_k11)
         )
-        alt_trans_haz = torch.where(
-            alt_haz >= downalt_haz,
-            torch.exp(beta_binomial_log_lk(n=alt_haz, k=downalt_haz, alpha=alpha_k11, beta=beta_k11)),
-            0,
+        # in the downsampling we guarantee at least one alt read count, so a beta binomial that samples no alt reads
+        # ends up with one read, hence is in bin 0, which is where alt_count_bin_index puts 0.
+        self.binned_alt_trans_haz = Buffer(
+            binned_transitions(MAX_ALT_COUNT, NUM_ALT_COUNT_BINS, alt_count_bin_index, alpha_k11, beta_k11)
         )
-
-        # now we need to bin this.  If you think about it carefully, the appropriate thing to do is *sum* over downsampled
-        # counts that correspond to the same bin and to *average* over original counts.  We could do this in some fancy vectorized
-        # way, but because this is a one-time cost during construction we employ a slower but clearer approach.
-        # we implement the average by summing over everything and dividing by the count bin skip, which is the number
-        # of counts per bin
-
-        binned_ref_trans_kry = torch.zeros(len(self.beta_basis), NUM_REF_COUNT_BINS, NUM_REF_COUNT_BINS)
-        binned_alt_trans_haz = torch.zeros(len(self.beta_basis), NUM_ALT_COUNT_BINS, NUM_ALT_COUNT_BINS)
-
-        for ref in range(MAX_REF_COUNT + 1):
-            ref_bin = ref_count_bin_index(ref)
-            for downref in range(MAX_REF_COUNT + 1):
-                downref_bin = ref_count_bin_index(downref)
-                binned_ref_trans_kry[:, ref_bin, downref_bin] += ref_trans_kry[:, ref, downref]
-
-        for alt in range(MAX_ALT_COUNT + 1):
-            alt_bin = alt_count_bin_index(alt)
-            for downalt in range(MAX_ALT_COUNT + 1):
-                # in the downsampling we guarantee at least one alt read count, so a beta binomial that samples no
-                # alt reads end up with one read, hence is in bin 0, which is where alt_count_bin_index puts 0.
-                downalt_bin = alt_count_bin_index(downalt)
-                binned_alt_trans_haz[:, alt_bin, downalt_bin] += alt_trans_haz[:, alt, downalt]
-
-        self.binned_ref_trans_kry = Buffer(binned_ref_trans_kry / COUNT_BIN_SKIP)
-        self.binned_alt_trans_haz = Buffer(binned_alt_trans_haz / COUNT_BIN_SKIP)
 
         # for each source/label/var type/ ref/alt bin we have mixture component weights for both ref and alt downsampling
         # 'k' and 'h' are both indices to denote the mixture components
