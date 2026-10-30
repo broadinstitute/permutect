@@ -35,7 +35,15 @@ def parse_arguments(argv=None):
         required=True,
         help="path to output tarfile of training data",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    datasets, sources = getattr(args, constants.TRAINING_DATASETS_NAME), getattr(args, constants.SOURCES_NAME)
+    # one source for all datasets, or one for each.  Otherwise reading the data would fail partway through.
+    if sources is not None and len(sources) not in (1, len(datasets)):
+        parser.error(
+            f"--{constants.SOURCES_NAME} must be one source or one for each of the {len(datasets)} "
+            f"--{constants.TRAINING_DATASETS_NAME}, not {len(sources)}"
+        )
+    return args
 
 
 def do_work(plain_text_dataset_files, output_tarfile, sources: List[int]):

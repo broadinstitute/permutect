@@ -1,5 +1,7 @@
 import tempfile
 
+import pytest
+
 from permutect import constants
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.reads_dataset import ReadsDataset
@@ -30,3 +32,18 @@ def test_on_10_megabases_singular():
     ReadsDataset(memory_mapped_data=memory_mapped_data, num_folds=10)
 
     print("success")
+
+
+def test_number_of_sources_must_match_training_datasets(capsys):
+    argv = ["--" + constants.TRAINING_DATASETS_NAME, "a.txt", "b.txt", "c.txt", "--" + constants.OUTPUT_NAME, "out.tar"]
+
+    # no sources, one source for all datasets, or one for each
+    preprocess_dataset.parse_arguments(argv)
+    preprocess_dataset.parse_arguments(argv + ["--" + constants.SOURCES_NAME, "0"])
+    preprocess_dataset.parse_arguments(argv + ["--" + constants.SOURCES_NAME, "0", "1", "2"])
+
+    # any other number is an error when parsing arguments, before any data is read
+    for sources in (["0", "1"], ["0", "1", "2", "3"]):
+        with pytest.raises(SystemExit):
+            preprocess_dataset.parse_arguments(argv + ["--" + constants.SOURCES_NAME] + sources)
+        assert "one for each of the 3" in capsys.readouterr().err
