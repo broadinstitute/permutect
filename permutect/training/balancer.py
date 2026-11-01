@@ -1,7 +1,6 @@
 import enum
 import math
 
-import numpy as np
 import torch
 from torch import Tensor
 from torch.nn import Module
@@ -10,8 +9,6 @@ from torch.utils.tensorboard import SummaryWriter
 
 from permutect.data.batch import Batch
 from permutect.data.batch import BatchIndexedTensor
-from permutect.data.count_binning import ALT_COUNT_BIN_BOUNDS
-from permutect.data.count_binning import REF_COUNT_BIN_BOUNDS
 from permutect.metrics import plotting
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
@@ -115,10 +112,7 @@ class Balancer(Module):
             return plotting.count_plot_on_axis(axis, self.counts_slvra[source, :, var_type].cpu(), label)
         else:
             raise ValueError(f"Unknown type_of_plot: {plot_type.name}.")
-        xbounds, ybounds = np.array(ALT_COUNT_BIN_BOUNDS), np.array(REF_COUNT_BIN_BOUNDS)
-        kwargs = {"x_label": None, "y_label": None, "vmin": vmin, "vmax": vmax}
-
-        return plotting.color_plot_2d_on_axis(axis, xbounds, ybounds, plot_data_ra, **kwargs)
+        return plotting.count_bins_color_plot_on_axis(axis, plot_data_ra, vmin=vmin, vmax=vmax)
 
     def make_plots(self, summary_writer: SummaryWriter, prefix: str, epoch: int, plot_type: PlotType):
         for source in range(self.num_sources):

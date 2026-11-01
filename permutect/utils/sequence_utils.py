@@ -1,3 +1,4 @@
+import functools
 from typing import NamedTuple
 
 import seqfold
@@ -39,6 +40,7 @@ def consolidate_adjacent_stacks(structures, contig: str, start_position: int, se
     stack_energy = 0.0
     stack_top_bases = []
     stack_bottom_bases = []
+    make_stem_loop = functools.partial(StemLoop, contig=contig, start_position=start_position, sequence=sequence)
 
     def flush_stack():
         nonlocal stack_energy
@@ -87,32 +89,14 @@ def consolidate_adjacent_stacks(structures, contig: str, start_position: int, se
             stack_top_bases.append(top_bases if not stack_top_bases else top_bases[1:])
             stack_bottom_bases.append(bottom_bases if not stack_bottom_bases else bottom_bases[1:])
         else:  # hairpin
-            stem_loops.append(
-                StemLoop(
-                    stacks=pending_stacks.copy(),
-                    hairpin=StemLoopPart(
-                        bounds=[(start_position + structure.ij[0][0], start_position + structure.ij[0][1])],
-                        energy=structure.e,
-                        desc=structure.desc,
-                    ),
-                    contig=contig,
-                    start_position=start_position,
-                    sequence=sequence,
-                )
-            )
+            hairpin_bounds = [(start_position + structure.ij[0][0], start_position + structure.ij[0][1])]
+            hairpin = StemLoopPart(bounds=hairpin_bounds, energy=structure.e, desc=structure.desc)
+            stem_loops.append(make_stem_loop(stacks=pending_stacks.copy(), hairpin=hairpin))
             pending_stacks.clear()
 
     flush_stack()
     if pending_stacks:
-        stem_loops.append(
-            StemLoop(
-                stacks=pending_stacks,
-                hairpin=None,
-                contig=contig,
-                start_position=start_position,
-                sequence=sequence,
-            )
-        )
+        stem_loops.append(make_stem_loop(stacks=pending_stacks, hairpin=None))
     return stem_loops
 
 
@@ -140,26 +124,15 @@ def find_near_stem_loop(
     if not 0 <= position < contig_length:
         return None
 
-    upstream_start = max(0, position - 5)
-    upstream_end = min(contig_length, position + 20)
-    upstream_sequence = reference.fetch(contig, upstream_start, upstream_end)
-    downstream_start = max(0, position - 20)
-    downstream_end = min(contig_length, position + 5)
-    downstream_sequence = reference.fetch(contig, downstream_start, downstream_end)
-
-    upstream_structure = fold_sequence(upstream_sequence, contig, upstream_start)
-    downstream_structure = fold_sequence(downstream_sequence, contig, downstream_start)
-    candidates = []
-    for stem_loop in upstream_structure + downstream_structure:
-        distance = stem_loop.distance_to_stem(contig, position)
-        if (
-            stem_loop.hairpin is not None
-            and distance is not None
-            and distance <= dist
-            and stem_loop.total_energy < max_energy
-        ):
-            candidates.append((stem_loop, distance))
-    return min(candidates, key=lambda candidate: candidate[0].total_energy, default=None)
+    # fold a window reaching mostly past the position, then one reaching mostly before it
+    stem_loops = []
+    for bases_before, bases_after in ((5, 20), (20, 5)):
+        start = max(0, position - bases_before)
+        sequence = reference.fetch(contig, start, min(contig_length, position + bases_after))
+        stem_loops += fold_sequence(sequence, contig, start)
+    candidates = [s for s in stem_loops if s.contains_near(contig, position, dist=dist) and s.total_energy < max_energy]
+    best = min(candidates, key=lambda stem_loop: stem_loop.total_energy, default=None)
+    return None if best is None else (best, best.distance_to_stem(contig, position))
 
 
 def is_near_stem_loop(reference, contig: str, position: int, dist: int = 3, max_energy: float = 1.5) -> bool:

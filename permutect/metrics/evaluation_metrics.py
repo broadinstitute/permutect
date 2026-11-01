@@ -81,70 +81,41 @@ class EvaluationMetrics:
 
         mistake_calls = posterior_result_mistakes_by_call_and_var_type.keys()
         num_rows = len(mistake_calls)
-
-        af_fig, af_axes = plt.subplots(num_rows, len(Variation), sharex="all", sharey="none", squeeze=False)
-        logit_fig, logit_axes = plt.subplots(num_rows, len(Variation), sharex="all", sharey="none", squeeze=False)
-        ac_fig, ac_axes = plt.subplots(num_rows, len(Variation), sharex="all", sharey="none", squeeze=False)
-        prob_fig, prob_axes = plt.subplots(num_rows, len(Variation), sharex="all", sharey="none", squeeze=False)
-
-        for row_idx, mistake_call in enumerate(mistake_calls):
-            for var_type in Variation:
-                posterior_results = posterior_result_mistakes_by_call_and_var_type[mistake_call][var_type]
-
-                af_data = [pr.alt_count / pr.depth for pr in posterior_results]
-                plotting.simple_histograms_on_axis(af_axes[row_idx, var_type], [af_data], [""], 20)
-
-                ac_data = [pr.alt_count for pr in posterior_results]
-                plotting.simple_histograms_on_axis(ac_axes[row_idx, var_type], [ac_data], [""], 20)
-
-                # known artifacts have infinite artifact logits, which can't be histogrammed
-                logit_data = [pr.artifact_logit for pr in posterior_results if math.isfinite(pr.artifact_logit)]
-                plotting.simple_histograms_on_axis(logit_axes[row_idx, var_type], [logit_data], [""], 20)
-
-                # posterior probability assigned to this incorrect call
-                prob_data = [pr.posterior_probabilities[mistake_call] for pr in posterior_results]
-                plotting.simple_histograms_on_axis(prob_axes[row_idx, var_type], [prob_data], [""], 20)
-
         variation_types = [var_type.name for var_type in Variation]
         row_names = [mistake.name for mistake in mistake_calls]
 
-        plotting.tidy_subplots(
-            af_fig,
-            af_axes,
-            x_label="alt allele fraction",
-            y_label="",
-            row_labels=row_names,
-            col_labels=variation_types,
+        # each figure's tag, x-axis label, and data for the posterior results of the mistakes with a given call
+        histograms = (
+            (
+                "mistake allele fractions",
+                "alt allele fraction",
+                lambda prs, call: [pr.alt_count / pr.depth for pr in prs],
+            ),
+            ("mistake alt counts", "alt count", lambda prs, call: [pr.alt_count for pr in prs]),
+            # known artifacts have infinite artifact logits, which can't be histogrammed
+            (
+                "mistake artifact logits",
+                "artifact logit",
+                lambda prs, call: [pr.artifact_logit for pr in prs if math.isfinite(pr.artifact_logit)],
+            ),
+            # posterior probability assigned to this incorrect call
+            (
+                "probability assigned to mistake calls",
+                "mistake call probability",
+                lambda prs, call: [pr.posterior_probabilities[call] for pr in prs],
+            ),
         )
-        plotting.tidy_subplots(
-            ac_fig,
-            ac_axes,
-            x_label="alt count",
-            y_label="",
-            row_labels=row_names,
-            col_labels=variation_types,
-        )
-        plotting.tidy_subplots(
-            logit_fig,
-            logit_axes,
-            x_label="artifact logit",
-            y_label="",
-            row_labels=row_names,
-            col_labels=variation_types,
-        )
-        plotting.tidy_subplots(
-            prob_fig,
-            prob_axes,
-            x_label="mistake call probability",
-            y_label="",
-            row_labels=row_names,
-            col_labels=variation_types,
-        )
-
-        summary_writer.add_figure("mistake allele fractions", af_fig)
-        summary_writer.add_figure("mistake alt counts", ac_fig)
-        summary_writer.add_figure("mistake artifact logits", logit_fig)
-        summary_writer.add_figure("probability assigned to mistake calls", prob_fig)
+        for tag, x_label, histogram_data in histograms:
+            fig, axes = plt.subplots(num_rows, len(Variation), sharex="all", sharey="none", squeeze=False)
+            for row_idx, mistake_call in enumerate(mistake_calls):
+                for var_type in Variation:
+                    posterior_results = posterior_result_mistakes_by_call_and_var_type[mistake_call][var_type]
+                    data = histogram_data(posterior_results, mistake_call)
+                    plotting.simple_histograms_on_axis(axes[row_idx, var_type], [data], [""], 20)
+            plotting.tidy_subplots(
+                fig, axes, x_label=x_label, y_label="", row_labels=row_names, col_labels=variation_types
+            )
+            summary_writer.add_figure(tag, fig)
 
     def make_plots(
         self,
@@ -167,13 +138,11 @@ class EvaluationMetrics:
         accuracy_metrics: AccuracyMetrics
         for epoch_type, accuracy_metrics in self.accuracy_metrics_by_epoch_type.items():
             for source in sources:
-                acc_fig, acc_axes = plt.subplots(
-                    2,
-                    len(Variation),
-                    sharex="all",
-                    sharey="all",
-                    squeeze=False,
-                    figsize=(2.5 * len(Variation), 2.5 * 2),
+                # make accuracy plots: overall figure is rows = label, columns = variant
+                # each subplot is color map of accuracy where x is ref count, y is alt count
+                acc_fig = plotting.label_and_variant_type_figure(
+                    lambda label, var_type, axis: accuracy_metrics.plot_accuracy(label, var_type, axis, source),
+                    labels=(Label.VARIANT, Label.ARTIFACT),
                 )
                 cal_fig, cal_axes = plt.subplots(
                     len(ref_count_bins),
@@ -191,16 +160,6 @@ class EvaluationMetrics:
                     dpi=200,
                 )
 
-                # make accuracy plots: overall figure is rows = label, columns = variant
-                # each subplot is color map of accuracy where x is ref count, y is alt count
-                accuracy_rows = [Label.VARIANT, Label.ARTIFACT]
-                accuracy_row_names = [label.name for label in accuracy_rows]
-                common_colormesh = None
-                for row, label in enumerate(accuracy_rows):
-                    for col, var_type in enumerate(Variation):
-                        common_colormesh = accuracy_metrics.plot_accuracy(label, var_type, acc_axes[row, col], source)
-                acc_fig.colorbar(common_colormesh)
-
                 for row, ref_count_bin in enumerate(ref_count_bins):
                     for col, alt_count_bin in enumerate(alt_count_bins):
                         accuracy_metrics.plot_calibration(cal_axes[row, col], ref_count_bin, alt_count_bin, source)
@@ -216,15 +175,6 @@ class EvaluationMetrics:
                 nonart_label = "sensitivity" if sens_prec else "non-artifact accuracy"
                 art_label = "precision" if sens_prec else "artifact accuracy"
 
-                variation_types = [var_type.name for var_type in Variation]
-                plotting.tidy_subplots(
-                    acc_fig,
-                    acc_axes,
-                    x_label="alt count",
-                    y_label="ref count",
-                    row_labels=accuracy_row_names,
-                    col_labels=variation_types,
-                )
                 plotting.tidy_subplots(
                     roc_fig,
                     roc_axes,
@@ -340,19 +290,17 @@ class EmbeddingMetrics:
             )
         )
 
-        indices_by_correct_status = defaultdict(list)
-
-        for n, correct_status in enumerate(self.correct_metadata):
-            indices_by_correct_status[correct_status].append(n)
-
-        # note that if we don't have labeled truth, everything is boring
-        all_indices = set(range(len(all_metadata)))
-        interesting_indices = set(
-            indices_by_correct_status[EmbeddingMetrics.TRUE_POSITIVE]
-            + indices_by_correct_status[EmbeddingMetrics.FALSE_POSITIVE]
-            + indices_by_correct_status[EmbeddingMetrics.FALSE_NEGATIVE_ARTIFACT]
+        # note that if we don't have labeled truth, everything is boring.  The order of status, then index, gives the
+        # sets the same iteration order, and so the same random samples, as before.
+        interesting_statuses = (
+            EmbeddingMetrics.TRUE_POSITIVE,
+            EmbeddingMetrics.FALSE_POSITIVE,
+            EmbeddingMetrics.FALSE_NEGATIVE_ARTIFACT,
         )
-        boring_indices = all_indices - interesting_indices
+        interesting_indices = {
+            n for status in interesting_statuses for n, s in enumerate(self.correct_metadata) if s == status
+        }
+        boring_indices = set(range(len(all_metadata))) - interesting_indices
 
         """if is_filter_variants:
             boring_indices = np.array(indices_by_correct_status["unknown"] + indices_by_correct_status[EmbeddingMetrics.TRUE_NEGATIVE_ARTIFACT])
@@ -368,73 +316,27 @@ class EmbeddingMetrics:
         stacked_features = torch.vstack(self.features)
         stacked_ref_features = torch.vstack(self.ref_features) if self.ref_features else None
 
-        # read average embeddings stratified by variant type
-        for variant_type in Variation:
-            variant_name = variant_type.name
-            indices = set([n for n, type_name in enumerate(self.type_metadata) if type_name == variant_name])
-
+        # read average embeddings stratified by variant type, then by alt count
+        groups = [("variant type " + var_type.name, self.type_metadata, var_type.name) for var_type in Variation]
+        count_names = [alt_count_bin_name(count_bin) for count_bin in range(NUM_ALT_COUNT_BINS)]
+        groups += [("alt count " + count_name, self.truncated_count_metadata, count_name) for count_name in count_names]
+        for group_name, group_metadata, group_value in groups:
+            indices = {n for n, value in enumerate(group_metadata) if value == group_value}
             interesting = interesting_indices & indices
             boring = boring_indices & indices
-            boring_count = max(len(interesting) // 3, 100) if is_filter_variants else len(boring)
-            boring_count = min(boring_count, len(boring))
-            if boring_count > 0:
-                boring_to_keep = np.array([int(n) for n in boring])[
-                    np.random.choice(len(boring), size=boring_count, replace=False)
-                ]
-            else:
-                boring_to_keep = np.array([], dtype=int)
+            boring_count = min(max(len(interesting) // 3, 100) if is_filter_variants else len(boring), len(boring))
+            boring_to_keep = np.random.choice(np.fromiter(boring, dtype=int), size=boring_count, replace=False)
+            idx = sample_indices_for_tensorboard(np.hstack((boring_to_keep, np.fromiter(interesting, dtype=int))))
 
-            idx = sample_indices_for_tensorboard(np.hstack((boring_to_keep, np.array([int(n) for n in interesting]))))
-
-            # skip variant types without data, e.g. indels in an SNV-only panel; tensorboard fails on empty embeddings
+            # skip groups without data, e.g. indels in an SNV-only panel; tensorboard fails on empty embeddings
             if len(idx) > 0:
-                summary_writer.add_embedding(
-                    stacked_features[idx],
-                    metadata=[all_metadata[round(n)] for n in idx.tolist()],
-                    metadata_header=["Labels", "Correctness", "Types", "Counts"],
-                    tag=prefix + "embedding for variant type " + variant_name,
-                    global_step=epoch,
-                )
-                if self.ref_features:
-                    summary_writer.add_embedding(
-                        stacked_ref_features[idx],
-                        metadata=[all_metadata[round(n)] for n in idx.tolist()],
-                        metadata_header=["Labels", "Correctness", "Types", "Counts"],
-                        tag=prefix + "ref embedding for variant type " + variant_name,
-                        global_step=epoch,
-                    )
-
-        # read average embeddings stratified by alt count
-        for count_bin in range(NUM_ALT_COUNT_BINS):
-            count_name = alt_count_bin_name(count_bin)
-            indices = set([n for n, alt_count in enumerate(self.truncated_count_metadata) if alt_count == count_name])
-            interesting = interesting_indices & indices
-            boring = boring_indices & indices
-            boring_count = max(len(interesting) // 3, 100) if is_filter_variants else len(boring)
-            boring_count = min(boring_count, len(boring))
-            if boring_count > 0:
-                boring_to_keep = np.array([int(n) for n in boring])[
-                    np.random.choice(len(boring), size=boring_count, replace=False)
-                ]
-            else:
-                boring_to_keep = np.array([], dtype=int)
-
-            idx = sample_indices_for_tensorboard(np.hstack((boring_to_keep, np.array([int(n) for n in interesting]))))
-
-            if len(idx) > 0:
-                summary_writer.add_embedding(
-                    stacked_features[idx],
-                    metadata=[all_metadata[round(n)] for n in idx.tolist()],
-                    metadata_header=["Labels", "Correctness", "Types", "Counts"],
-                    tag=prefix + "embedding for alt count " + count_name,
-                    global_step=epoch,
-                )
-
-                if self.ref_features:
-                    summary_writer.add_embedding(
-                        stacked_ref_features[idx],
-                        metadata=[all_metadata[round(n)] for n in idx.tolist()],
-                        metadata_header=["Labels", "Correctness", "Types", "Counts"],
-                        tag=prefix + "ref embedding for alt count " + count_name,
-                        global_step=epoch,
-                    )
+                metadata = [all_metadata[round(n)] for n in idx.tolist()]
+                for features, kind in ((stacked_features, "embedding"), (stacked_ref_features, "ref embedding")):
+                    if features is not None:
+                        summary_writer.add_embedding(
+                            features[idx],
+                            metadata=metadata,
+                            metadata_header=["Labels", "Correctness", "Types", "Counts"],
+                            tag=prefix + kind + " for " + group_name,
+                            global_step=epoch,
+                        )

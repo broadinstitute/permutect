@@ -25,29 +25,21 @@ def count_leading_repeats(sequence: str, unit: str):
     # count how many times a unit string is repeated at the beginning of a larger string
     # eg 'ATATGGG', 'AT' -> 2; 'AGGGGG', 'G' -> 0; 'TTATTATTAGTTA', 'TTA' -> 3
     result = 0
-    idx = 0
-    unit_length = len(unit)
-    while (idx + unit_length - 1 < len(sequence)) and sequence[idx : idx + unit_length] == unit:
+    while sequence.startswith(unit, result * len(unit)):
         result += 1
-        idx += unit_length
     return result
 
 
 def count_trailing_repeats(sequence: str, unit: str):
     # same, but at the end of a sequence
     # eg 'ATATGGG', 'G' -> 3; 'AGGGGG', 'G' -> 5; 'TTATTATTAGTTA', 'TTA' -> 1
-    result = 0
-    unit_length = len(unit)
-    idx = (
-        len(sequence) - unit_length
-    )  # index at beginning of comparison eg 'GGATC', 'TC' starts at index 5 - 2 = 3, the 'T'
-    while idx >= 0 and sequence[idx : idx + unit_length] == unit:
-        result += 1
-        idx -= unit_length
-    return result
+    return count_leading_repeats(sequence[::-1], unit[::-1])
 
 
 MAX_NUM_BASES_FOR_ENCODING = 13
+
+# A, C, G and T as 0, 1, 2 and 3.  Anything else, such as N, is treated as T.
+BASE_INDEX = {"A": 0, "C": 1, "G": 2}
 
 
 def truncate_bases_if_necessary(bases: str):
@@ -56,39 +48,20 @@ def truncate_bases_if_necessary(bases: str):
 
 def bases_as_base5_int(bases: str) -> int:
     # here we just butcher variants longer than 13 bases and chop!!!
-    power_of_5 = 1
-    bases_to_use = truncate_bases_if_necessary(bases)
-    result = 0
-    for nuc in bases_to_use:
-        coeff = 1 if nuc == "A" else (2 if nuc == "C" else (3 if nuc == "G" else 4))
-        result += power_of_5 * coeff
-        power_of_5 *= 5
-    return result
+    return sum((BASE_INDEX.get(nuc, 3) + 1) * 5**n for n, nuc in enumerate(truncate_bases_if_necessary(bases)))
 
 
 def bases5_as_base_string(base5: int) -> str:
     result = ""
-    remaining = base5
-    while remaining > 0:
-        digit = remaining % 5
-        nuc = "A" if digit == 1 else ("C" if digit == 2 else ("G" if digit == 3 else "T"))
-        result += nuc
-        remaining = (remaining - digit) // 5
+    while base5 > 0:
+        base5, digit = divmod(base5, 5)
+        result += "TACGT"[digit]  # the digits 1 to 4 are A, C, G and T
     return result
 
 
 def is_repeat(bases: str, unit: str):
     # eg ACGACGACG, ACG -> True; TTATTA, TA -> False
-    unit_length = len(unit)
-    if len(bases) % unit_length == 0:
-        num_repeats = len(bases) // len(unit)
-        for repeat_idx in range(num_repeats):
-            start = repeat_idx * unit_length
-            if bases[start : start + unit_length] != unit:
-                return False
-        return True
-    else:
-        return False
+    return len(bases) % len(unit) == 0 and unit * (len(bases) // len(unit)) == bases
 
 
 def decompose_str_unit(indel_bases: str):
@@ -111,24 +84,15 @@ def get_str_info_array(ref_sequence_string: str, ref_allele: str, alt_allele: st
     deletion_length = max(len(ref) - len(alt), 0)
 
     if len(ref) == len(alt):
-        unit, num_units = alt, 1
-        repeats_after = count_leading_repeats(ref_sequence_string[middle_idx + len(ref) :], unit)
-        repeats_before = count_trailing_repeats(ref_sequence_string[:middle_idx], unit)
-    elif insertion_length > 0:
-        unit, num_units = decompose_str_unit(
-            alt[1:]
-        )  # the inserted sequence is everything after the anchor base that matches ref
-        repeats_after = count_leading_repeats(ref_sequence_string[middle_idx + len(ref) :], unit)
-        repeats_before = count_trailing_repeats(
-            ref_sequence_string[: middle_idx + 1], unit
-        )  # +1 accounts for the anchor base
+        unit, num_units, anchor = alt, 1, 0
     else:
-        unit, num_units = decompose_str_unit(ref[1:])  # the deleted sequence is everything after the anchor base
-        # it's pretty arbitrary whether we include the deleted bases themselves as 'after' or not
-        repeats_after = count_leading_repeats(ref_sequence_string[middle_idx + len(alt) :], unit)
-        repeats_before = count_trailing_repeats(
-            ref_sequence_string[: middle_idx + 1], unit
-        )  # likewise, account for the anchor base
+        # the inserted or deleted sequence is everything after the anchor base, which repeats before the variant include
+        unit, num_units = decompose_str_unit((alt if insertion_length > 0 else ref)[1:])
+        anchor = 1
+    # repeats after the substituted or anchor base.  For a deletion it's pretty arbitrary that the deleted bases
+    # themselves count as after.
+    repeats_after = count_leading_repeats(ref_sequence_string[middle_idx + min(len(ref), len(alt)) :], unit)
+    repeats_before = count_trailing_repeats(ref_sequence_string[: middle_idx + anchor], unit)
     # note that if indels are left-aligned (as they should be from the GATK) repeats_before really ought to be zero!!
     return np.array([insertion_length, deletion_length, len(unit), num_units, repeats_before, repeats_after])
 
@@ -137,11 +101,7 @@ def make_1d_sequence_tensor(sequence_string: str) -> np.ndarray:
     """
     convert string of form ACCGTA into tensor [ 0, 1, 1, 2, 3, 0]
     """
-    result = np.zeros(len(sequence_string), dtype=np.uint8)
-    for n, char in enumerate(sequence_string):
-        integer = 0 if char == "A" else (1 if char == "C" else (2 if char == "G" else 3))
-        result[n] = integer
-    return result
+    return np.array([BASE_INDEX.get(char, 3) for char in sequence_string], dtype=np.uint8)
 
 
 # returns two length-L 1D arrays of ref stacked on top of alt, with '4' in alt(ref) for deletions(insertions)
@@ -160,11 +120,7 @@ def get_ref_and_alt_sequences(ref_seq_1d, ref_allele: str, alt_allele: str):
         alt_array = np.copy(ref_array)
         deletion_length = len(ref) - len(alt)
         # add the deletion value '4' to make the alt allele array as long as the ref allele
-        alt_allele_array = (
-            make_1d_sequence_tensor(alt)
-            if deletion_length == 0
-            else np.hstack((make_1d_sequence_tensor(alt), np.full(shape=deletion_length, fill_value=4)))
-        )
+        alt_allele_array = np.hstack((make_1d_sequence_tensor(alt), np.full(shape=deletion_length, fill_value=4)))
         alt_array[middle_idx : middle_idx + len(alt_allele_array)] = alt_allele_array
     else:  # insertion
         insertion_length = len(alt) - len(ref)

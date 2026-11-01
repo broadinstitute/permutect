@@ -55,22 +55,20 @@ def parse_arguments(argv=None):
     )
     parser.add_argument(
         "--" + constants.DATASET_EDIT_TYPE_NAME,
-        type=str,
         required=True,
         choices=[edit_type.value for edit_type in EditType],
         help="how to edit the data's labels, or keep_everything to only change the source or combine datasets",
     )
-    parser.add_argument("--" + constants.SOURCE_NAME, type=int, required=False, help="new source integer to apply")
+    parser.add_argument("--" + constants.SOURCE_NAME, type=int, help="new source integer to apply")
 
     # input / output
     parser.add_argument(
         "--" + constants.TRAIN_TAR_NAME,
         nargs="+",
-        type=str,
         required=True,
         help="tarfile(s) of training/validation datasets produced by preprocess_dataset.py",
     )
-    parser.add_argument("--" + constants.OUTPUT_NAME, type=str, required=True, help="path to output dataset tarfile")
+    parser.add_argument("--" + constants.OUTPUT_NAME, required=True, help="path to output dataset tarfile")
 
     return parser.parse_args(argv)
 

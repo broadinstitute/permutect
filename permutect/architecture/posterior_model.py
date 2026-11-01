@@ -1,5 +1,3 @@
-from itertools import chain
-
 import torch
 from matplotlib import pyplot as plt
 from torch import Tensor
@@ -146,8 +144,7 @@ class PosteriorModel(torch.nn.Module):
         return log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, log_posteriors_bc
 
     def log_relative_posteriors_bc(self, batch: Batch) -> Tensor:
-        _, _, _, log_posteriors_bc = self.log_posterior_and_ingredients(batch)
-        return log_posteriors_bc
+        return self.log_posterior_and_ingredients(batch)[-1]
 
     def learn_priors_and_spectra(
         self,
@@ -167,8 +164,7 @@ class PosteriorModel(torch.nn.Module):
         """
         # spectra parameters are learned via batched stochastic gradient descent during the e step of each epoch.
         # the loss is the negative log evidence.  Prior parameters are adjusted in the M steo.
-        spectra_params = chain(self.spectra.parameters())
-        optimizer = torch.optim.Adam(spectra_params, lr=learning_rate)
+        optimizer = torch.optim.Adam(self.spectra.parameters(), lr=learning_rate)
 
         # we begin learning with context-dependent priors turned off
         self.priors.disable_context_dependent_snv_priors()
@@ -314,22 +310,10 @@ class PosteriorModel(torch.nn.Module):
             plotting.plot_roc_on_axis([roc_data], [""], roc_axes[0, var_type], True, [threshold_logit])
 
         variation_types = [var_type.name for var_type in Variation]
-        plotting.tidy_subplots(
-            roc_by_cnt_fig,
-            roc_by_cnt_axes,
-            x_label="sensitivity",
-            y_label="precision",
-            row_labels=[""],
-            col_labels=variation_types,
-        )
-        plotting.tidy_subplots(
-            roc_fig,
-            roc_axes,
-            x_label="sensitivity",
-            y_label="precision",
-            row_labels=[""],
-            col_labels=variation_types,
-        )
+        for fig, axes in ((roc_by_cnt_fig, roc_by_cnt_axes), (roc_fig, roc_axes)):
+            plotting.tidy_subplots(
+                fig, axes, x_label="sensitivity", y_label="precision", row_labels=[""], col_labels=variation_types
+            )
         if summary_writer is not None:
             summary_writer.add_figure("theoretical ROC by variant type ", roc_fig)
             summary_writer.add_figure("theoretical ROC by variant type and alt count ", roc_by_cnt_fig)

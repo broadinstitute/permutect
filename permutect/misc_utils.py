@@ -239,10 +239,8 @@ class VcfEditor:
 
 
 def check_for_nan(model: torch.nn.Module):
-    nan_found = False
-    for name, param in model.named_parameters():
-        if param.grad is not None:
-            if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                print(f"Invalid gradient (NaN or Inf) found in parameter: {name}")
-                nan_found = True
-    assert not nan_found
+    params = model.named_parameters()
+    invalid = [name for name, param in params if param.grad is not None and not torch.isfinite(param.grad).all()]
+    for name in invalid:
+        print(f"Invalid gradient (NaN or Inf) found in parameter: {name}")
+    assert not invalid

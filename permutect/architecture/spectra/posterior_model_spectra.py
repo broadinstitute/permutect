@@ -18,33 +18,20 @@ from permutect.utils.stats_utils import binomial_log_lk
 # given germline, the probability of these particular reads being alt
 # log_afs are natural logs of population allele frequencies
 def germline_log_likelihood(log_afs, mafs, alt_counts, depths, het_beta=None):
-    hom_alpha, hom_beta = (
-        torch.tensor([98.0], device=depths.device),
-        torch.tensor([2.0], device=depths.device),
-    )
-    het_alpha, het_beta_to_use = (
-        (None, None)
-        if het_beta is None
-        else (
-            torch.tensor([het_beta], device=depths.device),
-            torch.tensor([het_beta], device=depths.device),
-        )
-    )
     # het and hom alt probabilities are 2 AF (1 - AF) and AF^2, which sum to AF (2 - AF).  Thus, conditioned on
     # germline, the het proportion divided by 2 is (1 - AF) / (2 - AF) and the hom proportion is AF / (2 - AF).
     log_2m_afs = torch.log(2 - torch.exp(log_afs))
     log_half_het_prop = log1mexp(log_afs) - log_2m_afs
     log_hom_prop = log_afs - log_2m_afs
 
-    # the following should both be 1D tensors of length batch size
-    alt_minor_binomial = binomial_log_lk(depths, alt_counts, mafs)
-    alt_major_binomial = binomial_log_lk(depths, alt_counts, 1 - mafs)
-    alt_minor_ll = log_half_het_prop + (
-        alt_minor_binomial if het_beta is None else beta_binomial_log_lk(depths, alt_counts, het_alpha, het_beta_to_use)
-    )
-    alt_major_ll = log_half_het_prop + (
-        alt_major_binomial if het_beta is None else beta_binomial_log_lk(depths, alt_counts, het_alpha, het_beta_to_use)
-    )
+    # the following should all be 1D tensors of length batch size
+    if het_beta is None:
+        alt_minor_ll = log_half_het_prop + binomial_log_lk(depths, alt_counts, mafs)
+        alt_major_ll = log_half_het_prop + binomial_log_lk(depths, alt_counts, 1 - mafs)
+    else:
+        het_shape = torch.tensor([het_beta], device=depths.device)
+        alt_minor_ll = alt_major_ll = log_half_het_prop + beta_binomial_log_lk(depths, alt_counts, het_shape, het_shape)
+    hom_alpha, hom_beta = torch.tensor([98.0], device=depths.device), torch.tensor([2.0], device=depths.device)
     hom_ll = log_hom_prop + beta_binomial_log_lk(depths, alt_counts, hom_alpha, hom_beta)
 
     return torch.logsumexp(torch.vstack((alt_minor_ll, alt_major_ll, hom_ll)), dim=0)
@@ -96,11 +83,8 @@ class PosteriorModelSpectra(nn.Module):
         )
 
         spectra_log_lks_bc = torch.zeros((batch.size(), len(Call)), device=self._device, dtype=self._dtype)
-        tumor_artifact_spectrum_log_lks_b = self.artifact_spectra.forward(
-            batch.get(Data.VARIANT_TYPE), depths_b, alt_counts_b
-        )
         spectra_log_lks_bc[:, Call.SOMATIC] = self.somatic_spectrum.forward(depths_b, alt_counts_b, mafs_b)
-        spectra_log_lks_bc[:, Call.ARTIFACT] = tumor_artifact_spectrum_log_lks_b
+        spectra_log_lks_bc[:, Call.ARTIFACT] = self.artifact_spectra.forward(var_types_b, depths_b, alt_counts_b)
         spectra_log_lks_bc[:, Call.NORMAL_ARTIFACT] = na_tumor_log_lks_b
         spectra_log_lks_bc[:, Call.SEQ_ERROR] = batch.get(Data.SEQ_ERROR_LOG_LK)
         spectra_log_lks_bc[:, Call.GERMLINE] = germline_log_likelihood(

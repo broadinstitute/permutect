@@ -48,6 +48,7 @@ from permutect.data.datum import FLOAT_DTYPE
 from permutect.data.datum import NUMBER_OF_BYTES_IN_PACKED_READ
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
+from permutect.data.datum import get_data_field
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.memory_mapped_data import stacked_read_offsets
 from permutect.misc_utils import ConsistentValue
@@ -220,7 +221,6 @@ def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Datu
         read_quantile_transform = make_read_quantile_transform(
             read_offsets=(read_offsets[start_idx : end_idx + 1] - read_start_idx),
             int_array_ve=int_mmap_ve[start_idx:end_idx],
-            float_array_ve=float_mmap_ve[start_idx:end_idx],
             reads_re=reads_mmap_re[read_start_idx : read_offsets[end_idx]],
         )
 
@@ -235,31 +235,11 @@ def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Datu
             yield datum
 
 
-def make_read_quantile_transform(read_offsets, int_array_ve, float_array_ve, reads_re):
-    # indices_for_normalization = get_normalization_set(data_ve)
-    # revert to old behavior: use all ref data for normalization
-    indices_for_normalization = list(range(len(int_array_ve)))
-
-    # define ref read ranges for each datum in the normalization set
-    normalization_read_start_indices = [read_offsets[idx] for idx in indices_for_normalization]
-    normalization_ref_counts = [
-        Datum(int_array=int_array_ve[idx], float_array=float_array_ve[idx]).get(Data.REF_COUNT)
-        for idx in indices_for_normalization
-    ]
-    normalization_ref_end_indices = [
-        (start + ref_count) for start, ref_count in zip(normalization_read_start_indices, normalization_ref_counts)
-    ]
-
-    # for every index in the normalization set, get all the reads of the corresponding datum.  Stack all these reads to
-    # obtain the reads normalization array
-    reads_for_normalization_re = np.vstack(
-        [reads_re[start:end] for start, end in zip(normalization_read_start_indices, normalization_ref_end_indices)]
-    )
-    reads_for_normalization_distance_columns_re = reads_for_normalization_re[:, 6:7]
-    read_quantile_transform = QuantileTransformer(n_quantiles=100, output_distribution="normal")
-    read_quantile_transform.fit(reads_for_normalization_distance_columns_re)
-
-    return read_quantile_transform
+def make_read_quantile_transform(read_offsets, int_array_ve, reads_re):
+    # fit to the fragment lengths of the ref reads of every datum, which come first among its reads
+    ref_counts = get_data_field(int_array_ve, None, Data.REF_COUNT)
+    ref_reads_re = np.vstack([reads_re[start : start + count] for start, count in zip(read_offsets[:-1], ref_counts)])
+    return QuantileTransformer(n_quantiles=100, output_distribution="normal").fit(ref_reads_re[:, 6:7])
 
 
 def make_normalized_mmap_data(dataset_files, sources: List[int] = None) -> MemoryMappedData:
@@ -301,16 +281,10 @@ def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> Lis
     hap_equiv_binary_3 = hap_equiv_columns >= 0.25
 
     edit_dist_column = all_info_ve[:, 2]
-    edit_dist_binary = np.full((len(all_info_ve), 4), 0, dtype=all_info_ve.dtype)
-    edit_dist_binary[:, 0] = edit_dist_column == 0
-    edit_dist_binary[:, 1] = edit_dist_column == 1
-    edit_dist_binary[:, 2] = edit_dist_column == 2
-    edit_dist_binary[:, 3] = edit_dist_column >= 3
+    edit_dist_binary = np.column_stack([edit_dist_column == d for d in range(3)] + [edit_dist_column >= 3])
 
     hap_dom_column = all_info_ve[:, 3]
-    hap_dom_binary = np.full((len(all_info_ve), 2), 0, dtype=all_info_ve.dtype)
-    hap_dom_binary[:, 0] = hap_dom_column > 0.9
-    hap_dom_binary[:, 1] = (hap_dom_column <= 0.9) & (hap_dom_column > 0.7)
+    hap_dom_binary = np.column_stack([hap_dom_column > 0.9, (hap_dom_column <= 0.9) & (hap_dom_column > 0.7)])
 
     # STR INFO features are
     # 5, 6 insertion_length, deletion_length of variant
@@ -321,35 +295,14 @@ def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> Lis
 
     indel_lengths_ve = all_info_ve[:, 5:7] / 10
 
-    str_unit_length_col = all_info_ve[:, 7].reshape(-1, 1)
-    str_unit_length_binaries = np.hstack(
-        [
-            str_unit_length_col == 1,
-            str_unit_length_col == 2,
-            str_unit_length_col == 3,
-            str_unit_length_col == 4,
-            str_unit_length_col >= 5,
-        ]
-    )
+    str_unit_length = all_info_ve[:, 7]
+    str_unit_length_binaries = np.column_stack([str_unit_length == n for n in range(1, 5)] + [str_unit_length >= 5])
 
-    str_total_length = all_info_ve[:, 7] * all_info_ve[:, 8]
-    str_total_length_binaries = binarize_str_length_column(str_total_length)
-
-    str_length_before = all_info_ve[:, 7] * all_info_ve[:, 9]
-    str_length_before_binaries = binarize_str_length_column(str_length_before)
-
-    str_length_after = all_info_ve[:, 7] * all_info_ve[:, 10]
-    str_length_after_binaries = binarize_str_length_column(str_length_after)
-
-    str_info_array_ve = np.hstack(
-        [
-            indel_lengths_ve,
-            str_unit_length_binaries,
-            str_total_length_binaries,
-            str_length_before_binaries,
-            str_length_after_binaries,
-        ]
-    )
+    # total STR length, and STR lengths before and after the variant
+    str_length_binaries = [
+        binarize_str_length_column(str_unit_length * all_info_ve[:, column]) for column in (8, 9, 10)
+    ]
+    str_info_array_ve = np.hstack([indel_lengths_ve, str_unit_length_binaries, *str_length_binaries])
 
     binary_info_array_ve = np.hstack(
         (

@@ -116,30 +116,22 @@ task Concordance {
             -filter-analysis "filter-analysis.txt" \
             -summary "summary.txt"
 
-        grep '#' tpfn.vcf > HEAD
-        grep STATUS=FN tpfn.vcf > BODY
-        cat HEAD BODY > false_negatives.vcf
-
-        grep '#' tpfp.vcf > HEAD
-        grep STATUS=FP tpfp.vcf > BODY
-        cat HEAD BODY > false_positives.vcf
-
-        grep '#' tpfp.vcf > HEAD
-        grep STATUS=TP tpfp.vcf > BODY
-        cat HEAD BODY > true_positives.vcf
-
-        grep '#' ftnfn.vcf > HEAD
-        grep STATUS=FFN ftnfn.vcf > BODY
-        cat HEAD BODY > filtered_false_negatives.vcf
-        grep STATUS=FTN ftnfn.vcf > BODY
-        cat HEAD BODY > filtered_true_negatives.vcf
-
-        for vcf in false_negatives.vcf false_positives.vcf true_positives.vcf filtered_false_negatives.vcf filtered_true_negatives.vcf; do
+        # write the header and the records with a given STATUS of a Concordance output to a new indexed VCF
+        extract_status() {
+            grep '#' $1 > HEAD
+            grep STATUS=$2 $1 > BODY
+            cat HEAD BODY > $3
             #HACK: IndexFeatureFile throws error if vcf is empty, which is possible here especially in the case of false negatives
-            gatk --java-options "-Xmx2g" SelectVariants -V $vcf -O tmp.vcf
-            mv tmp.vcf $vcf
-            mv tmp.vcf.idx $vcf.idx
-        done
+            gatk --java-options "-Xmx2g" SelectVariants -V $3 -O tmp.vcf
+            mv tmp.vcf $3
+            mv tmp.vcf.idx $3.idx
+        }
+
+        extract_status tpfn.vcf FN false_negatives.vcf
+        extract_status tpfp.vcf FP false_positives.vcf
+        extract_status tpfp.vcf TP true_positives.vcf
+        extract_status ftnfn.vcf FFN filtered_false_negatives.vcf
+        extract_status ftnfn.vcf FTN filtered_true_negatives.vcf
     >>>
 
     runtime {
@@ -192,17 +184,14 @@ task Compare {
         set -e
         export GATK_LOCAL_JAR=~{default="/root/gatk.jar" gatk_override}
 
-        gatk --java-options "-Xmx2g" SelectVariants \
-            -V ~{permutect_ffn} -disc ~{other_ffn} -O ffn_created_by_permutect.vcf
-
-        gatk --java-options "-Xmx2g" SelectVariants \
-            -V ~{other_ffn} -disc ~{permutect_ffn} -O ffn_fixed_by_permutect.vcf
-
-        gatk --java-options "-Xmx2g" SelectVariants \
-            -V ~{permutect_fp} -disc ~{other_fp} -O fp_created_by_permutect.vcf
-
-        gatk --java-options "-Xmx2g" SelectVariants \
-            -V ~{other_fp} -disc ~{permutect_fp} -O fp_fixed_by_permutect.vcf
+        # the records of the first VCF that aren't in the second
+        select_discordant() {
+            gatk --java-options "-Xmx2g" SelectVariants -V $1 -disc $2 -O $3
+        }
+        select_discordant ~{permutect_ffn} ~{other_ffn} ffn_created_by_permutect.vcf
+        select_discordant ~{other_ffn} ~{permutect_ffn} ffn_fixed_by_permutect.vcf
+        select_discordant ~{permutect_fp} ~{other_fp} fp_created_by_permutect.vcf
+        select_discordant ~{other_fp} ~{permutect_fp} fp_fixed_by_permutect.vcf
 
         touch summary.txt
         echo "PERMUTECT SUMMARY" >> summary.txt
@@ -212,29 +201,19 @@ task Compare {
         cat ~{other_summary} >> summary.txt
         printf "\n" >> summary.txt
 
-        printf "Permutect FFN count: " >> summary.txt
-        grep -v '#' ~{permutect_ffn} | wc -l >> summary.txt
-
-        printf "Other tool FFN count: " >> summary.txt
-        grep -v '#' ~{other_ffn} | wc -l >> summary.txt
-
-        printf "Permutect FP count: " >> summary.txt
-        grep -v '#' ~{permutect_fp} | wc -l >> summary.txt
-
-        printf "Other tool FP count: " >> summary.txt
-        grep -v '#' ~{other_fp} | wc -l >> summary.txt
-
-        printf "Permutect created FFN count: " >> summary.txt
-        grep -v '#' ffn_created_by_permutect.vcf | wc -l >> summary.txt
-
-        printf "Permutect fixed FFN count: " >> summary.txt
-        grep -v '#' ffn_fixed_by_permutect.vcf | wc -l >> summary.txt
-
-        printf "Permutect created FP count: " >> summary.txt
-        grep -v '#' fp_created_by_permutect.vcf | wc -l >> summary.txt
-
-        printf "Permutect fixed FP count: " >> summary.txt
-        grep -v '#' fp_fixed_by_permutect.vcf | wc -l >> summary.txt
+        # append a label and the number of records in a VCF to the summary
+        count_records() {
+            printf '%s: ' "$1" >> summary.txt
+            grep -v '#' $2 | wc -l >> summary.txt
+        }
+        count_records "Permutect FFN count" ~{permutect_ffn}
+        count_records "Other tool FFN count" ~{other_ffn}
+        count_records "Permutect FP count" ~{permutect_fp}
+        count_records "Other tool FP count" ~{other_fp}
+        count_records "Permutect created FFN count" ffn_created_by_permutect.vcf
+        count_records "Permutect fixed FFN count" ffn_fixed_by_permutect.vcf
+        count_records "Permutect created FP count" fp_created_by_permutect.vcf
+        count_records "Permutect fixed FP count" fp_fixed_by_permutect.vcf
     >>>
 
     runtime {
