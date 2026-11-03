@@ -20,6 +20,7 @@ SCRIPTS_DIR = os.path.abspath(os.path.join(test_dir, "..", "..", "scripts"))
 COMPARE_WDL = os.path.join(SCRIPTS_DIR, "compare_permutect_results.wdl")
 CONCATENATE_WDL = os.path.join(SCRIPTS_DIR, "concatenate.wdl")
 EDIT_DATASET_WDL = os.path.join(SCRIPTS_DIR, "permutect_edit_dataset.wdl")
+MAKE_TRAINING_DATASET_WDL = os.path.join(SCRIPTS_DIR, "make_training_dataset.wdl")
 PERMUTECT_WDL = os.path.join(SCRIPTS_DIR, "permutect.wdl")
 TRAIN_ARTIFACT_MODEL_WDL = os.path.join(SCRIPTS_DIR, "train_artifact_model.wdl")
 DOCKERFILE = os.path.join(SCRIPTS_DIR, "..", "Dockerfile")
@@ -234,6 +235,29 @@ def test_training_runs_one_process_per_gpu():
     assert launch == ["torchrun", "--standalone", "--nproc_per_node=4"] + module + ["--train_tar", "data.tar"]
 
 
+def task_text(wdl_path: str, task_name: str) -> str:
+    with open(wdl_path) as file:
+        wdl = file.read()
+    task_start = wdl.index("task " + task_name + " {")
+    next_task_start = wdl.find("\ntask ", task_start)
+    return wdl[task_start : len(wdl) if next_task_start < 0 else next_task_start]
+
+
+@pytest.mark.parametrize(
+    "wdl_path, task_name, tool",
+    [
+        (MAKE_TRAINING_DATASET_WDL, "Preprocess", "preprocess_dataset"),
+        (PERMUTECT_WDL, "PermutectFiltering", "filter_variants"),
+    ],
+)
+def test_plain_text_data_are_normalized_by_a_process_per_cpu(wdl_path, task_name, tool):
+    assert re.search(r"cpu:\s*num_cpus\b", task_text(wdl_path, task_name))
+    command = fill_placeholders(task_command(wdl_path, task_name), defaultdict(lambda: None, num_cpus=4))
+    words = shlex.split(command.replace("\\\n", " "))
+    tool_words = words[words.index(tool) :]
+    assert tool_words[tool_words.index("--" + constants.NUM_PROCESSES_NAME) + 1] == "4"
+
+
 def compare_command(working_dir) -> str:
     """
     The shell command of the Compare task, with its inputs replaced by small VCFs written to working_dir
@@ -351,6 +375,7 @@ def test_permutect_filtering_stops_when_filter_variants_fails(tmp_path, filter_v
         "contigs_table": "contigs.table",
         "batch_size": 64,
         "num_workers": 2,
+        "num_cpus": 2,
         "num_spectrum_iterations": None,
         "spectrum_learning_rate": None,
         "maf_segments": None,

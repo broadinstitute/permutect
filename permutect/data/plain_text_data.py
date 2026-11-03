@@ -33,9 +33,15 @@ GTCCTGGACACGCTGTTGGCC
 
 from __future__ import annotations
 
+import collections
+import io
 import itertools
 import math
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from typing import Generator
+from typing import Iterator
 from typing import List
 
 import numpy as np
@@ -52,7 +58,6 @@ from permutect.data.datum import Datum
 from permutect.data.datum import get_data_field
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.memory_mapped_data import StackedData
-from permutect.misc_utils import ConsistentValue
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
 from permutect.utils.math_utils import log_binomial_coefficient
@@ -78,40 +83,144 @@ def binarize_str_length_column(str_length_column):
     return result
 
 
-def count_number_of_data_and_reads_in_text_file(dataset_file):
-    num_data, num_reads = 0, 0
-    with open(dataset_file) as file:
-        while label_line := file.readline():  # the label line is the first line of each datum
-            next(file)  # skip the contig:position,ref->alt line
-            next(file)  # skip the reference sequence line
-            next(file)  # skip the info array line
+@dataclass(frozen=True)
+class PlainTextFileIndex:
+    """
+    Where each datum with alt reads starts in a plain text dataset file, from a pass over the file that skips the rest
+    """
 
-            # get the read tensor sizes
-            ref_tensor_size, alt_tensor_size, normal_ref_tensor_size, normal_alt_tensor_size = map(
-                int, file.readline().strip().split()
-            )
+    dataset_file: str
+    source: int
+    data_offsets: np.ndarray  # the byte offset of each datum's label line
+    num_reads: int  # the ref and alt reads of these data, before their counts are capped
 
-            # skip the read tensors except for getting the array size from the very first read
-            for idx in range(ref_tensor_size + alt_tensor_size + normal_ref_tensor_size + normal_alt_tensor_size):
-                next(file)
+    @classmethod
+    def of(cls, dataset_file: str, source: int) -> PlainTextFileIndex:
+        num_reads, data_offsets = 0, []
+        with open(dataset_file, "rb") as file:  # binary, so that tell() gives byte offsets
+            while label_line := file.readline():  # the label line is the first line of each datum
+                offset = file.tell() - len(label_line)
+                file.readline()  # skip the contig:position,ref->alt line
+                file.readline()  # skip the reference sequence line
+                file.readline()  # skip the info array line
 
-            next(file)  # skip the original depths line
-            next(file)  # skip the seq error log likelihood line
-            next(file)  # skip the normal seq error log likelihood line
-            if alt_tensor_size > 0:  # data with no alts is skipped
-                num_data += 1
-                num_reads += ref_tensor_size + alt_tensor_size  # we don't use normal reads
+                # get the read tensor sizes
+                ref_tensor_size, alt_tensor_size, normal_ref_tensor_size, normal_alt_tensor_size = map(
+                    int, file.readline().split()
+                )
 
-    return num_data, num_reads
+                # skip the read tensors
+                for _ in range(ref_tensor_size + alt_tensor_size + normal_ref_tensor_size + normal_alt_tensor_size):
+                    file.readline()
+
+                file.readline()  # skip the original depths line
+                file.readline()  # skip the seq error log likelihood line
+                file.readline()  # skip the normal seq error log likelihood line
+                if alt_tensor_size > 0:  # data with no alts is skipped
+                    data_offsets.append(offset)
+                    num_reads += ref_tensor_size + alt_tensor_size  # we don't use normal reads
+
+        return cls(dataset_file, source, np.array(data_offsets, dtype=np.int64), num_reads)
+
+    def __len__(self) -> int:
+        return len(self.data_offsets)
+
+    def segment(self, start: int, end: int) -> PlainTextSegment:
+        """
+        the file's data start:end, counting only data with alt reads
+        """
+        return PlainTextSegment(self.dataset_file, self.source, int(self.data_offsets[start]), end - start)
+
+
+@dataclass(frozen=True)
+class PlainTextSegment:
+    """
+    num_data consecutive data with alt reads of a plain text dataset file, the first of which starts at a byte offset
+    """
+
+    dataset_file: str
+    source: int
+    start: int
+    num_data: int
+
+    def read(self, generator: torch.Generator) -> Iterator[Datum]:
+        raw_data = read_raw_unnormalized_data(
+            self.dataset_file, source=self.source, start=self.start, generator=generator
+        )
+        return itertools.islice(raw_data, self.num_data)
+
+
+@dataclass(frozen=True)
+class PlainTextChunk:
+    """
+    Data of plain text dataset files that are normalized together: a segment of each file the chunk spans, and the seed
+    of its downsampling and quantile transform, so that any process, in any order, normalizes it the same
+    """
+
+    segments: tuple[PlainTextSegment, ...]
+    seed: int
+
+    def normalize(self) -> StackedData:
+        generator = torch.Generator().manual_seed(self.seed)
+        raw = StackedData.of([datum for segment in self.segments for datum in segment.read(generator)])
+        return normalize_raw_data(raw, make_read_quantile_transform(raw, random_state=self.seed))
+
+
+def plain_text_chunks(file_indices: list[PlainTextFileIndex], seed: int) -> list[PlainTextChunk]:
+    """
+    The chunks of the data of plain text dataset files, as when the files were read in turn: of all the files' data in
+    order, ceil(num_data / NUM_RAW_DATA_TO_NORMALIZE_AT_ONCE) chunks of num_data // num_chunks data, the last of which also
+    takes the rest.  Chunk n has seed + n.
+    """
+    num_data = sum(len(file_index) for file_index in file_indices)
+    num_chunks = math.ceil(num_data / NUM_RAW_DATA_TO_NORMALIZE_AT_ONCE)
+    data_per_chunk = num_data // num_chunks
+    chunk_starts = [chunk * data_per_chunk for chunk in range(num_chunks)] + [num_data]
+
+    # the index of each file's first datum among all the files' data
+    file_starts = np.cumsum([0] + [len(file_index) for file_index in file_indices])
+    chunks = []
+    for n, (chunk_start, chunk_end) in enumerate(zip(chunk_starts[:-1], chunk_starts[1:])):
+        segments = tuple(
+            file_index.segment(max(chunk_start, file_start) - file_start, min(chunk_end, file_end) - file_start)
+            for file_index, file_start, file_end in zip(file_indices, file_starts[:-1], file_starts[1:])
+            if file_start < chunk_end and chunk_start < file_end
+        )
+        chunks.append(PlainTextChunk(segments, seed + n))
+    return chunks
+
+
+def normalized_in_order(chunks: list[PlainTextChunk], num_processes: int) -> Iterator[StackedData]:
+    """
+    The normalized data of the chunks, in order.  With several processes, at most twice as many chunks as processes are
+    pending at once, which bounds the memory held by normalized chunks that await their turn.
+    """
+    if num_processes == 1:
+        yield from (chunk.normalize() for chunk in chunks)
+        return
+
+    # spawn rather than fork, which can deadlock a child of a process whose torch or numpy has started threads
+    with ProcessPoolExecutor(max_workers=num_processes, mp_context=multiprocessing.get_context("spawn")) as executor:
+        pending = collections.deque()
+        for chunk in chunks:
+            pending.append(executor.submit(chunk.normalize))
+            if len(pending) >= 2 * num_processes:
+                yield pending.popleft().result()
+        while pending:
+            yield pending.popleft().result()
 
 
 def read_raw_unnormalized_data(
-    dataset_file, only_artifacts: bool = False, source: int = 0
+    dataset_file, only_artifacts: bool = False, source: int = 0, start: int = 0, generator: torch.Generator = None
 ) -> Generator[Datum, None, None]:
     """
-    generator that yields data from a plain text dataset file.
+    generator that yields data from a plain text dataset file, starting at a byte offset
+
+    :param generator: the torch random number generator for downsampling reads beyond the caps on ref and alt counts
     """
-    with open(dataset_file) as file:
+    with open(dataset_file, "rb") as binary_file:
+        binary_file.seek(start)
+        file = io.TextIOWrapper(binary_file)
         while label_str := file.readline().strip():
             label = Label[label_str]
             passes_label_filter = label == Label.ARTIFACT or not only_artifacts
@@ -171,59 +280,39 @@ def read_raw_unnormalized_data(
 
                 ref_count = cap_ref_count(datum.get(Data.REF_COUNT))
                 alt_count = cap_alt_count(datum.get(Data.ALT_COUNT))
-                yield datum.copy_with_downsampled_reads(ref_count, alt_count)
+                yield datum.copy_with_downsampled_reads(ref_count, alt_count, generator)
 
 
-def generate_raw_data_from_text_files(dataset_files, sources: List[int] = None) -> Generator[Datum, None, None]:
-    data_dim, reads_dim = ConsistentValue(), ConsistentValue()
-
-    for n, dataset_file in enumerate(dataset_files):
-        source = 0 if sources is None else (sources[0] if len(sources) == 1 else sources[n])
-        reads_datum: Datum
-        for reads_datum in read_raw_unnormalized_data(dataset_file, source=source):
-            data_dim.check(len(reads_datum.int_array))
-            reads_dim.check(reads_datum.reads_re.shape[-1])
-            yield reads_datum
-
-
-def normalized_data_generator(raw_data, num_data: int) -> Generator[StackedData, None, None]:
+def make_read_quantile_transform(raw: StackedData, random_state: int = None):
     """
-    The normalized data of each chunk of num_data raw data from an iterator.  The raw data of each chunk are read and
-    normalized together, without writing them to disk.
+    :param random_state: the seed of the random subsample of the reads to which the transform is fit
     """
-    num_chunks = math.ceil(num_data / NUM_RAW_DATA_TO_NORMALIZE_AT_ONCE)
-    data_per_chunk = num_data // num_chunks
-
-    for chunk in range(num_chunks):
-        chunk_size = (num_data - chunk * data_per_chunk) if (chunk == num_chunks - 1) else data_per_chunk
-        raw = StackedData.of(list(itertools.islice(raw_data, chunk_size)))
-        yield normalize_raw_data(raw, make_read_quantile_transform(raw))
-
-
-def make_read_quantile_transform(raw: StackedData):
     # fit to the fragment lengths of the ref reads of every datum, which come first among its reads
     ref_counts, read_starts = get_data_field(raw.int_array_ve, None, Data.REF_COUNT), raw.read_offsets[:-1]
     ref_reads_re = np.vstack([raw.reads_re[start : start + count] for start, count in zip(read_starts, ref_counts)])
-    return QuantileTransformer(n_quantiles=100, output_distribution="normal").fit(ref_reads_re[:, 6:7])
+    transform = QuantileTransformer(n_quantiles=100, output_distribution="normal", random_state=random_state)
+    return transform.fit(ref_reads_re[:, 6:7])
 
 
-def make_normalized_mmap_data(dataset_files, sources: List[int] = None) -> MemoryMappedData:
+def make_normalized_mmap_data(
+    dataset_files, sources: List[int] = None, num_processes: int = 1, seed: int = 0
+) -> MemoryMappedData:
     """
     given unnormalized plain text dataset files from Mutect2, normalize data and save as tarfile of memory mapped numpy arrays
 
     In addition to quantile-normalizing read tensors it also enlarges the info tensors
     :param dataset_files:
     :param sources if None, source is set to 0; if singleton list, all files are given that source; otherwise one source per file
+    :param num_processes: the number of processes that read and normalize chunks of the data at once
+    :param seed: chunk n is normalized with seed + n, so that the data don't depend on the number of processes
     """
-    num_data, num_reads = 0, 0
-    for dataset_file in dataset_files:
-        file_num_data, file_num_reads = count_number_of_data_and_reads_in_text_file(dataset_file)
-        num_data += file_num_data
-        num_reads += file_num_reads
+    # no sources gives every file source 0, a single source is every file's, and otherwise file n has source n
+    file_sources = [0 if sources is None else sources[0 if len(sources) == 1 else n] for n in range(len(dataset_files))]
+    file_indices = [PlainTextFileIndex.of(file, source) for file, source in zip(dataset_files, file_sources)]
+    chunks = plain_text_chunks(file_indices, seed)
+    normalized_chunks = tqdm(normalized_in_order(chunks, num_processes), total=len(chunks), mininterval=60)
 
-    # the counts that divide the data into chunks and size the memory maps also give the progress bar its total
-    raw_data = tqdm(generate_raw_data_from_text_files(dataset_files, sources), total=num_data, mininterval=60)
-    normalized_chunks = normalized_data_generator(raw_data, num_data)
+    num_data, num_reads = sum(len(index) for index in file_indices), sum(index.num_reads for index in file_indices)
     return MemoryMappedData.from_chunks(normalized_chunks, estimated_num_data=num_data, estimated_num_reads=num_reads)
 
 

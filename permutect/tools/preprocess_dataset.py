@@ -2,6 +2,7 @@ import argparse
 
 from permutect import constants
 from permutect.data.plain_text_data import make_normalized_mmap_data
+from permutect.parameters import add_num_processes_to_parser
 
 """
 This tool takes as input a list of plain text Permutect training datasets made by Mutect2, normalizes their data, and
@@ -30,6 +31,7 @@ def parse_arguments(argv=None):
         required=True,
         help="path to output tarfile of training data",
     )
+    add_num_processes_to_parser(parser)
     args = parser.parse_args(argv)
     datasets, sources = getattr(args, constants.TRAINING_DATASETS_NAME), getattr(args, constants.SOURCES_NAME)
     # one source for all datasets, or one for each.  Otherwise reading the data would fail partway through.
@@ -43,7 +45,9 @@ def parse_arguments(argv=None):
 
 def main_without_parsing(args):
     datasets, sources = getattr(args, constants.TRAINING_DATASETS_NAME), getattr(args, constants.SOURCES_NAME)
-    make_normalized_mmap_data(datasets, sources=sources).save_to_tarfile(getattr(args, constants.OUTPUT_NAME))
+    num_processes = getattr(args, constants.NUM_PROCESSES_NAME)
+    normalized = make_normalized_mmap_data(datasets, sources=sources, num_processes=num_processes)
+    normalized.save_to_tarfile(getattr(args, constants.OUTPUT_NAME))
 
 
 def main():

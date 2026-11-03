@@ -153,6 +153,15 @@ def parse_training_params(args, default_training_params: List[ParameterSet]) -> 
     )
 
 
+def add_num_processes_to_parser(parser):
+    parser.add_argument(
+        "--" + constants.NUM_PROCESSES_NAME,
+        type=int,
+        default=1,
+        help="number of processes that read and normalize chunks of the plain text data at once",
+    )
+
+
 def add_training_params_to_parser(parser):
     parser.add_argument(
         "--" + constants.LEARNING_RATE_NAME,

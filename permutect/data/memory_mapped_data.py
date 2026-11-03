@@ -529,6 +529,10 @@ class MemoryMappedData:
         chunk: StackedData
         for chunk in chunks:
             int_array_ve, float_array_ve, reads_re = chunk.int_array_ve, chunk.float_array_ve, chunk.reads_re
+            # every chunk's rows must have the widths of the first chunk's, as every datum's did
+            for array, memmap in ((int_array_ve, int_mmap), (float_array_ve, float_mmap), (reads_re, reads_mmap)):
+                if memmap is not None and len(array) > 0 and array.shape[1:] != memmap.shape[1:]:
+                    raise ValueError(f"A chunk has rows of shape {array.shape[1:]} rather than {memmap.shape[1:]}.")
             end, reads_end = num_data + len(int_array_ve), num_reads + len(reads_re)
             if end > (0 if int_mmap is None else len(int_mmap)):
                 int_mmap, int_file = grown_memory_map(

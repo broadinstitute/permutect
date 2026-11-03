@@ -33,6 +33,7 @@ WEIGHT_DECAY_NAME = "weight_decay"
 BATCH_SIZE_NAME = "batch_size"
 NUM_EPOCHS_NAME = "num_epochs"
 NUM_WORKERS_NAME = "num_workers"
+NUM_PROCESSES_NAME = "num_processes"
 TRAINABLE_PARAMETERS_NAME = "trainable_parameters"
 
 # posterior model training parameters
