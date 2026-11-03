@@ -149,7 +149,8 @@ def test_reads_dataset_counts_its_data(monkeypatch):
     assert dataset.haplotypes_length() == data[0].get_haplotypes_array_size()
 
 
-def test_loading_a_dataset_does_not_loop_over_its_data(tmp_path, monkeypatch):
+@pytest.mark.parametrize("folds_to_use", [None, list(range(9))])
+def test_loading_a_dataset_does_not_loop_over_its_data(tmp_path, monkeypatch, folds_to_use):
     # making a Datum of each datum took about a minute per million data, in every process of distributed training
     data = [make_datum(index, index % 4) for index in range(50)]
     tar = str(tmp_path / "data.tar")
@@ -164,7 +165,7 @@ def test_loading_a_dataset_does_not_loop_over_its_data(tmp_path, monkeypatch):
         datum_init(self, *args, **kwargs)
 
     monkeypatch.setattr(Datum, "__init__", counted_init)
-    ReadsDataset(MemoryMappedData.load_from_tarfile(tar))
+    ReadsDataset(MemoryMappedData.load_from_tarfile(tar), num_folds=10, folds_to_use=folds_to_use)
     assert num_datum_inits <= 1
 
 
@@ -175,22 +176,25 @@ def iterate_as_worker(dataset: ReadsDataset, worker: int, num_workers: int, monk
     return [int(datum.get(Data.POSITION)) for datum in dataset]
 
 
-def test_reads_dataset_shards_are_disjoint_and_the_same_size(monkeypatch):
+@pytest.mark.parametrize("num_folds, folds_to_use", [(1, None), (3, [0, 2])])
+def test_reads_dataset_shards_are_disjoint_and_the_same_size(monkeypatch, num_folds, folds_to_use):
     # In distributed training every worker of every process iterates over its own shard.  The shards have the same size,
     # so that every process has the same number of batches of the same sizes, which drops fewer data than there are
     # shards.
     data = [make_datum(index, index % 3) for index in range(23)]
     memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=23, estimated_num_reads=23)
+    in_folds = [index for index in range(23) if folds_to_use is None or index % num_folds in folds_to_use]
     world_size, num_workers = 2, 3
     shards = []
     for rank in range(world_size):
-        dataset = ReadsDataset(memory_mapped_data, rank=rank, world_size=world_size)
-        assert len(dataset) == 23 // world_size
+        dataset = ReadsDataset(memory_mapped_data, num_folds, folds_to_use, rank=rank, world_size=world_size)
+        assert len(dataset) == len(in_folds) // world_size
         shards += [iterate_as_worker(dataset, worker, num_workers, monkeypatch) for worker in range(num_workers)]
 
     positions = [position for shard in shards for position in shard]
-    assert len(positions) == len(set(positions))
-    assert [len(shard) for shard in shards] == [23 // (world_size * num_workers)] * (world_size * num_workers)
+    assert len(positions) == len(set(positions)) and set(positions) <= set(in_folds)
+    num_shards = world_size * num_workers
+    assert [len(shard) for shard in shards] == [len(in_folds) // num_shards] * num_shards
 
 
 def test_reads_dataset_shards_share_the_memory(monkeypatch, capsys):
@@ -259,22 +263,28 @@ def test_vcf_annotation_keys_follow_misc_utils(tmp_path, monkeypatch):
     assert len(annotated_mafs(tmp_path)) == 2
 
 
-@pytest.mark.parametrize("num_folds, used_folds", [(3, [0, 2]), (3, [1]), (1000, [7])])
-def test_restrict_to_folds(num_folds, used_folds):
-    # with 1000 folds the estimated size rounds down to 0, and the capacity must grow to fit
+@pytest.mark.parametrize("num_folds, folds_to_use", [(3, [0, 2]), (3, [1]), (1000, [7]), (3, None)])
+def test_reads_dataset_selects_its_folds_without_copying(num_folds, folds_to_use, monkeypatch):
+    # the folds' data are selected as they are iterated over, here in nine chunks, some of them empty, rather than copied
+    # to new memory maps, which took as much disk as the data in every process of distributed training
     data = [make_datum(index, index % 4) for index in range(20)]
     memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=20, estimated_num_reads=40)
-    restricted = memory_mapped_data.restrict_to_folds(num_folds, used_folds)
-    assert_same_data(restricted, [datum for index, datum in enumerate(data) if index % num_folds in used_folds])
+    dataset = ReadsDataset(memory_mapped_data, num_folds, folds_to_use)
+    assert dataset.memory_mapped_data is memory_mapped_data
 
-    assert memory_mapped_data.restrict_to_folds(num_folds, used_folds=None) is memory_mapped_data
+    memory = SimpleNamespace(available=memory_mapped_data.num_bytes(), percent=50.0)
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: memory)
+    iterated = sorted(dataset, key=lambda datum: datum.get(Data.POSITION))
+    expected = [datum for index, datum in enumerate(data) if folds_to_use is None or index % num_folds in folds_to_use]
+    assert len(dataset) == dataset.totals_slvra.sum().item() == len(expected)
+    assert_same_data(MemoryMappedData.from_generator(iterated, estimated_num_data=20, estimated_num_reads=40), expected)
 
 
 @pytest.mark.parametrize("folds_to_use", [None, [0, 2]])
 def test_pickled_reads_dataset_maps_its_files_instead_of_copying_the_data(folds_to_use):
     # DataLoader workers started with spawn, the default on macOS, or forkserver, the default on Linux from Python 3.14,
-    # receive a pickled dataset, whose memory maps used to be pickled as copies of all their data.  Without folds the
-    # data are memory maps of a tarfile's files, and with folds they are new memory maps.
+    # receive a pickled dataset, whose memory maps used to be pickled as copies of all their data.  With or without folds
+    # the data are memory maps of a tarfile's files.
     dataset = ReadsDataset(
         MemoryMappedData.load_from_tarfile(PREPROCESSED_DATA), num_folds=3, folds_to_use=folds_to_use
     )

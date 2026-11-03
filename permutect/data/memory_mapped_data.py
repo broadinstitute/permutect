@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import math
 import os
-import random
 import tarfile
 import tempfile
 from collections import defaultdict
 from tempfile import NamedTemporaryFile
 from typing import Generator
-from typing import List
 from typing import NamedTuple
 from typing import Set
 
@@ -139,19 +137,11 @@ class MemoryMappedData:
         reads_nbytes = 0 if self.reads_mmap is None else self.reads_mmap.nbytes
         return required_array_nbytes + reads_nbytes
 
-    def generate(
-        self, num_folds: int = 1, used_folds: List[int] = None, label_probs_l=None
-    ) -> Generator[Datum, None, None]:
-        folds_set = None if used_folds is None else set(used_folds)
+    def generate(self) -> Generator[Datum, None, None]:
         print("Generating data from memory maps.")
-        count = 0
         for idx in range(self.num_data):
-            if used_folds is None or (idx % num_folds in folds_set):
-                datum = self.get_datum(idx)
-                if label_probs_l is None or random.random() < label_probs_l[datum.get(Data.LABEL)]:
-                    yield datum
-                    count += 1
-        print(f"generated {count} objects.")
+            yield self.get_datum(idx)
+        print(f"generated {self.num_data} objects.")
 
     def get_datum(self, idx: int) -> Datum:
         reads_arr = (
@@ -171,18 +161,6 @@ class MemoryMappedData:
         estimated_num_data = int(self.num_data * estimated_proportion * fudge_factor)
         estimated_num_reads = int(self.num_reads * estimated_proportion * fudge_factor)
         return MemoryMappedData.from_generator(reads_datum_source, estimated_num_data, estimated_num_reads)
-
-    def restrict_to_folds(self, num_folds: int, used_folds: List[int] = None, label_probs_l=None) -> MemoryMappedData:
-        if used_folds is None:
-            return self
-        else:
-            print(f"Restricting to folds {used_folds} out of {num_folds} total folds.")
-            reads_datum_source = self.generate(
-                num_folds=num_folds,
-                used_folds=used_folds,
-                label_probs_l=label_probs_l,
-            )
-            return self._restrict(reads_datum_source, estimated_proportion=len(used_folds) / num_folds)
 
     def restrict_to_labeled_only(self) -> MemoryMappedData:
         print("Restricting dataset to labeled data only.")

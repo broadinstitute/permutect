@@ -51,12 +51,12 @@ class ReadsDataset(IterableDataset):
         memory_mapped_data: MemoryMappedData,
         num_folds: int = 1,
         folds_to_use: List[int] = None,
-        keep_probs_by_label_l=None,
         rank: int = 0,
         world_size: int = 1,
     ):
         """
-        :param num_folds:
+        :param num_folds, folds_to_use: the dataset is the data whose indices modulo num_folds are among folds_to_use,
+            or all the data if folds_to_use is None
         :param rank, world_size: in distributed training, this process and the number of processes.  Each process
             iterates over its own shard of the data.
         """
@@ -64,9 +64,13 @@ class ReadsDataset(IterableDataset):
         # stored here because DataLoader workers started by spawn or forkserver aren't in the process group
         self._rank, self._world_size = rank, world_size
         self.totals_slvra = BatchIndexedTensor.zeros(num_sources=1, include_logits=False, device=torch.device("cpu"))
-        # if no folds, no copying is done; otherwise this creates a new file on disk
-        self.memory_mapped_data = memory_mapped_data.restrict_to_folds(num_folds, folds_to_use, keep_probs_by_label_l)
-        self._size = self.memory_mapped_data.num_data
+        # the folds are selected as the data are iterated over, without copying them
+        self.memory_mapped_data = memory_mapped_data
+        self._num_folds, self._folds = (
+            (1, np.array([0])) if folds_to_use is None else (num_folds, np.array(sorted(set(folds_to_use))))
+        )
+        num_data = memory_mapped_data.num_data
+        self._size = int(sum((num_data - fold + self._num_folds - 1) // self._num_folds for fold in self._folds))
         self._read_offsets = self.memory_mapped_data.read_offsets
 
         available_memory = psutil.virtual_memory().available
@@ -76,17 +80,28 @@ class ReadsDataset(IterableDataset):
 
         data_recording_timer = Timer("Recording data counts. . .")
         int_mmap = self.memory_mapped_data.int_mmap
-        for start in range(0, self._size, COUNTING_BLOCK_SIZE):
-            self.totals_slvra.record_int_arrays(int_mmap[start : start + COUNTING_BLOCK_SIZE])
+        for start in range(0, len(int_mmap), COUNTING_BLOCK_SIZE):
+            block = int_mmap[start : start + COUNTING_BLOCK_SIZE]
+            self.totals_slvra.record_int_arrays(block[self._in_folds(np.arange(start, start + len(block)))])
         data_recording_timer.report("Time to record data counts")
 
         # the rows of the memory maps all have the same widths, so every datum has as many features as the first
-        first_datum = self.memory_mapped_data.get_datum(0) if self._size > 0 else None
+        first_datum = self.memory_mapped_data.get_datum(self._original_index(0)) if self._size > 0 else None
         self._num_read_features = None if first_datum is None else first_datum.num_read_features()
         self._num_info_features = None if first_datum is None else len(first_datum.get_info_1d())
         self._haplotypes_length = None if first_datum is None else first_datum.get_haplotypes_array_size()
 
         self.totals_by_label_l = self.totals_slvra.get_marginal(BatchProperty.LABEL)  # totals by label
+
+    def _in_folds(self, original_indices: np.ndarray) -> np.ndarray:
+        return np.isin(original_indices % self._num_folds, self._folds)
+
+    def _original_index(self, index):
+        """
+        the index in the memory-mapped data of this dataset's datum, or of each of an array of its data.  Each block of
+        num_folds consecutive data has one datum of each fold.
+        """
+        return (index // len(self._folds)) * self._num_folds + self._folds[index % len(self._folds)]
 
     def totals_by_label(self):
         return self.totals_by_label_l
@@ -114,6 +129,7 @@ class ReadsDataset(IterableDataset):
         shard, num_shards = self._rank * num_workers + worker_id, self._world_size * num_workers
 
         num_data_per_worker = self._size // num_shards
+        # the bytes of all the data, not only this dataset's folds, because chunks load the other folds' data too
         num_bytes_per_worker = self.memory_mapped_data.num_bytes() // num_shards
 
         # note: this is the total available system memory, shared by every worker of every process
@@ -169,23 +185,28 @@ class ReadsDataset(IterableDataset):
             chunk_end_idx = (
                 (worker_start_idx + (chunk + 1) * data_per_chunk) if (chunk < chunks_per_worker - 1) else worker_end_idx
             )
+            if chunk_end_idx == chunk_start_idx:
+                continue
+            # the chunk's data lie among the consecutive data from its first to its last, which are copied into RAM
+            original_indices = self._original_index(np.arange(chunk_start_idx, chunk_end_idx))
+            start, end = original_indices[0], original_indices[-1] + 1
 
-            chunk_read_start_idx = self._read_offsets[chunk_start_idx]
-            chunk_read_end_idx = self._read_offsets[chunk_end_idx]
+            chunk_read_start_idx = self._read_offsets[start]
+            chunk_read_end_idx = self._read_offsets[end]
 
             ram_timer = Timer(f"Worker {worker_id} loading chunk [{chunk_start_idx}, {chunk_end_idx}) into RAM.")
             # copying reads each chunk from the memory-mapped files in one sequential pass, so that the shuffled access
             # below is to RAM rather than to the files.  The copies aren't needed for correctness: a slice of a memory
             # map is read from its file when used, and Datum copies its int and float arrays anyway.
-            chunk_int_data_ve = int_array_ve[chunk_start_idx:chunk_end_idx].copy()
-            chunk_float_data_ve = float_array_ve[chunk_start_idx:chunk_end_idx].copy()
+            chunk_int_data_ve = int_array_ve[start:end].copy()
+            chunk_float_data_ve = float_array_ve[start:end].copy()
             chunk_reads_re = stacked_reads_re[chunk_read_start_idx:chunk_read_end_idx].copy()
-            chunk_read_offsets = self._read_offsets[chunk_start_idx : chunk_end_idx + 1] - chunk_read_start_idx
+            chunk_read_offsets = self._read_offsets[start : end + 1] - chunk_read_start_idx
             ram_timer.report("Time to load chunk data into RAM")
             report_memory_usage("Chunk data loaded into RAM.")
 
             # now that it's all in RAM, we can yield in randomly-accessed order
-            indices = list(range(len(chunk_int_data_ve)))
+            indices = list(original_indices - start)
             random.shuffle(indices)
 
             for idx in indices:
