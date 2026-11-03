@@ -19,6 +19,9 @@ workflow TrainArtifactModel {
         Int? num_self_attention_layers
         Float? dropout_p
         String? extra_args
+
+        # training runs one process per GPU
+        Int? gpu_count
     }
 
     # WDL version 1.0 does not have an empty Optional literal.  Such a literal is very useful because Terra has a bug
@@ -46,7 +49,8 @@ workflow TrainArtifactModel {
             self_attention_hidden_dimension = self_attention_hidden_dimension,
             num_self_attention_layers = num_self_attention_layers,
             dropout_p = dropout_p,
-            extra_args = extra_args
+            extra_args = extra_args,
+            gpu_count = gpu_count
     }
 
     output {
@@ -85,11 +89,13 @@ task Train {
 
     # Mem is in units of GB but our memory runtime value is in MB
     Int machine_mem = if defined(mem) then mem * 1000 else 16000
+    Int num_gpus = select_first([gpu_count, 1])
 
     command <<<
         set -e
 
-        train_artifact_model \
+        # one training process per GPU
+        torchrun --standalone --nproc_per_node=~{num_gpus} -m permutect.tools.train_artifact_model \
             --train_tar ~{train_tar} \
             ~{"--pretrained_artifact_model " + pretrained_model} \
             ~{true="--read_layers " false="" defined(read_layers)}~{sep=" " read_layers} \
@@ -118,7 +124,7 @@ task Train {
         maxRetries: select_first([max_retries, 0])
         cpu: select_first([cpu, 1])
         gpuType: "nvidia-tesla-t4"
-        gpuCount: select_first([gpu_count, 1])
+        gpuCount: num_gpus
         # at least the driver that the docker image's CUDA needs.  Cromwell on Google Batch, and so Terra, ignores this
         # and installs Batch's default driver.
         nvidiaDriverVersion: "580.65.06"

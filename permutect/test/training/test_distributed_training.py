@@ -10,6 +10,7 @@ from permutect.data.batch import Batch
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
+from permutect.parameters import TrainingParameters
 from permutect.test.process_group import run_in_process_group
 from permutect.test.test_file_names import PERMUTECT_V0_9_2_ARTIFACT_MODEL
 from permutect.test.test_file_names import PREPROCESSED_DATA
@@ -18,6 +19,7 @@ from permutect.training.balancer import Balancer
 from permutect.training.downsampler import Downsampler
 from permutect.training.loss_recorder import LossRecorder
 from permutect.utils.enums import Epoch
+from permutect.utils.enums import ParameterSet
 
 BATCH_SIZE = 16
 
@@ -71,10 +73,10 @@ def test_loss_recorder_sums_over_processes():
         assert mean_loss == pytest.approx(0.1)
 
 
-def evaluated_and_expected_weights(tensorboard_dir) -> tuple[list[float], list[float]]:
+def evaluated_and_expected_weights(tensorboard_dir) -> tuple[list[list[float]], list[float]]:
     """
-    the total weight of the data that evaluate_model recorded for training and validation data, and that of all the
-    processes' shards
+    for each plot that evaluate_model made, the total weight of the training and validation data, and the total weight
+    of all the processes' shards
     """
     device, rank, world_size = torch.device("cpu"), dist.get_rank(), dist.get_world_size()
     memory_mapped_data = MemoryMappedData.load_from_tarfile(PREPROCESSED_DATA)
@@ -93,14 +95,43 @@ def evaluated_and_expected_weights(tensorboard_dir) -> tuple[list[float], list[f
         valid_loader=valid_dataset.make_data_loader(batch_size=64),
         summary_writer=SummaryWriter(f"{tensorboard_dir}/{rank}"),
     )
-    accuracy_metrics = evaluated[0].accuracy_metrics_by_epoch_type
-    weights = [accuracy_metrics[epoch_type].sum().item() for epoch_type in (Epoch.TRAIN, Epoch.VALID)]
+    epoch_types = (Epoch.TRAIN, Epoch.VALID)
+    weights = [[metrics.accuracy_metrics_by_epoch_type[e].sum().item() for e in epoch_types] for metrics in evaluated]
     # each datum is downsampled three times, and with one worker per process the shards are the size of the datasets
     expected = [3.0 * world_size * len(dataset) for dataset in (train_dataset, valid_dataset)]
     return weights, expected
 
 
 def test_evaluation_sums_over_processes(tmp_path):
-    # each process evaluates its own shard, and the plots are of all the shards
-    for weights, expected in run_in_process_group(2, evaluated_and_expected_weights, str(tmp_path)):
-        assert weights == pytest.approx(expected)
+    # each process evaluates its own shard, and process 0 plots all the shards
+    (weights_0, expected), (weights_1, _) = run_in_process_group(2, evaluated_and_expected_weights, str(tmp_path))
+    assert weights_0 == [pytest.approx(expected)]
+    assert weights_1 == []
+
+
+def trained_model_state(tensorboard_dir) -> dict:
+    device, rank, world_size = torch.device("cpu"), dist.get_rank(), dist.get_world_size()
+    memory_mapped_data = MemoryMappedData.load_from_tarfile(PREPROCESSED_DATA)
+    train_dataset = ReadsDataset(memory_mapped_data, 10, [0], rank=rank, world_size=world_size)
+    valid_dataset = ReadsDataset(memory_mapped_data, 10, [1], rank=rank, world_size=world_size)
+    model = load_model(PERMUTECT_V0_9_2_ARTIFACT_MODEL, device=device)
+    training_params = TrainingParameters(
+        batch_size=64,
+        num_epochs=2,
+        learning_rate=0.001,
+        weight_decay=0.01,
+        num_workers=0,
+        trainable_parameter_sets=[ParameterSet.WHOLE_MODEL],
+    )
+    with SummaryWriter(f"{tensorboard_dir}/{rank}") as summary_writer:
+        model_training.train_artifact_model(model, train_dataset, valid_dataset, training_params, summary_writer)
+    return model.state_dict()
+
+
+def test_distributed_training_keeps_the_models_of_the_processes_the_same(tmp_path):
+    # the processes train on different shards, and synchronizing their gradients keeps their models the same
+    states = run_in_process_group(2, trained_model_state, str(tmp_path))
+    pretrained = load_model(PERMUTECT_V0_9_2_ARTIFACT_MODEL, device=torch.device("cpu")).state_dict()
+    assert any(not torch.equal(states[0][name], tensor) for name, tensor in pretrained.items())
+    for name, tensor in states[0].items():
+        assert torch.equal(states[1][name], tensor), name

@@ -1,5 +1,6 @@
 import argparse
 
+import torch.distributed as dist
 from torch.utils.tensorboard import SummaryWriter
 
 from permutect import constants
@@ -10,7 +11,11 @@ from permutect.data.reads_dataset import ReadsDataset
 from permutect.data.reads_dataset import all_but_last_fold
 from permutect.data.reads_dataset import last_fold_only
 from permutect.misc_utils import Timer
-from permutect.misc_utils import gpu_if_available
+from permutect.misc_utils import distributed_rank
+from permutect.misc_utils import distributed_world_size
+from permutect.misc_utils import init_distributed
+from permutect.misc_utils import is_distributed
+from permutect.misc_utils import is_main_process
 from permutect.misc_utils import report_device
 from permutect.misc_utils import report_memory_usage
 from permutect.parameters import add_model_params_to_parser
@@ -22,21 +27,25 @@ from permutect.utils.enums import ParameterSet
 
 
 def main_without_parsing(args):
+    # under torchrun, one process per GPU
+    device = init_distributed()
     params = parse_model_params(args)
     training_params = parse_training_params(args, default_training_params=[ParameterSet.WHOLE_MODEL])
     # optional pretrained model to use as initialization
     pretrained_model_path = getattr(args, constants.PRETRAINED_ARTIFACT_MODEL_NAME)
 
-    model = None if pretrained_model_path is None else load_model(pretrained_model_path)
+    model = None if pretrained_model_path is None else load_model(pretrained_model_path, device=device)
 
     tensorboard_dir = getattr(args, constants.TENSORBOARD_DIR_NAME)
-    summary_writer = SummaryWriter(tensorboard_dir)
+    summary_writer = SummaryWriter(tensorboard_dir) if is_main_process() else None
     report_memory_usage("Training data about to be loaded from tarfile.")
     memory_mapped_data = MemoryMappedData.load_from_tarfile(getattr(args, constants.TRAIN_TAR_NAME))
     num_folds = 10
     subset_timer = Timer("Creating training and validation datasets")
-    train_dataset = ReadsDataset(memory_mapped_data, num_folds=num_folds, folds_to_use=all_but_last_fold(num_folds))
-    valid_dataset = ReadsDataset(memory_mapped_data, num_folds=num_folds, folds_to_use=last_fold_only(num_folds))
+    rank, world_size = distributed_rank(), distributed_world_size()
+    train_folds, valid_folds = all_but_last_fold(num_folds), last_fold_only(num_folds)
+    train_dataset = ReadsDataset(memory_mapped_data, num_folds, train_folds, rank=rank, world_size=world_size)
+    valid_dataset = ReadsDataset(memory_mapped_data, num_folds, valid_folds, rank=rank, world_size=world_size)
     subset_timer.report("Time to create training and validation datasets")
 
     if model is None:
@@ -45,7 +54,7 @@ def main_without_parsing(args):
             num_read_features=train_dataset.num_read_features(),
             num_info_features=train_dataset.num_info_features(),
             haplotypes_length=train_dataset.haplotypes_length(),
-            device=gpu_if_available(),
+            device=device,
         )
     else:
         model.assert_compatible(train_dataset)
@@ -60,9 +69,11 @@ def main_without_parsing(args):
         epochs_per_evaluation=10,
     )
 
-    summary_writer.close()
-
-    model.save_model(path=getattr(args, constants.OUTPUT_NAME))
+    if is_main_process():
+        summary_writer.close()
+        model.save_model(path=getattr(args, constants.OUTPUT_NAME))
+    if is_distributed():
+        dist.destroy_process_group()
 
 
 def parse_arguments(argv=None):
