@@ -6,9 +6,13 @@ from scipy import stats
 from permutect.architecture.exponentially_modified_gaussian import ExponentiallyModifiedGaussian
 from permutect.architecture.exponentially_modified_gaussian import ExponentiallyModifiedGaussianDistribution
 
-# (mu, sigma, lambda) from nearly exponential (sigma * lambda << 1) to nearly Gaussian (sigma * lambda >> 1)
+# (mu, sigma, lambda) from nearly exponential (sigma * lambda << 1) to nearly Gaussian (sigma * lambda >> 1), including
+# the corners of the ranges to which the parametrizations bound sigma and lambda
 PARAMETERS = [
     (0.0, 0.01, 0.01),
+    (1.0, 0.01, 100.0),
+    (-2.0, 100.0, 0.01),
+    (2.0, 100.0, 100.0),
     (0.5, 0.05, 10.0),
     (-1.0, 2.0, 0.2),
     (0.0, 1.0, 1.0),
@@ -16,8 +20,8 @@ PARAMETERS = [
     (3.0, 10.0, 10.0),
 ]
 
-# typical of trained models, which use float32
-FLOAT32_PARAMETERS = [(0.0, 1.0, 1.0), (2.0, 0.5, 3.0), (1.0, 0.3, 0.5)]
+# trained models use float32.  scipy's own float64 log densities are off by up to about 4e-9 when sigma = lambda = 100.
+TOLERANCES = {torch.float64: 1e-8, torch.float32: 1e-5}
 
 
 def scipy_emg(mu: float, sigma: float, lambda_: float):
@@ -32,23 +36,17 @@ def make_emg(parameters, dtype=torch.float64, validate_args=None) -> Exponential
 
 
 def tails_grid(mu: float, sigma: float, lambda_: float) -> np.ndarray:
-    # from far in the Gaussian left tail, where logerfc switches to its asymptotic expansion, to far in the exponential
-    # right tail
+    # from far in the Gaussian left tail, where erfc underflows, to far in the exponential right tail
     return np.linspace(mu - 15 * sigma, mu + 15 * sigma + 30 / lambda_, num=1000)
 
 
+@pytest.mark.parametrize("dtype", TOLERANCES)
 @pytest.mark.parametrize("parameters", PARAMETERS)
-def test_log_prob_matches_scipy(parameters):
+def test_log_prob_matches_scipy(parameters, dtype):
     x = tails_grid(*parameters)
-    actual = make_emg(parameters).log_prob(torch.from_numpy(x)).numpy()
-    np.testing.assert_allclose(actual, scipy_emg(*parameters).logpdf(x), rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("parameters", FLOAT32_PARAMETERS)
-def test_float32_log_prob_matches_scipy(parameters):
-    x = tails_grid(*parameters)
-    actual = make_emg(parameters, dtype=torch.float32).log_prob(torch.from_numpy(x).float()).numpy()
-    np.testing.assert_allclose(actual, scipy_emg(*parameters).logpdf(x), rtol=1e-4, atol=1e-4)
+    actual = make_emg(parameters, dtype=dtype).log_prob(torch.from_numpy(x).to(dtype)).numpy()
+    expected = scipy_emg(*parameters).logpdf(x)
+    np.testing.assert_allclose(actual, expected, rtol=TOLERANCES[dtype], atol=TOLERANCES[dtype])
 
 
 @pytest.mark.parametrize("parameters", PARAMETERS)

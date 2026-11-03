@@ -14,9 +14,6 @@ from permutect.test.architecture.test_exponentially_modified_gaussian import sci
 # (mu, sigma, lambda) of the parallel EMG and the orthogonal standard deviation of each of three clusters
 CLUSTER_PARAMETERS = [((2.0, 1.0, 1.0), 0.5), ((0.5, 0.3, 3.0), 1.0), ((-1.0, 2.0, 0.5), 2.0)]
 
-# the asymptotic expansion of logerfc in the EMG's far left tail is accurate to about 1e-5
-LOG_PROB_RTOL = 1e-5
-
 
 def test_standard_deviations_share_one_constraint():
     # the Gaussian and exponentially-modified Gaussian standard deviations used to have separate, identical bounds
@@ -70,7 +67,7 @@ def test_artifact_cluster_log_prob_matches_scipy():
     for k, (emg_parameters, orthogonal_stdev) in enumerate(CLUSTER_PARAMETERS):
         direction_e = clusters.directions_ke[k].numpy()
         expected_n = scipy_artifact_cluster_log_prob(x_ne.numpy(), direction_e, emg_parameters, orthogonal_stdev)
-        np.testing.assert_allclose(actual_nk[:, k], expected_n, rtol=LOG_PROB_RTOL)
+        np.testing.assert_allclose(actual_nk[:, k], expected_n, rtol=1e-8)
 
 
 def test_artifact_cluster_density_integrates_to_one():
@@ -212,4 +209,4 @@ def test_weighted_log_likelihoods_match_scipy():
     bounds = np.cumsum([0] + lengths_b.tolist())
     expected_bk = np.array([log_lks_rk[start:end].sum(axis=0) for start, end in zip(bounds[:-1], bounds[1:])])
     expected_bk[:, 2:] += clustering.log_cluster_weights_k.detach().numpy()
-    np.testing.assert_allclose(actual_bk, expected_bk, rtol=LOG_PROB_RTOL)
+    np.testing.assert_allclose(actual_bk, expected_bk, rtol=1e-8)
