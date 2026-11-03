@@ -344,19 +344,21 @@ class BatchIndexedTensor(Tensor):
         self.resize_(BatchIndexedTensor.shape_for(new_num_sources, self.has_logits()))
         self[old_num_sources:] = 0
 
-    def record_datum(self, datum: Datum, value: float = 1.0, grow_source_if_necessary: bool = True):
+    def record_int_arrays(self, int_array_be: np.ndarray):
+        """
+        Count data by their int arrays, the rows of a 2D array such as a slice of a memory map, growing the sources to
+        fit the data
+        """
         assert not self.has_logits(), "this only works when not including logits"
-        source = datum.get(Data.SOURCE)
-        if source >= self.num_sources():
-            if grow_source_if_necessary:
-                self.resize_sources(source + 1)
-            else:
-                raise Exception("Datum source doesn't fit.")
-        # no logits here
-        ref_idx = ref_count_bin_index(datum.get(Data.REF_COUNT))
-        alt_idx = alt_count_bin_index(datum.get(Data.ALT_COUNT))
-
-        self[source, datum.get(Data.LABEL), datum.get(Data.VARIANT_TYPE), ref_idx, alt_idx] += value
+        fields = (Data.SOURCE, Data.LABEL, Data.VARIANT_TYPE, Data.REF_COUNT, Data.ALT_COUNT)
+        sources, labels, var_types, ref_counts, alt_counts = (
+            torch.from_numpy(get_data_field(int_array_be, None, field).astype(np.int64)).to(self.device)
+            for field in fields
+        )
+        if len(sources) > 0 and int(sources.max()) >= self.num_sources():
+            self.resize_sources(int(sources.max()) + 1)
+        indices = BatchIndices(sources, labels, var_types, ref_counts, alt_counts)
+        indices.increment_tensor(self, values=torch.ones(len(sources), dtype=self.dtype, device=self.device))
 
     def record(self, batch: Batch, values: Tensor, logits: Tensor = None, use_original_counts: bool = False):
         batch.batch_indices(use_original_counts).increment_tensor(self, values=values, logits=logits)

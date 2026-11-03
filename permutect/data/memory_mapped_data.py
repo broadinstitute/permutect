@@ -23,6 +23,7 @@ from permutect.data.datum import FLOAT_DTYPE
 from permutect.data.datum import INTEGER_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
+from permutect.data.datum import get_data_field
 from permutect.misc_utils import Timer
 from permutect.misc_utils import encode_datum
 from permutect.misc_utils import encode_variant
@@ -106,10 +107,11 @@ class MemoryMappedData:
         self.num_reads = num_reads
 
         # each datum's reads, if there are any, are as many as its ref and alt counts
-        read_counts = [
-            0 if reads_mmap is None else int(Datum(self.int_mmap[n], self.float_mmap[n]).get_read_count())
-            for n in range(num_data)
-        ]
+        if reads_mmap is None:
+            read_counts = np.zeros(num_data, dtype=np.int64)
+        else:
+            ref_counts = get_data_field(self.int_mmap, None, Data.REF_COUNT).astype(np.int64)
+            read_counts = ref_counts + get_data_field(self.int_mmap, None, Data.ALT_COUNT)
         self.read_offsets = stacked_read_offsets(read_counts)
         if self.read_offsets[-1] != num_reads:
             raise ValueError(f"The data's ref and alt counts add up to {self.read_offsets[-1]} reads, not {num_reads}.")
@@ -145,19 +147,20 @@ class MemoryMappedData:
         count = 0
         for idx in range(self.num_data):
             if used_folds is None or (idx % num_folds in folds_set):
-                int_arr = self.int_mmap[idx]
-                float_arr = self.float_mmap[idx]
-                reads_arr = (
-                    np.zeros((0, 0), dtype=COMPRESSED_READS_ARRAY_DTYPE)
-                    if self.reads_mmap is None
-                    else self.reads_mmap[self.read_offsets[idx] : self.read_offsets[idx + 1]]
-                )
-                is_compressed = reads_arr.dtype == COMPRESSED_READS_ARRAY_DTYPE
-                datum = Datum(int_array=int_arr, float_array=float_arr, reads_re=reads_arr, compressed=is_compressed)
+                datum = self.get_datum(idx)
                 if label_probs_l is None or random.random() < label_probs_l[datum.get(Data.LABEL)]:
                     yield datum
                     count += 1
         print(f"generated {count} objects.")
+
+    def get_datum(self, idx: int) -> Datum:
+        reads_arr = (
+            np.zeros((0, 0), dtype=COMPRESSED_READS_ARRAY_DTYPE)
+            if self.reads_mmap is None
+            else self.reads_mmap[self.read_offsets[idx] : self.read_offsets[idx + 1]]
+        )
+        is_compressed = reads_arr.dtype == COMPRESSED_READS_ARRAY_DTYPE
+        return Datum(self.int_mmap[idx], self.float_mmap[idx], reads_re=reads_arr, compressed=is_compressed)
 
     def _restrict(self, reads_datum_source, estimated_proportion: float) -> MemoryMappedData:
         """

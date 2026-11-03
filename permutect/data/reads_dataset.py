@@ -13,13 +13,15 @@ from permutect.data.batch import BatchProperty
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.datum import Datum
 from permutect.data.memory_mapped_data import MemoryMappedData
-from permutect.misc_utils import ConsistentValue
 from permutect.misc_utils import Timer
 from permutect.misc_utils import report_memory_usage
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
 
 WEIGHT_PSEUDOCOUNT = 10
+
+# the number of data counted at once, which bounds the memory of the copies of their columns
+COUNTING_BLOCK_SIZE = 2**18
 
 
 # it is often convenient to arbitrarily use the last fold for validation
@@ -72,18 +74,17 @@ class ReadsDataset(IterableDataset):
             f"Data occupy {memory_mapped_data.num_bytes() // 1000000} Mb and the system has {available_memory // 1000000} Mb of RAM available."
         )
 
-        self._num_read_features, self._num_info_features, self._haplotypes_length = (
-            ConsistentValue(),
-            ConsistentValue(),
-            ConsistentValue(),
-        )
         data_recording_timer = Timer("Recording data counts. . .")
-        for datum in self.memory_mapped_data.generate():
-            self.totals_slvra.record_datum(datum)
-            self._num_read_features.check(datum.num_read_features())
-            self._num_info_features.check(len(datum.get_info_1d()))
-            self._haplotypes_length.check(datum.get_haplotypes_array_size())
+        int_mmap = self.memory_mapped_data.int_mmap
+        for start in range(0, self._size, COUNTING_BLOCK_SIZE):
+            self.totals_slvra.record_int_arrays(int_mmap[start : start + COUNTING_BLOCK_SIZE])
         data_recording_timer.report("Time to record data counts")
+
+        # the rows of the memory maps all have the same widths, so every datum has as many features as the first
+        first_datum = self.memory_mapped_data.get_datum(0) if self._size > 0 else None
+        self._num_read_features = None if first_datum is None else first_datum.num_read_features()
+        self._num_info_features = None if first_datum is None else len(first_datum.get_info_1d())
+        self._haplotypes_length = None if first_datum is None else first_datum.get_haplotypes_array_size()
 
         self.totals_by_label_l = self.totals_slvra.get_marginal(BatchProperty.LABEL)  # totals by label
 
@@ -91,13 +92,13 @@ class ReadsDataset(IterableDataset):
         return self.totals_by_label_l
 
     def num_read_features(self) -> int:
-        return self._num_read_features.value
+        return self._num_read_features
 
     def num_info_features(self) -> int:
-        return self._num_info_features.value
+        return self._num_info_features
 
     def haplotypes_length(self) -> int:
-        return self._haplotypes_length.value
+        return self._haplotypes_length
 
     # this is not required for an IterableDataset, but it can't hurt!  In distributed training it is about the size of
     # one process's shard.

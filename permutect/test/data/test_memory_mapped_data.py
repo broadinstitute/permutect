@@ -11,7 +11,11 @@ from intervaltree import IntervalTree
 from torch.utils.data import DataLoader
 
 from permutect import misc_utils
+from permutect.data import reads_dataset
 from permutect.data.batch import Batch
+from permutect.data.batch import BatchIndexedTensor
+from permutect.data.count_binning import alt_count_bin_index
+from permutect.data.count_binning import ref_count_bin_index
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.datum import NUMBER_OF_BYTES_IN_PACKED_READ
 from permutect.data.datum import Data
@@ -23,6 +27,7 @@ from permutect.test.test_misc_utils import VCF_HEADER
 from permutect.test.test_misc_utils import make_datum as make_datum_with_alleles
 from permutect.test.test_misc_utils import vcf_line
 from permutect.utils.enums import Label
+from permutect.utils.enums import Variation
 
 
 def make_datum(index: int, num_reads: int, label: Label = Label.UNLABELED) -> Datum:
@@ -120,6 +125,47 @@ def test_reads_dataset_gives_each_datum_its_reads(monkeypatch):
 
     iterated = sorted(dataset, key=lambda datum: datum.get(Data.POSITION))
     assert_same_data(MemoryMappedData.from_generator(iterated, 7, 13), data)
+
+
+def test_reads_dataset_counts_its_data(monkeypatch):
+    # in several blocks, and with sources beyond the first, which the counts grow to fit
+    monkeypatch.setattr(reads_dataset, "COUNTING_BLOCK_SIZE", 3)
+    data = [make_datum(index, index % 4, label=list(Label)[index % len(Label)]) for index in range(10)]
+    for index, datum in enumerate(data):
+        datum.set(Data.SOURCE, 2 * (index % 2))
+        datum.set(Data.VARIANT_TYPE, index % len(Variation))
+    dataset = ReadsDataset(MemoryMappedData.from_generator(data, estimated_num_data=10, estimated_num_reads=20))
+
+    expected = torch.zeros(BatchIndexedTensor.shape_for(num_sources=3))
+    for datum in data:
+        source, label, variant_type = (int(datum.get(field)) for field in (Data.SOURCE, Data.LABEL, Data.VARIANT_TYPE))
+        ref_bin = int(ref_count_bin_index(datum.get(Data.REF_COUNT)))
+        alt_bin = int(alt_count_bin_index(datum.get(Data.ALT_COUNT)))
+        expected[source, label, variant_type, ref_bin, alt_bin] += 1
+    assert torch.equal(dataset.totals_slvra, expected)
+
+    assert dataset.num_read_features() == data[0].num_read_features()
+    assert dataset.num_info_features() == len(data[0].get_info_1d())
+    assert dataset.haplotypes_length() == data[0].get_haplotypes_array_size()
+
+
+def test_loading_a_dataset_does_not_loop_over_its_data(tmp_path, monkeypatch):
+    # making a Datum of each datum took about a minute per million data, in every process of distributed training
+    data = [make_datum(index, index % 4) for index in range(50)]
+    tar = str(tmp_path / "data.tar")
+    MemoryMappedData.from_generator(data, estimated_num_data=50, estimated_num_reads=100).save_to_tarfile(tar)
+
+    num_datum_inits = 0
+    datum_init = Datum.__init__
+
+    def counted_init(self, *args, **kwargs):
+        nonlocal num_datum_inits
+        num_datum_inits += 1
+        datum_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(Datum, "__init__", counted_init)
+    ReadsDataset(MemoryMappedData.load_from_tarfile(tar))
+    assert num_datum_inits <= 1
 
 
 def iterate_as_worker(dataset: ReadsDataset, worker: int, num_workers: int, monkeypatch) -> list[int]:

@@ -54,7 +54,7 @@ def test_bin_names_are_bin_centers():
     assert count_from_alt_bin_index(bin_indices).tolist() == [count_from_alt_bin_index(n) for n in bin_indices.tolist()]
 
 
-def test_record_datum_with_counts_above_the_maximum():
+def test_record_int_arrays_with_counts_above_the_maximum():
     datum = Datum(
         int_array=np.zeros(Data.NUM_SCALAR_INT_ELEMENTS), float_array=np.zeros(Data.NUM_SCALAR_FLOAT_ELEMENTS)
     )
@@ -64,6 +64,6 @@ def test_record_datum_with_counts_above_the_maximum():
     datum.set(Data.ALT_COUNT, MAX_ALT_COUNT + 5)
 
     totals = BatchIndexedTensor.zeros(num_sources=1, device=torch.device("cpu"))
-    totals.record_datum(datum)
+    totals.record_int_arrays(datum.get_int_array()[None, :])
     assert totals[0, Label.ARTIFACT, Variation.SNV, NUM_REF_COUNT_BINS - 1, NUM_ALT_COUNT_BINS - 1].item() == 1
     assert totals.sum().item() == 1
