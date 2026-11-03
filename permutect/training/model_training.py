@@ -25,6 +25,7 @@ from permutect.data.datum import Datum
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.misc_utils import Timer
+from permutect.misc_utils import all_reduce_sum_
 from permutect.misc_utils import backpropagate
 from permutect.misc_utils import check_for_nan
 from permutect.misc_utils import report_memory_usage
@@ -161,6 +162,7 @@ def train_one_epoch(
                 backpropagate(train_optimizer, losses.total_loss, params_to_clip=model.parameters())
         # done with this downsampled batch
     # done with this parent batch
+    loss_recorder.all_reduce()
     if epoch_type == Epoch.TRAIN and epoch > 1 and num_very_large_losses.item() > 0:
         print(f"{num_very_large_losses.item()} batches had very large losses, up to {largest_average_loss.item():.2f}.")
     check_for_nan(model)
@@ -283,6 +285,9 @@ def evaluate_model(
     evaluation_metrics, worst_offenders_by_label_and_alt_count = collect_evaluation_data(
         model, num_sources, balancer, downsampler, train_loader, valid_loader, report_worst
     )
+    # in distributed training each process evaluates its own shard, in the same order of epoch types
+    for epoch_type in (Epoch.TRAIN, Epoch.VALID):
+        all_reduce_sum_(evaluation_metrics.accuracy_metrics_by_epoch_type[epoch_type])
     evaluation_metrics.put_on_cpu()
     evaluation_metrics.make_plots(summary_writer, epoch=epoch)
 

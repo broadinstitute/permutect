@@ -6,6 +6,7 @@ import cyvcf2
 import numpy as np
 import psutil
 import torch
+import torch.distributed as dist
 from torch import Tensor
 from torch import nn
 from torch.nn import Parameter
@@ -57,6 +58,23 @@ def resolve_device(device=None) -> torch.device:
     gpu_if_available() is evaluated only once, at import.
     """
     return gpu_if_available() if device is None else torch.device(device)
+
+
+def is_distributed() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+
+def distributed_world_size() -> int:
+    return dist.get_world_size() if is_distributed() else 1
+
+
+def all_reduce_sum_(tensor: Tensor) -> Tensor:
+    """
+    In distributed training, sum a tensor over processes in place.  In a single process this does nothing.
+    """
+    if is_distributed():
+        dist.all_reduce(tensor)
+    return tensor
 
 
 def report_device(device: torch.device):

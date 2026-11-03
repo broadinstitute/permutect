@@ -5,6 +5,7 @@ from permutect.architecture.artifact_model import BatchOutput
 from permutect.data.batch import Batch
 from permutect.data.batch import BatchProperty
 from permutect.metrics.loss_metrics import LossMetrics
+from permutect.misc_utils import all_reduce_sum_
 
 
 class LossRecorder:
@@ -21,6 +22,15 @@ class LossRecorder:
         self.primary_metrics.record(batch, losses.supervised_losses_b, labeled_weights)
         self.primary_metrics.record(batch, losses.unsupervised_losses_b, unlabeled_weights)
         self.count_metrics.record(batch, losses.alt_count_losses_b, output.weights)
+
+    def all_reduce(self):
+        """
+        In distributed training, sum the totals and counts over processes so that every process has the losses of all
+        the data, and so makes the same learning rate and checkpoint decisions
+        """
+        for metrics in (self.primary_metrics, self.count_metrics):
+            all_reduce_sum_(metrics.totals_slvra)
+            all_reduce_sum_(metrics.counts_slvra)
 
     def mean_loss(self) -> float:
         """

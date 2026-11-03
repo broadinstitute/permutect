@@ -10,6 +10,8 @@ from torch.utils.tensorboard import SummaryWriter
 from permutect.data.batch import Batch
 from permutect.data.batch import BatchIndexedTensor
 from permutect.metrics import plotting
+from permutect.misc_utils import all_reduce_sum_
+from permutect.misc_utils import distributed_world_size
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
 
@@ -47,9 +49,14 @@ class Balancer(Module):
 
     def process_batch_and_compute_weights(self, batch: Batch, artifact_probs_b: Tensor):
         # this updates the counts that are used to compute weights, recomputes the weights, and returns the weights
+        # In distributed training this batch's counts are summed over processes, so that every process keeps the same
+        # counts and weights.  Every process has a batch of the same size at each step.
+        new_counts_slvra = torch.zeros_like(self.counts_slvra)
+        new_pseudo_counts_slvra = torch.zeros_like(self.pseudo_counts_slvra)
+
         # increment counts by 1
         idx = batch.batch_indices()
-        idx.increment_tensor(self.counts_slvra, values=torch.ones(batch.size(), device=self.device))
+        idx.increment_tensor(new_counts_slvra, values=torch.ones(batch.size(), device=self.device))
 
         # increment the pseudo-label counts for unlabeled data according to the amount of probability
         # assigned to artifact/nonartifact
@@ -57,12 +64,14 @@ class Balancer(Module):
         unlabeled_mask = 1 - batch.get_is_labeled_mask()
         artifact_labels = torch.tensor([Label.ARTIFACT], device=self.device).expand(batch.size())
         nonartifact_labels = torch.tensor([Label.VARIANT], device=self.device).expand(batch.size())
-        idx.increment_tensor(self.pseudo_counts_slvra, labels=artifact_labels, values=unlabeled_mask * art_probs_b)
+        idx.increment_tensor(new_pseudo_counts_slvra, labels=artifact_labels, values=unlabeled_mask * art_probs_b)
         idx.increment_tensor(
-            self.pseudo_counts_slvra, labels=nonartifact_labels, values=unlabeled_mask * (1 - art_probs_b)
+            new_pseudo_counts_slvra, labels=nonartifact_labels, values=unlabeled_mask * (1 - art_probs_b)
         )
+        self.counts_slvra += all_reduce_sum_(new_counts_slvra)
+        self.pseudo_counts_slvra += all_reduce_sum_(new_pseudo_counts_slvra)
 
-        self.count_since_last_recomputation += batch.size()
+        self.count_since_last_recomputation += batch.size() * distributed_world_size()
 
         if self.count_since_last_recomputation > Balancer.DATA_BEFORE_RECOMPUTE:
             attenuation = math.pow(Balancer.ATTENUATION_PER_DATUM, self.count_since_last_recomputation)
