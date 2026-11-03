@@ -1,5 +1,6 @@
 import math
 import random
+import re
 import tempfile
 
 import cyvcf2
@@ -100,6 +101,15 @@ def test_filtering_on_dream1_chr20(monkeypatch, capsys):
         for values in (result.posterior_probabilities, result.log_priors, result.spectra_lls, result.normal_lls):
             assert isinstance(values, list) and all(isinstance(value, float) for value in values)
         assert result.embedding.device.type == "cpu"
+
+    # each variant has a twin simulated from the feature clustering model, from the nonartifact component or an artifact
+    # cluster but not the outlier pseudocluster.  The model gives every variant here an artifact probability of at
+    # least about 0.8, so there may be no nonartifact twins at all.
+    for result in posterior_results:
+        assert result.simulated_embedding.shape == result.embedding.shape
+        assert torch.isfinite(result.simulated_embedding).all()
+        assert re.fullmatch(r"nonartifact|artifact cluster \d+", result.simulated_source), result.simulated_source
+    assert any(result.simulated_source.startswith("artifact cluster") for result in posterior_results)
 
     # the output has one record per input record, in order.  Variants without a Permutect posterior, such as those
     # missing from the dataset, keep the filters they had in the input instead of becoming PASS
@@ -257,6 +267,23 @@ def test_germline_mode_records_a_missed_artifact_as_a_germline_call(tmp_path, mo
         germline_mode=True,
     )
     assert mistaken_calls == [Call.GERMLINE]
+
+
+def test_posterior_info_holds_the_embeddings_and_the_twins_component():
+    embeddings_be, simulated_be, components = torch.randn(3, 5), torch.randn(3, 5), [0, 2, 7]
+    info_be = torch.vstack(
+        [filter_variants.posterior_info_1d(*args) for args in zip(embeddings_be, simulated_be, components)]
+    )
+    assert info_be.shape == (3, 11)
+
+    split_embeddings_be, split_simulated_be, split_components_b = filter_variants.split_posterior_info_be(info_be)
+    assert torch.equal(split_embeddings_be, embeddings_be)
+    assert torch.equal(split_simulated_be, simulated_be)
+    assert split_components_b.tolist() == components
+
+    # the posterior data store the INFO vector in float16, which keeps the component exactly
+    float16_components_b = filter_variants.split_posterior_info_be(info_be.half().float())[2]
+    assert float16_components_b.tolist() == components
 
 
 def test_load_model_returns_model_in_eval_mode():

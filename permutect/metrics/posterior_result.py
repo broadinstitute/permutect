@@ -17,6 +17,8 @@ class PosteriorResult:
         depth,
         var_type,
         embedding,
+        simulated_embedding,
+        simulated_source: str,
     ):
         self.artifact_logit = artifact_logit
         self.posterior_probabilities = posterior_probabilities
@@ -29,3 +31,6 @@ class PosteriorResult:
         self.depth = depth
         self.variant_type = var_type
         self.embedding = embedding
+        # the embedding of a twin simulated from the feature clustering model, and the component it came from
+        self.simulated_embedding = simulated_embedding
+        self.simulated_source = simulated_source

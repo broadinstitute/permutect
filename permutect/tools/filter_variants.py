@@ -11,6 +11,7 @@ from tqdm.autonotebook import tqdm
 from permutect import constants
 from permutect.architecture.artifact_model import ArtifactModel
 from permutect.architecture.artifact_model import load_model
+from permutect.architecture.feature_clustering import component_name
 from permutect.architecture.posterior_model import PosteriorModel
 from permutect.data import plain_text_data
 from permutect.data.batch import Batch
@@ -329,10 +330,27 @@ def make_filtered_vcf(
     summary_writer.close()
 
 
+def posterior_info_1d(embedding_e: torch.Tensor, simulated_embedding_e: torch.Tensor, simulated_component: int):
+    """
+    The INFO vector of a datum of the posterior model: the artifact model's embedding of the datum, then the embedding
+    of its twin simulated from the feature clustering model, then the twin's component
+    """
+    return torch.hstack((embedding_e, simulated_embedding_e, torch.tensor([float(simulated_component)])))
+
+
+def split_posterior_info_be(info_be: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    The embeddings, simulated twins' embeddings, and twins' components from the INFO vectors of posterior data
+    """
+    embedding_dim = (info_be.shape[-1] - 1) // 2
+    return info_be[:, :embedding_dim], info_be[:, embedding_dim : 2 * embedding_dim], info_be[:, -1].round().long()
+
+
 @torch.inference_mode()
 def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_workers: int):
     # pass through the dataset, running the artifact model, and yield the data of the posterior model: each datum without
-    # its reads, with the artifact logit cached and the artifact model's features as its INFO vector
+    # its reads, with the artifact logit cached and, as its INFO vector, the artifact model's features and those of a
+    # twin simulated from the model
     loader = dataset.make_data_loader(batch_size, pin_memory=model._device.type == "cuda", num_workers=num_workers)
 
     # test-time adaptation leaves the model in training mode, which would turn on dropout and batch norm updates
@@ -342,13 +360,23 @@ def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_
     batch: Batch
     for batch in tqdm(batches_on_device(loader, device=model._device), mininterval=60, total=len(loader)):
         output = model.compute_batch_output(batch)
-        for int_array, float_array, logit, embedding in zip(
+
+        # each datum's twin, with the same number of alt reads, which the posterior data don't keep.  With a truth VCF,
+        # labels say whether a variant should be filtered, not whether it's an artifact, so the twin is an artifact with
+        # the probability that the model assigns to the datum.
+        clustering = model.feature_clustering
+        simulated_components_b = clustering.sample_components_b(torch.sigmoid(output.logits_b))
+        simulated_be = clustering.sample_mean_embeddings_be(simulated_components_b, batch.get(Data.ALT_COUNT))
+
+        for int_array, float_array, logit, embedding, simulated_embedding, simulated_component in zip(
             batch.get_int_array_be(),
             batch.get_float_array_be(),
             output.logits_b.detach().tolist(),
             output.features_be.cpu(),
+            simulated_be.cpu(),
+            simulated_components_b.tolist(),
         ):
-            # make a Datum with no reads or haplotypes whose 1D info array is the embedding
+            # make a Datum with no reads or haplotypes whose 1D info array holds the embeddings
             empty_reads = np.zeros((0, 0), dtype=COMPRESSED_READS_ARRAY_DTYPE)
             output_datum = Datum(
                 int_array=int_array,
@@ -361,7 +389,7 @@ def generate_posterior_data(dataset, model: ArtifactModel, batch_size: int, num_
             # known artifacts were marked with an infinite logit when annotated from the VCF, which overrides the model
             if not np.isposinf(output_datum.get(Data.CACHED_ARTIFACT_LOGIT)):
                 output_datum.set(Data.CACHED_ARTIFACT_LOGIT, logit)
-            output_datum.set_info_1d(embedding)
+            output_datum.set_info_1d(posterior_info_1d(embedding, simulated_embedding, simulated_component))
             yield output_datum
 
 
@@ -399,8 +427,8 @@ def make_posterior_data_loader(
     batch_size: int,
     num_workers: int,
 ):
-    # Generate Datum objects without reads or haplotypes, where the INFO array is the embedding, and with the
-    # cached artifact logit computed from the model
+    # Generate Datum objects without reads or haplotypes, where the INFO array holds the embedding and that of a
+    # simulated twin, and with the cached artifact logit computed from the model
     posterior_generator = generate_posterior_data(annotated_dataset, model, batch_size, num_workers)
     posterior_mmap = MemoryMappedData.from_generator(
         posterior_generator, estimated_num_data=len(annotated_dataset), estimated_num_reads=0
@@ -468,9 +496,21 @@ def apply_filtering_to_vcf(
         ]
         # copy the results to the CPU once per batch.  Rows of device tensors are read one number at a time for each
         # variant, which makes the CPU wait for the GPU each time, and they keep every batch in GPU memory until the end.
-        # NOTE: for posterior data, batch.get_info_be actually gets the embedding array!!!!!
+        # NOTE: for posterior data, batch.get_info_be actually gets the embedding arrays!!!!!
         # TODO: perhaps make this safer
-        for datum, post_probs, error_prob, logit, log_prior, log_spec, log_normal, embedding in zip(
+        embeddings_be, simulated_be, simulated_components_b = split_posterior_info_be(batch.get_info_be().cpu())
+        for (
+            datum,
+            post_probs,
+            error_prob,
+            logit,
+            log_prior,
+            log_spec,
+            log_normal,
+            embedding,
+            simulated_embedding,
+            simulated_component,
+        ) in zip(
             data,
             posterior_probs_bc.tolist(),
             error_probs_b.tolist(),
@@ -478,7 +518,9 @@ def apply_filtering_to_vcf(
             log_priors_bc.tolist(),
             spectra_log_lks_bc.tolist(),
             normal_log_lks_bc.tolist(),
-            batch.get_info_be().cpu(),
+            embeddings_be,
+            simulated_be,
+            simulated_components_b.tolist(),
         ):
             encoding = encode_datum(datum, contig_index_to_name_map)
             encoding_to_posterior_results[encoding] = PosteriorResult(
@@ -493,6 +535,8 @@ def apply_filtering_to_vcf(
                 depth=datum.get(Data.ORIGINAL_DEPTH),
                 var_type=datum.get(Data.VARIANT_TYPE),
                 embedding=embedding,
+                simulated_embedding=simulated_embedding,
+                simulated_source=component_name(simulated_component),
             )
 
     print("Applying threshold")
@@ -581,6 +625,8 @@ def apply_filtering_to_vcf(
                 [posterior_result.alt_count],
                 posterior_result.embedding,
                 correctness=[correctness_label],
+                simulated_features_be=posterior_result.simulated_embedding,
+                simulated_sources=[posterior_result.simulated_source],
             )
         else:
             # It is possible due to various quirks of Mutect2 assembly and flags such as --genotype-germline-sites etc
