@@ -5,7 +5,9 @@ import numpy as np
 import pytest
 
 from permutect.data.datum import FLOAT_DTYPE
+from permutect.data.memory_mapped_data import stacked_read_offsets
 from permutect.data.plain_text_data import MAX_VALUE
+from permutect.data.plain_text_data import alt_read_medians_and_means
 from permutect.data.plain_text_data import convert_quantile_normalized_to_uint8
 from permutect.data.plain_text_data import convert_uint8_to_quantile_normalized
 from permutect.data.plain_text_data import line_to_array
@@ -50,6 +52,22 @@ def test_numbers_are_parsed_as_before():
 def test_malformed_lines_are_rejected(text):
     with pytest.raises(ValueError):
         read_2d_array(io.StringIO(text), 2)
+
+
+def test_alt_read_medians_and_means_are_those_of_each_datum():
+    # as np.median and np.mean gave them datum by datum, with odd and even numbers of alt reads, some ref reads or none,
+    # and tied values
+    rng = np.random.default_rng(0)
+    ref_counts, alt_counts = np.array([0, 2, 1, 0, 3, 5, 0]), np.array([1, 2, 3, 4, 5, 6, 9])
+    read_offsets = stacked_read_offsets(ref_counts + alt_counts)
+    floats_re = np.round(rng.normal(size=(read_offsets[-1], 5)), 1)
+    booleans_re = rng.random((read_offsets[-1], 7)) < 0.5
+
+    medians, means = alt_read_medians_and_means(floats_re, booleans_re, read_offsets, ref_counts)
+    for n in range(len(ref_counts)):
+        alt_reads = slice(read_offsets[n] + ref_counts[n], read_offsets[n + 1])
+        assert medians[n].tobytes() == np.median(floats_re[alt_reads], axis=0).tobytes()
+        assert means[n].tobytes() == np.mean(booleans_re[alt_reads], axis=0).tobytes()
 
 
 def test_uint8_decoding():

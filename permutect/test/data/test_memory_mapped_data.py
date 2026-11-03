@@ -23,6 +23,7 @@ from permutect.data.datum import NUMBER_OF_BYTES_IN_PACKED_READ
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.data.memory_mapped_data import MemoryMappedData
+from permutect.data.memory_mapped_data import StackedData
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.test.test_file_names import PREPROCESSED_DATA
 from permutect.test.test_misc_utils import VCF_HEADER
@@ -73,6 +74,19 @@ def test_capacity_grows_to_fit(estimated_num_data, estimated_num_reads):
     data = [make_datum(index, num_reads) for index, num_reads in enumerate(read_counts)]
     memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data, estimated_num_reads)
     assert_same_data(memory_mapped_data, data)
+
+
+@pytest.mark.parametrize("estimated_num_data, estimated_num_reads", [(0, 0), (2, 3), (100, 100)])
+def test_from_chunks_matches_from_generator(estimated_num_data, estimated_num_reads):
+    # writing chunks of data all at once gives the same memory maps as writing them datum by datum, as they grow or not
+    data = [make_datum(index, index % 4) for index in range(10)]
+    by_datum = MemoryMappedData.from_generator(data, estimated_num_data=10, estimated_num_reads=15)
+    chunks = [StackedData.of(chunk) for chunk in (data[:3], data[3:4], data[4:])]
+    by_chunk = MemoryMappedData.from_chunks(chunks, estimated_num_data, estimated_num_reads)
+    for name in ("int_mmap", "float_mmap", "reads_mmap"):
+        by_datum_array, by_chunk_array = getattr(by_datum, name), getattr(by_chunk, name)
+        assert by_chunk_array.dtype == by_datum_array.dtype and by_chunk_array.tobytes() == by_datum_array.tobytes()
+    assert_same_data(by_chunk, data)
 
 
 def test_unused_capacity_is_left_out(tmp_path):

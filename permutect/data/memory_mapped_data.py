@@ -5,8 +5,10 @@ import os
 import tarfile
 import tempfile
 from collections import defaultdict
+from dataclasses import dataclass
 from tempfile import NamedTemporaryFile
 from typing import Generator
+from typing import Iterable
 from typing import NamedTuple
 from typing import Set
 
@@ -117,6 +119,31 @@ def array_in_tarfile(data_tarfile, member: tarfile.TarInfo) -> np.ndarray:
     if math.prod(shape) == 0:
         return np.zeros(shape, dtype=dtype)
     return np.memmap(data_tarfile, dtype=dtype, mode="r", offset=offset, shape=shape)
+
+
+@dataclass(frozen=True)
+class StackedData:
+    """
+    Some data in memory: their int arrays and float arrays stacked as rows, and their reads stacked as rows, of which
+    datum n's are rows read_offsets[n]:read_offsets[n + 1]
+    """
+
+    int_array_ve: np.ndarray
+    float_array_ve: np.ndarray
+    reads_re: np.ndarray
+    read_offsets: np.ndarray
+
+    @classmethod
+    def of(cls, data: list[Datum]) -> StackedData:
+        return cls(
+            int_array_ve=np.vstack([datum.int_array for datum in data]),
+            float_array_ve=np.vstack([datum.float_array for datum in data]),
+            reads_re=np.vstack([datum.reads_re for datum in data]),
+            read_offsets=stacked_read_offsets([len(datum.reads_re) for datum in data]),
+        )
+
+    def __len__(self) -> int:
+        return len(self.int_array_ve)
 
 
 class MemoryMappedData:
@@ -443,6 +470,63 @@ class MemoryMappedData:
             if len(reads_array) > 0:
                 reads_mmap[num_reads - len(reads_array) : num_reads] = reads_array
 
+        return cls._from_written_memory_maps(
+            num_data, num_reads, (int_mmap, float_mmap, reads_mmap), (int_file, float_file, reads_file)
+        )
+
+    @classmethod
+    def from_chunks(cls, chunks: Iterable[StackedData], estimated_num_data, estimated_num_reads) -> MemoryMappedData:
+        """
+        Like from_generator, but for chunks of data, each of which is written to the memory maps all at once rather than
+        datum by datum
+        """
+        num_data, num_reads = 0, 0
+        int_mmap, float_mmap, reads_mmap = None, None, None
+        int_file, float_file, reads_file = None, None, None
+
+        chunk: StackedData
+        for chunk in chunks:
+            int_array_ve, float_array_ve, reads_re = chunk.int_array_ve, chunk.float_array_ve, chunk.reads_re
+            end, reads_end = num_data + len(int_array_ve), num_reads + len(reads_re)
+            if end > (0 if int_mmap is None else len(int_mmap)):
+                int_mmap, int_file = grown_memory_map(
+                    int_mmap, end, estimated_num_data, int_array_ve.shape[1:], int_array_ve.dtype, SUFFIX_FOR_INT_MMAP
+                )
+                float_mmap, float_file = grown_memory_map(
+                    float_mmap,
+                    end,
+                    estimated_num_data,
+                    float_array_ve.shape[1:],
+                    float_array_ve.dtype,
+                    SUFFIX_FOR_FLOAT_MMAP,
+                )
+            if reads_end > (0 if reads_mmap is None else len(reads_mmap)):
+                reads_mmap, reads_file = grown_memory_map(
+                    reads_mmap,
+                    reads_end,
+                    estimated_num_reads,
+                    reads_re.shape[1:],
+                    reads_re.dtype,
+                    SUFFIX_FOR_READS_MMAP,
+                )
+
+            int_mmap[num_data:end] = int_array_ve
+            float_mmap[num_data:end] = float_array_ve
+            if len(reads_re) > 0:
+                reads_mmap[num_reads:reads_end] = reads_re
+            num_data, num_reads = end, reads_end
+
+        return cls._from_written_memory_maps(
+            num_data, num_reads, (int_mmap, float_mmap, reads_mmap), (int_file, float_file, reads_file)
+        )
+
+    @classmethod
+    def _from_written_memory_maps(cls, num_data, num_reads, memory_maps, files) -> MemoryMappedData:
+        """
+        MemoryMappedData of the memory maps that from_generator or from_chunks wrote, reopened read-only, which keeps their
+        temporary files
+        """
+        int_mmap, float_mmap, reads_mmap = memory_maps
         for memmap in (int_mmap, float_mmap, reads_mmap):
             if memmap is not None:
                 memmap.flush()
@@ -465,5 +549,5 @@ class MemoryMappedData:
             num_reads=num_reads,
         )
         # keep the files on disk, so that a pickled copy can map them
-        result._temp_files = [file for file in (int_file, float_file, reads_file) if file is not None]
+        result._temp_files = [file for file in files if file is not None]
         return result

@@ -50,7 +50,7 @@ from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.data.datum import get_data_field
 from permutect.data.memory_mapped_data import MemoryMappedData
-from permutect.data.memory_mapped_data import stacked_read_offsets
+from permutect.data.memory_mapped_data import StackedData
 from permutect.misc_utils import ConsistentValue
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
@@ -203,7 +203,10 @@ def write_raw_unnormalized_data_to_memory_maps(dataset_files, sources: List[int]
     return memory_mapped_data
 
 
-def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Datum, None, None]:
+def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[StackedData, None, None]:
+    """
+    The normalized data of each chunk of the raw data
+    """
     int_mmap_ve = raw_mmap_data.int_mmap
     float_mmap_ve = raw_mmap_data.float_mmap
     reads_mmap_re = raw_mmap_data.reads_mmap
@@ -217,28 +220,19 @@ def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[Datu
         end_idx = raw_mmap_data.num_data if (chunk == num_chunks - 1) else (start_idx + data_per_chunk)
 
         read_start_idx = read_offsets[start_idx]
-
-        read_quantile_transform = make_read_quantile_transform(
-            read_offsets=(read_offsets[start_idx : end_idx + 1] - read_start_idx),
+        raw = StackedData(
             int_array_ve=int_mmap_ve[start_idx:end_idx],
+            float_array_ve=float_mmap_ve[start_idx:end_idx],
             reads_re=reads_mmap_re[read_start_idx : read_offsets[end_idx]],
+            read_offsets=read_offsets[start_idx : end_idx + 1] - read_start_idx,
         )
-
-        raw_data_list = []
-        for idx in range(start_idx, end_idx):
-            reads = reads_mmap_re[read_offsets[idx] : read_offsets[idx + 1]]
-            raw_datum = Datum(int_array=int_mmap_ve[idx], float_array=float_mmap_ve[idx], reads_re=reads)
-            raw_data_list.append(raw_datum)
-
-        normalized_data_list = normalize_raw_data_list(raw_data_list, read_quantile_transform)
-        for datum in normalized_data_list:
-            yield datum
+        yield normalize_raw_data(raw, make_read_quantile_transform(raw))
 
 
-def make_read_quantile_transform(read_offsets, int_array_ve, reads_re):
+def make_read_quantile_transform(raw: StackedData):
     # fit to the fragment lengths of the ref reads of every datum, which come first among its reads
-    ref_counts = get_data_field(int_array_ve, None, Data.REF_COUNT)
-    ref_reads_re = np.vstack([reads_re[start : start + count] for start, count in zip(read_offsets[:-1], ref_counts)])
+    ref_counts, read_starts = get_data_field(raw.int_array_ve, None, Data.REF_COUNT), raw.read_offsets[:-1]
+    ref_reads_re = np.vstack([raw.reads_re[start : start + count] for start, count in zip(read_starts, ref_counts)])
     return QuantileTransformer(n_quantiles=100, output_distribution="normal").fit(ref_reads_re[:, 6:7])
 
 
@@ -252,21 +246,53 @@ def make_normalized_mmap_data(dataset_files, sources: List[int] = None) -> Memor
     """
     raw_memory_mapped_data = write_raw_unnormalized_data_to_memory_maps(dataset_files, sources)
 
-    normalized_generator = normalized_data_generator(raw_memory_mapped_data)
-    return MemoryMappedData.from_generator(
-        reads_datum_source=normalized_generator,
+    normalized_chunks = normalized_data_generator(raw_memory_mapped_data)
+    return MemoryMappedData.from_chunks(
+        normalized_chunks,
         estimated_num_data=raw_memory_mapped_data.num_data,
         estimated_num_reads=raw_memory_mapped_data.num_reads,
     )
 
 
-# this normalizes the buffer and also prepends new features to the info tensor
-def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> List[Datum]:
+def alt_read_medians_and_means(float_columns_re, boolean_columns_re, read_offsets, ref_counts) -> tuple:
+    """
+    For each datum, the medians of the float columns and the means of the boolean columns over its alt reads, as
+    np.median and np.mean give them.  Datum n's reads are rows read_offsets[n]:read_offsets[n + 1], ref reads first.
+    """
+    read_starts, ref_counts = read_offsets[:-1].astype(np.int64), np.asarray(ref_counts, dtype=np.int64)
+    alt_counts = np.diff(read_offsets).astype(np.int64) - ref_counts
+    assert np.all(alt_counts > 0), "every datum must have an alt read"
+
+    # the rows of the alt reads, each datum's together, and where each datum's start among them
+    segment_starts = np.cumsum(alt_counts) - alt_counts
+    alt_rows = np.repeat(read_starts + ref_counts - segment_starts, alt_counts) + np.arange(np.sum(alt_counts))
+    segment_ids = np.repeat(np.arange(len(alt_counts)), alt_counts)
+
+    # each datum's middle value, or the mean of its two middle values, of each column sorted within each datum.  Adding
+    # 0.0 turns -0.0 into 0.0, as np.median does by summing from 0.0.
+    alt_floats_re = float_columns_re[alt_rows]
+    lower_middles, upper_middles = segment_starts + (alt_counts - 1) // 2, segment_starts + alt_counts // 2
+    medians = np.empty((len(alt_counts), alt_floats_re.shape[1]), dtype=alt_floats_re.dtype)
+    for column in range(alt_floats_re.shape[1]):
+        sorted_column = alt_floats_re[np.lexsort((alt_floats_re[:, column], segment_ids)), column]
+        medians[:, column] = (sorted_column[lower_middles] + sorted_column[upper_middles]) / 2 + 0.0
+
+    alt_booleans_re = boolean_columns_re[alt_rows].astype(np.float64)
+    means = np.add.reduceat(alt_booleans_re, segment_starts, axis=0) / alt_counts[:, None]
+    return medians, means
+
+
+def normalize_raw_data(raw: StackedData, read_quantile_transform) -> StackedData:
+    """
+    Normalize a chunk of raw data, compressing their reads and replacing their info with new features
+    """
+    int_array_ve, float_array_ve = raw.int_array_ve, raw.float_array_ve
+
     # 2D array.  Rows are ref/alt reads, columns are read features
-    all_reads_re = np.vstack([datum.reads_re for datum in buffer])
+    all_reads_re = raw.reads_re
 
     # 2D array.  Rows are read sets, columns are info features
-    all_info_ve = np.vstack([datum.get_info_1d() for datum in buffer])
+    all_info_ve = float_array_ve[:, Data.INFO_START_IDX :]
 
     # INFO features from GATK are
     # 0, 1 haplotype equivalence share of 2nd and 3rd most supported haplotype groups (among all haplotypes with
@@ -316,8 +342,8 @@ def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> Lis
     )
 
     tlod_over_nalt = all_info_ve[:, 4]
-    orig_alt_counts = np.array([datum.get(Data.ORIGINAL_ALT_COUNT) for datum in buffer])
-    orig_depths = np.array([datum.get(Data.ORIGINAL_DEPTH) for datum in buffer])
+    orig_alt_counts = np.array(get_data_field(int_array_ve, None, Data.ORIGINAL_ALT_COUNT))
+    orig_depths = np.array(get_data_field(int_array_ve, None, Data.ORIGINAL_DEPTH))
 
     natural_log_tlod = LOG10_TO_LN * tlod_over_nalt * orig_alt_counts
     tlod_correction = log_binomial_coefficient(torch.from_numpy(orig_depths), torch.from_numpy(orig_alt_counts)).numpy()
@@ -351,9 +377,6 @@ def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> Lis
     # TODO: do the same for the read position.
     # 9 and higher -- SNV/indel error and low BQ counts
     # TODO: double-check in Mutect2 that these included soft-clipped bases
-
-    read_counts = np.array([len(datum.reads_re) for datum in buffer])
-    read_offsets = stacked_read_offsets(read_counts)
 
     map_qual_column = all_reads_re[:, 0]
     map_qual_boolean = np.full((len(all_reads_re), 4), True, dtype=bool)
@@ -399,31 +422,18 @@ def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> Lis
     assert packed_output_array.dtype == distance_columns_output.dtype
     output_uint8_reads_array = np.hstack((packed_output_array, distance_columns_output))
 
-    normalized_result = []
-    raw_datum: Datum
-    for n, raw_datum in enumerate(buffer):
-        ref_start_index = read_offsets[n]  # first index of this datum's reads
-        alt_end_index = read_offsets[n + 1]
-        alt_start_index = ref_start_index + raw_datum.get(Data.REF_COUNT)
+    # TODO: maybe we could also have columnwise nonparametric test statistics, like for example we record the
+    # TODO: quantiles over all ref reads
+    ref_counts = get_data_field(int_array_ve, None, Data.REF_COUNT)
+    alt_distance_medians_ve, alt_boolean_means_ve = alt_read_medians_and_means(
+        float_read_columns_re, boolean_output_array_re, raw.read_offsets, ref_counts
+    )
 
-        # TODO: maybe we could also have columnwise nonparametric test statistics, like for example we record the
-        # TODO: quantiles over all ref reads
-        alt_distance_medians_e = np.median(float_read_columns_re[alt_start_index:alt_end_index, :], axis=0)
-        alt_boolean_means_e = np.mean(boolean_output_array_re[alt_start_index:alt_end_index, :], axis=0)
-        extra_info_e = np.hstack((alt_distance_medians_e, alt_boolean_means_e))
-
-        output_reads_re = output_uint8_reads_array[ref_start_index:alt_end_index]
-        output_datum: Datum = Datum(
-            int_array=raw_datum.int_array,
-            float_array=raw_datum.float_array,
-            reads_re=output_reads_re,
-            compressed=True,
-        )
-
-        output_datum.set_info_1d(np.hstack((all_info_transformed_ve[n], extra_info_e)))
-        normalized_result.append(output_datum)
-
-    return normalized_result
+    # the float arrays keep their scalar elements, and their info becomes the new features
+    new_info_ve = np.hstack((all_info_transformed_ve, alt_distance_medians_ve, alt_boolean_means_ve))
+    normalized_float_array_ve = np.hstack((float_array_ve[:, : Data.INFO_START_IDX], new_info_ve))
+    # the compressed reads are the raw reads row for row, so they have the same offsets
+    return StackedData(int_array_ve, normalized_float_array_ve, output_uint8_reads_array, raw.read_offsets)
 
 
 def tokens_to_array(tokens) -> np.ndarray:
