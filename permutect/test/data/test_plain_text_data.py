@@ -1,10 +1,15 @@
 import io
+import math
 from collections import Counter
 
 import numpy as np
 import pytest
+import torch
 
+from permutect.data import memory_mapped_data
+from permutect.data import plain_text_data
 from permutect.data.datum import FLOAT_DTYPE
+from permutect.data.memory_mapped_data import StackedData
 from permutect.data.memory_mapped_data import stacked_read_offsets
 from permutect.data.plain_text_data import MAX_VALUE
 from permutect.data.plain_text_data import alt_read_medians_and_means
@@ -68,6 +73,43 @@ def test_alt_read_medians_and_means_are_those_of_each_datum():
         alt_reads = slice(read_offsets[n] + ref_counts[n], read_offsets[n + 1])
         assert medians[n].tobytes() == np.median(floats_re[alt_reads], axis=0).tobytes()
         assert means[n].tobytes() == np.mean(booleans_re[alt_reads], axis=0).tobytes()
+
+
+def test_preprocessing_writes_only_the_normalized_memory_maps(monkeypatch):
+    # the raw data used to be written to memory maps of their own before they were normalized
+    created_memory_maps = []
+    original_grown_memory_map = memory_mapped_data.grown_memory_map
+
+    def counting_grown_memory_map(*args, **kwargs):
+        created_memory_maps.append(kwargs.get("suffix", args[-1]))
+        return original_grown_memory_map(*args, **kwargs)
+
+    monkeypatch.setattr(memory_mapped_data, "grown_memory_map", counting_grown_memory_map)
+    plain_text_data.make_normalized_mmap_data([SMALL_PLAIN_TEXT_DATA])
+    assert len(created_memory_maps) == 3, created_memory_maps
+
+
+def normalized_chunk(raw_data: list) -> StackedData:
+    raw = StackedData.of(raw_data)
+    return plain_text_data.normalize_raw_data(raw, plain_text_data.make_read_quantile_transform(raw))
+
+
+def test_preprocessing_normalizes_the_same_chunks(monkeypatch):
+    # parsing and normalizing one chunk at a time gives the data of normalizing the chunks of all the parsed data
+    monkeypatch.setattr(plain_text_data, "NUM_RAW_DATA_TO_NORMALIZE_AT_ONCE", 1000)
+    # seeded, because capped counts are downsampled with torch's RNG and the quantile transform subsamples with numpy's
+    torch.manual_seed(0), np.random.seed(0)
+    normalized = plain_text_data.make_normalized_mmap_data([SMALL_PLAIN_TEXT_DATA])
+
+    torch.manual_seed(0), np.random.seed(0)
+    raw_data = list(plain_text_data.generate_raw_data_from_text_files([SMALL_PLAIN_TEXT_DATA]))
+    num_chunks = math.ceil(len(raw_data) / 1000)
+    starts = [chunk * (len(raw_data) // num_chunks) for chunk in range(num_chunks)] + [len(raw_data)]
+    chunks = [normalized_chunk(raw_data[start:end]) for start, end in zip(starts[:-1], starts[1:])]
+    arrays = {"int_mmap": "int_array_ve", "float_mmap": "float_array_ve", "reads_mmap": "reads_re"}
+    for memory_map, array in arrays.items():
+        expected = np.vstack([getattr(chunk, array) for chunk in chunks])
+        assert getattr(normalized, memory_map).tobytes() == expected.tobytes()
 
 
 def test_uint8_decoding():

@@ -33,6 +33,7 @@ GTCCTGGACACGCTGTTGGCC
 
 from __future__ import annotations
 
+import itertools
 import math
 from typing import Generator
 from typing import List
@@ -185,47 +186,17 @@ def generate_raw_data_from_text_files(dataset_files, sources: List[int] = None) 
             yield reads_datum
 
 
-def write_raw_unnormalized_data_to_memory_maps(dataset_files, sources: List[int] = None):
-    total_num_data, total_num_reads = 0, 0
-
-    for dataset_file in dataset_files:
-        num_data, num_reads = count_number_of_data_and_reads_in_text_file(dataset_file)
-        total_num_data += num_data
-        total_num_reads += num_reads
-
-    # the counts that size the memory maps also give the progress bar its total
-    raw_data = tqdm(generate_raw_data_from_text_files(dataset_files, sources), total=total_num_data, mininterval=60)
-    memory_mapped_data = MemoryMappedData.from_generator(
-        reads_datum_source=raw_data,
-        estimated_num_data=total_num_data,
-        estimated_num_reads=total_num_reads,
-    )
-    return memory_mapped_data
-
-
-def normalized_data_generator(raw_mmap_data: MemoryMappedData) -> Generator[StackedData, None, None]:
+def normalized_data_generator(raw_data, num_data: int) -> Generator[StackedData, None, None]:
     """
-    The normalized data of each chunk of the raw data
+    The normalized data of each chunk of num_data raw data from an iterator.  The raw data of each chunk are read and
+    normalized together, without writing them to disk.
     """
-    int_mmap_ve = raw_mmap_data.int_mmap
-    float_mmap_ve = raw_mmap_data.float_mmap
-    reads_mmap_re = raw_mmap_data.reads_mmap
-    read_offsets = raw_mmap_data.read_offsets
-
-    num_chunks = math.ceil(raw_mmap_data.num_data / NUM_RAW_DATA_TO_NORMALIZE_AT_ONCE)
-    data_per_chunk = raw_mmap_data.num_data // num_chunks
+    num_chunks = math.ceil(num_data / NUM_RAW_DATA_TO_NORMALIZE_AT_ONCE)
+    data_per_chunk = num_data // num_chunks
 
     for chunk in range(num_chunks):
-        start_idx = chunk * data_per_chunk
-        end_idx = raw_mmap_data.num_data if (chunk == num_chunks - 1) else (start_idx + data_per_chunk)
-
-        read_start_idx = read_offsets[start_idx]
-        raw = StackedData(
-            int_array_ve=int_mmap_ve[start_idx:end_idx],
-            float_array_ve=float_mmap_ve[start_idx:end_idx],
-            reads_re=reads_mmap_re[read_start_idx : read_offsets[end_idx]],
-            read_offsets=read_offsets[start_idx : end_idx + 1] - read_start_idx,
-        )
+        chunk_size = (num_data - chunk * data_per_chunk) if (chunk == num_chunks - 1) else data_per_chunk
+        raw = StackedData.of(list(itertools.islice(raw_data, chunk_size)))
         yield normalize_raw_data(raw, make_read_quantile_transform(raw))
 
 
@@ -244,14 +215,16 @@ def make_normalized_mmap_data(dataset_files, sources: List[int] = None) -> Memor
     :param dataset_files:
     :param sources if None, source is set to 0; if singleton list, all files are given that source; otherwise one source per file
     """
-    raw_memory_mapped_data = write_raw_unnormalized_data_to_memory_maps(dataset_files, sources)
+    num_data, num_reads = 0, 0
+    for dataset_file in dataset_files:
+        file_num_data, file_num_reads = count_number_of_data_and_reads_in_text_file(dataset_file)
+        num_data += file_num_data
+        num_reads += file_num_reads
 
-    normalized_chunks = normalized_data_generator(raw_memory_mapped_data)
-    return MemoryMappedData.from_chunks(
-        normalized_chunks,
-        estimated_num_data=raw_memory_mapped_data.num_data,
-        estimated_num_reads=raw_memory_mapped_data.num_reads,
-    )
+    # the counts that divide the data into chunks and size the memory maps also give the progress bar its total
+    raw_data = tqdm(generate_raw_data_from_text_files(dataset_files, sources), total=num_data, mininterval=60)
+    normalized_chunks = normalized_data_generator(raw_data, num_data)
+    return MemoryMappedData.from_chunks(normalized_chunks, estimated_num_data=num_data, estimated_num_reads=num_reads)
 
 
 def alt_read_medians_and_means(float_columns_re, boolean_columns_re, read_offsets, ref_counts) -> tuple:
