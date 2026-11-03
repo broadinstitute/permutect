@@ -1,5 +1,7 @@
+import gzip
 import os
 import pickle
+import shutil
 from collections import defaultdict
 from types import SimpleNamespace
 
@@ -91,6 +93,30 @@ def test_unused_capacity_is_left_out(tmp_path):
     exact_tarfile = str(tmp_path / "exact.tar")
     MemoryMappedData.from_generator(data, estimated_num_data=10, estimated_num_reads=30).save_to_tarfile(exact_tarfile)
     assert os.path.getsize(tarfile) == os.path.getsize(exact_tarfile)
+
+
+def save_to_tarfile(data: list[Datum], tarfile_name: str):
+    memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=len(data), estimated_num_reads=0)
+    memory_mapped_data.save_to_tarfile(tarfile_name)
+
+
+def test_uncompressed_tarfile_is_mapped_in_place(tmp_path):
+    # rather than extracted, which copied all the data, in every process of distributed training
+    data = [make_datum(index, index % 4) for index in range(10)]
+    tar = str(tmp_path / "data.tar")
+    save_to_tarfile(data, tar)
+    loaded = MemoryMappedData.load_from_tarfile(tar)
+    assert all(os.path.samefile(mmap.filename, tar) for mmap in (loaded.int_mmap, loaded.float_mmap, loaded.reads_mmap))
+    assert_same_data(loaded, data)
+
+
+def test_compressed_tarfile_is_extracted(tmp_path):
+    data = [make_datum(index, index % 4) for index in range(10)]
+    tar = str(tmp_path / "data.tar")
+    save_to_tarfile(data, tar)
+    with open(tar, "rb") as uncompressed, gzip.open(tar + ".gz", "wb") as compressed:
+        shutil.copyfileobj(uncompressed, compressed)
+    assert_same_data(MemoryMappedData.load_from_tarfile(tar + ".gz"), data)
 
 
 def test_reads_must_match_counts():

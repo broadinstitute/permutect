@@ -85,6 +85,40 @@ class MemoryMapFile(NamedTuple):
         return np.memmap(self.filename, dtype=self.dtype, mode="r", offset=self.offset, shape=self.shape)
 
 
+def files_by_suffix(files: list, name) -> dict:
+    """
+    the files of a saved MemoryMappedData, such as the members of its tarfile, by their suffixes, eg SUFFIX_FOR_INT_MMAP
+
+    :param name: a function of a file that gives its name
+    """
+    suffixes = (SUFFIX_FOR_METADATA, SUFFIX_FOR_INT_MMAP, SUFFIX_FOR_FLOAT_MMAP, SUFFIX_FOR_READS_MMAP)
+    result = {}
+    for file in files:
+        for suffix in suffixes:
+            if name(file).endswith(suffix):
+                assert suffix not in result, f"more than one file ends with {suffix}"
+                result[suffix] = file
+    assert all(suffix in result for suffix in suffixes[:3]), "the metadata, int array or float array file is missing"
+    return result
+
+
+def array_in_tarfile(data_tarfile, member: tarfile.TarInfo) -> np.ndarray:
+    """
+    A read-only memory map of a .npy file within an uncompressed tarfile, where it lies in the tarfile
+    """
+    with open(data_tarfile, "rb") as file:
+        file.seek(member.offset_data)
+        version = np.lib.format.read_magic(file)
+        read_header = np.lib.format.read_array_header_1_0 if version == (1, 0) else np.lib.format.read_array_header_2_0
+        shape, fortran_order, dtype = read_header(file)
+        offset = file.tell()
+    assert not fortran_order, "save_to_tarfile saves C-ordered arrays"
+    # numpy can't map an array without any elements
+    if math.prod(shape) == 0:
+        return np.zeros(shape, dtype=dtype)
+    return np.memmap(data_tarfile, dtype=dtype, mode="r", offset=offset, shape=shape)
+
+
 class MemoryMappedData:
     """
     wrapper for
@@ -306,36 +340,37 @@ class MemoryMappedData:
             if self.reads_mmap is not None:
                 output_tar.add(reads_file.name, arcname=("reads_array" + SUFFIX_FOR_READS_MMAP))
 
-    # Load the list of objects back from the .npy file
-    # Remember to set allow_pickle=True when loading as well
     @classmethod
     def load_from_tarfile(cls, data_tarfile) -> MemoryMappedData:
+        """
+        The arrays of an uncompressed tarfile, which save_to_tarfile writes, are memory-mapped where they lie in it, so
+        that loading copies nothing and the processes of distributed training share one copy in memory.  A compressed
+        tarfile's files are extracted to a temporary directory.
+        """
         loading_timer = Timer()
-        temp_dir = tempfile.TemporaryDirectory()
+        temp_dir = None
+        try:
+            with tarfile.open(data_tarfile, "r:") as tar:  # only an uncompressed tarfile
+                files = files_by_suffix([member for member in tar.getmembers() if member.isfile()], lambda m: m.name)
+                loaded_metadata = torch.load(tar.extractfile(files[SUFFIX_FOR_METADATA]), weights_only=False)
+            open_array = lambda suffix: array_in_tarfile(data_tarfile, files[suffix])
+        except tarfile.ReadError:
+            temp_dir = tempfile.TemporaryDirectory()
+            with tarfile.open(data_tarfile, "r") as tar:
+                for member in tar.getmembers():
+                    if member.isfile():
+                        tar.extract(member, path=temp_dir.name)
+            paths = [os.path.abspath(os.path.join(temp_dir.name, p)) for p in os.listdir(temp_dir.name)]
+            files = files_by_suffix(paths, lambda path: path)
+            loaded_metadata = torch.load(files[SUFFIX_FOR_METADATA], weights_only=False)
+            open_array = lambda suffix: np.lib.format.open_memmap(files[suffix], mode="r")
 
-        with tarfile.open(data_tarfile, "r") as tar:
-            for member in tar.getmembers():
-                if member.isfile():
-                    tar.extract(member, path=temp_dir.name)
-
-        all_files = [os.path.abspath(os.path.join(temp_dir.name, p)) for p in os.listdir(temp_dir.name)]
-        metadata_files = [f for f in all_files if f.endswith(SUFFIX_FOR_METADATA)]
-        int_array_files = [f for f in all_files if f.endswith(SUFFIX_FOR_INT_MMAP)]
-        float_array_files = [f for f in all_files if f.endswith(SUFFIX_FOR_FLOAT_MMAP)]
-        reads_files = [f for f in all_files if f.endswith(SUFFIX_FOR_READS_MMAP)]
-
-        assert len(metadata_files) == 1
-        assert len(int_array_files) == 1
-        assert len(float_array_files) == 1
-
-        loaded_metadata = torch.load(metadata_files[0], weights_only=False)
         num_data, int_array_dim, float_array_dim, num_reads, reads_dim = loaded_metadata[:5]
-
-        assert len(reads_files) == (0 if num_reads == 0 else 1)
+        assert (SUFFIX_FOR_READS_MMAP in files) == (num_reads != 0)
         # files saved before only the data were saved may have unused capacity after the data, which __init__ leaves out
-        int_mmap = np.lib.format.open_memmap(int_array_files[0], mode="r")
-        float_mmap = np.lib.format.open_memmap(float_array_files[0], mode="r")
-        reads_mmap = None if num_reads == 0 else np.lib.format.open_memmap(reads_files[0], mode="r")
+        int_mmap = open_array(SUFFIX_FOR_INT_MMAP)
+        float_mmap = open_array(SUFFIX_FOR_FLOAT_MMAP)
+        reads_mmap = None if num_reads == 0 else open_array(SUFFIX_FOR_READS_MMAP)
         loading_timer.report("Time to load data from tarfile")
 
         result = cls(
@@ -345,7 +380,8 @@ class MemoryMappedData:
             reads_mmap=reads_mmap,
             num_reads=num_reads,
         )
-        result._temp_dir = temp_dir  # prevent GC of temp dir while mmaps are in use
+        if temp_dir is not None:
+            result._temp_dir = temp_dir  # prevent GC of temp dir while mmaps are in use
         return result
 
     @classmethod

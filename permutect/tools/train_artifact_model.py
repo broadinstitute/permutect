@@ -81,7 +81,7 @@ def parse_arguments(argv=None):
     add_model_params_to_parser(parser)
     add_training_params_to_parser(parser)
 
-    tar_kwargs = {"type": str, "required": True, "help": "dataset .tar.gz file produced by preprocess_dataset.py"}
+    tar_kwargs = {"type": str, "required": True, "help": "dataset tarfile produced by preprocess_dataset.py"}
     parser.add_argument("--" + constants.TRAIN_TAR_NAME, **tar_kwargs)
 
     parser.add_argument("--" + constants.OUTPUT_NAME, required=True, help="output artifact model file")
