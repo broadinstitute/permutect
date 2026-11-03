@@ -404,6 +404,9 @@ def test_vcf_and_dataset_encodings_agree(tmp_path):
         ("chr1", 700, "CAG", "C"),  # two deletions at one position, eg from a split multiallelic site
         ("chr1", 700, "CA", "C"),
         ("chr1", 800, "C" + "AGT" * 6, "C"),  # the datum truncates the ref allele of a long deletion
+        ("chr1", 900, "AT", "GC"),  # an MNV
+        ("chr1", 900, "AT", "GT"),  # an SNV at the MNV's first base, padded as at a split multiallelic site
+        ("chr1", 901, "T", "C"),  # an SNV at the MNV's second base
         ("chrX", 150_000_000, "C", "T"),
     ]
     contig_names = {0: "chr1", 1: "chrX"}

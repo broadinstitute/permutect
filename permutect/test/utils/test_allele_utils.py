@@ -46,6 +46,8 @@ def test_find_variant_type():
     assert find_variant_type(variant("AT", "A")) == Variation.DELETION
     assert find_variant_type(variant("A", "ATT")) == Variation.BIG_INSERTION
     assert find_variant_type(variant("ATT", "A")) == Variation.BIG_DELETION
+    assert find_variant_type(variant("AT", "GC")) == Variation.MNV
+    assert find_variant_type(variant("AT", "GT")) == Variation.SNV
 
     # only the first alt allele is used
     assert find_variant_type(variant("A", "AT", "T")) == Variation.INSERTION

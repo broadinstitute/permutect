@@ -7,12 +7,20 @@ class Variation(enum.IntEnum):
     DELETION = 2
     BIG_INSERTION = 3
     BIG_DELETION = 4
+    # a substitution of two or more bases, eg a dinucleotide substitution.  It comes last so that the values of the other
+    # types, which datasets store, don't change.
+    MNV = 5
 
     @staticmethod
     def get_type(ref_allele: str, alt_allele: str):
         diff = len(alt_allele) - len(ref_allele)
         if diff == 0:
-            return Variation.SNV
+            # a substitution is an MNV if more than one base remains after trimming the bases that the alleles share at
+            # either end.  Thus AT->GC is an MNV, but AT->GT, a padded SNV as at some multiallelic sites, is an SNV.
+            differences = [
+                n for n, (ref_base, alt_base) in enumerate(zip(ref_allele, alt_allele)) if ref_base != alt_base
+            ]
+            return Variation.MNV if differences and differences[-1] > differences[0] else Variation.SNV
         elif diff > 0:
             return Variation.BIG_INSERTION if diff > 1 else Variation.INSERTION
         else:

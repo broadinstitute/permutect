@@ -10,6 +10,7 @@ from permutect.parameters import parse_training_params
 from permutect.test.test_file_names import PERMUTECT_V0_9_2_ARTIFACT_MODEL
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import ParameterSet
+from permutect.utils.enums import Variation
 
 PARAMETER_SET_NAMES = [
     "INITIAL_READ_EMBEDDING",
@@ -25,6 +26,39 @@ PARAMETER_SET_NAMES = [
     "CLUSTERING",
     "WHOLE_MODEL",
 ]
+
+
+def test_variant_types_keep_their_values():
+    # datasets store variant types as integers, so new types go at the end
+    assert [(v.name, v.value) for v in Variation] == [
+        ("SNV", 0),
+        ("INSERTION", 1),
+        ("DELETION", 2),
+        ("BIG_INSERTION", 3),
+        ("BIG_DELETION", 4),
+        ("MNV", 5),
+    ]
+
+
+def test_variation_get_type():
+    assert Variation.get_type("A", "T") == Variation.SNV
+    assert Variation.get_type("A", "AT") == Variation.INSERTION
+    assert Variation.get_type("AT", "A") == Variation.DELETION
+    assert Variation.get_type("A", "ATT") == Variation.BIG_INSERTION
+    assert Variation.get_type("ATT", "A") == Variation.BIG_DELETION
+
+    # substitutions of more than one base are MNVs, even with matching bases inside them
+    assert Variation.get_type("AT", "GC") == Variation.MNV
+    assert Variation.get_type("ACG", "TTA") == Variation.MNV
+    assert Variation.get_type("ACGT", "TCGA") == Variation.MNV
+
+
+def test_variation_get_type_trims_matching_bases_of_substitutions():
+    # padded SNVs, as at some multiallelic sites, are SNVs, and padded MNVs are MNVs
+    assert Variation.get_type("AT", "GT") == Variation.SNV
+    assert Variation.get_type("GA", "GT") == Variation.SNV
+    assert Variation.get_type("CAG", "CTG") == Variation.SNV
+    assert Variation.get_type("CAGT", "CGTT") == Variation.MNV
 
 
 @pytest.fixture(scope="module")
