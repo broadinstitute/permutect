@@ -165,17 +165,41 @@ class FeatureClustering(nn.Module):
         """
         return diagonal_gaussian(2 * self.nonartifact_stdev_e)
 
-    def artifact_distribution(self) -> ArtifactClusterDistribution:
+    def artifact_distribution(self, clusters=slice(None)) -> ArtifactClusterDistribution:
         """
-        The distributions of artifact read embeddings in each artifact cluster, with batch shape (K,)
+        The distributions of artifact read embeddings in the artifact clusters indexed by clusters.  By default these are
+        all K clusters, with batch shape (K,).  For a tensor of cluster indices the batch shape is that of the tensor.
         """
         # the UnitVector parametrization makes the artifact directions unit vectors
         return ArtifactClusterDistribution(
-            directions_ke=self.artifact_directions_ke,
-            parallel_emg=self.artifact_emg.distribution(),
-            orthogonal_stdev_k=self.artifact_stdev_k,
+            directions_ke=self.artifact_directions_ke[clusters],
+            parallel_emg=self.artifact_emg.distribution(clusters),
+            orthogonal_stdev_k=self.artifact_stdev_k[clusters],
             validate_args=False,
         )
+
+    @torch.no_grad()
+    def sample_mean_embeddings_be(self, components_b: Tensor, alt_counts_b: Tensor) -> Tensor:
+        """
+        Simulate variants' mean alt read embeddings as the model posits them: each variant's alt reads are drawn
+        independently from one component, and their embeddings are averaged as are those of real data.  components_b
+        index the columns of weighted_log_likelihoods_bk: 0 is nonartifact, 1 is outlier, and 2 + k is artifact cluster k.
+        """
+        device = self.nonartifact_stdev_e.device
+        components_b, alt_counts_b = components_b.to(device), alt_counts_b.to(device)
+        num_reads = int(alt_counts_b.sum())
+        components_r = torch.repeat_interleave(components_b, repeats=alt_counts_b, output_size=num_reads)
+
+        reads_re = torch.zeros(num_reads, self.feature_dim, dtype=self.nonartifact_stdev_e.dtype, device=device)
+        for component, distribution in ((0, self.nonartifact_distribution()), (1, self.outlier_distribution())):
+            is_component_r = components_r == component
+            reads_re[is_component_r] = distribution.sample((int(is_component_r.sum()),))
+
+        # each artifact read is drawn from its own variant's cluster
+        is_artifact_r = components_r >= 2
+        reads_re[is_artifact_r] = self.artifact_distribution(components_r[is_artifact_r] - 2).sample()
+
+        return RaggedSets(reads_re, alt_counts_b).means_over_sets()
 
     def weighted_log_likelihoods_bk(self, alt_bre: RaggedSets, alt_counts_b: IntTensor):
         alt_re = alt_bre.flattened_tensor_nf

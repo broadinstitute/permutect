@@ -175,14 +175,29 @@ def test_component_distributions():
     assert torch.equal(nonartifact_stdev_e, clustering.nonartifact_stdev_e)
     assert torch.equal(clustering.outlier_distribution().stddev, 2 * nonartifact_stdev_e)
 
+    # the distributions of chosen clusters, e.g. of reads from different clusters
+    clusters_r = torch.tensor([2, 0, 2, 1, 2])
+    chosen = clustering.artifact_distribution(clusters_r)
+    assert chosen.batch_shape == (5,)
+    assert chosen.sample().shape == (5, 4)
+    assert torch.equal(chosen.directions_ke, clustering.artifact_directions_ke[clusters_r])
+    assert torch.equal(chosen.parallel_emg.lambda_, clustering.artifact_emg.lambda_k[clusters_r])
+    assert torch.equal(chosen.orthogonal_stdev_k, clustering.artifact_stdev_k[clusters_r])
 
-def test_weighted_log_likelihoods_match_scipy():
-    torch.manual_seed(0)
-    feature_dim, num_clusters = 4, 3
+
+def make_random_clustering(feature_dim: int, num_clusters: int) -> FeatureClustering:
+    # parameters moved away from their initial values, like those of a trained model
     clustering = FeatureClustering(feature_dimension=feature_dim, num_artifact_clusters=num_clusters).to(torch.float64)
     with torch.no_grad():
         for parameter in clustering.parameters():
             parameter.add_(0.5 * torch.randn_like(parameter))
+    return clustering
+
+
+def test_weighted_log_likelihoods_match_scipy():
+    torch.manual_seed(0)
+    feature_dim, num_clusters = 4, 3
+    clustering = make_random_clustering(feature_dim, num_clusters)
 
     lengths_b = torch.tensor([2, 1, 4])
     reads_re = 2 * torch.randn(int(lengths_b.sum()), feature_dim, dtype=torch.float64)
@@ -210,3 +225,58 @@ def test_weighted_log_likelihoods_match_scipy():
     expected_bk = np.array([log_lks_rk[start:end].sum(axis=0) for start, end in zip(bounds[:-1], bounds[1:])])
     expected_bk[:, 2:] += clustering.log_cluster_weights_k.detach().numpy()
     np.testing.assert_allclose(actual_bk, expected_bk, rtol=1e-8)
+
+
+def test_sample_mean_embeddings_follow_the_model():
+    torch.manual_seed(0)
+    feature_dim, num_clusters, num_per_group = 5, 2, 5000
+    clustering = make_random_clustering(feature_dim, num_clusters)
+    alt_counts = (1, 4, 16)
+
+    # every combination of component (nonartifact, outlier, and each artifact cluster) and alt count, interleaved
+    num_components = 2 + num_clusters
+    components_b = torch.arange(num_components).repeat(len(alt_counts) * num_per_group)
+    alt_counts_b = torch.tensor(alt_counts).repeat_interleave(num_components).repeat(num_per_group)
+    means_be = clustering.sample_mean_embeddings_be(components_b, alt_counts_b)
+    assert means_be.shape == (len(components_b), feature_dim)
+    assert not means_be.requires_grad
+
+    nonartifact_stdev_e = clustering.nonartifact_stdev_e.detach().numpy()
+    emg = clustering.artifact_emg
+    emg_parameters_k = list(zip(*(tensor.detach().numpy() for tensor in (emg.mu_k, emg.sigma_k, emg.lambda_k))))
+    directions_ke = clustering.artifact_directions_ke.detach().numpy()
+    artifact_stdev_k = clustering.artifact_stdev_k.detach().numpy()
+
+    means_of = lambda component, alt_count: means_be[(components_b == component) & (alt_counts_b == alt_count)].numpy()
+
+    for alt_count in alt_counts:
+        # the mean of n reads from a Gaussian is Gaussian with standard deviations divided by sqrt(n)
+        for component, stdev_e in ((0, nonartifact_stdev_e), (1, 2 * nonartifact_stdev_e)):
+            standardized_ne = means_of(component, alt_count) * np.sqrt(alt_count) / stdev_e
+            assert stats.kstest(standardized_ne.ravel(), stats.norm.cdf).pvalue > 0.001
+
+        for k in range(num_clusters):
+            means_ne = means_of(2 + k, alt_count)
+            parallel_n = means_ne @ directions_ke[k]
+            orthogonal_ne = means_ne - parallel_n[:, None] * directions_ke[k][None, :]
+
+            # the parallel part of the mean of n reads has the EMG's mean and its variance divided by n, and is the EMG
+            # itself for one read
+            emg_k = scipy_emg(*emg_parameters_k[k])
+            assert np.mean(parallel_n) == pytest.approx(emg_k.mean(), abs=5 * emg_k.std() / np.sqrt(num_per_group))
+            assert np.var(parallel_n) == pytest.approx(emg_k.var() / alt_count, rel=0.1)
+            if alt_count == 1:
+                assert stats.kstest(parallel_n, emg_k.cdf).pvalue > 0.001
+
+            # the orthogonal part is an isotropic Gaussian with variance divided by n
+            orthogonal_chi_squared_n = np.sum(np.square(orthogonal_ne), axis=-1) * alt_count / artifact_stdev_k[k] ** 2
+            assert stats.kstest(orthogonal_chi_squared_n, stats.chi2(df=feature_dim - 1).cdf).pvalue > 0.001
+
+
+def test_sample_mean_embeddings_of_one_component():
+    # with no reads from the other components
+    clustering = FeatureClustering(feature_dimension=3, num_artifact_clusters=2)
+    for component in range(4):
+        means_be = clustering.sample_mean_embeddings_be(torch.full((6,), component), torch.tensor([1, 2, 3, 1, 2, 3]))
+        assert means_be.shape == (6, 3)
+        assert torch.isfinite(means_be).all()

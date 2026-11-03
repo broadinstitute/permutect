@@ -101,12 +101,14 @@ class ExponentiallyModifiedGaussian(nn.Module):
         self.lambda_k = Parameter(torch.ones(num_distributions))
         parametrize.register_parametrization(self, "lambda_k", LAMBDA_CONSTRAINT)
 
-    # The batch shape is (K,).  Log likelihoods work as long as the last dimension of x -- the 'k' index -- has the same
-    # size as the number of distributions, or size 1.  The batch index 'b' can actually be any number of dimensions of
-    # any size thanks to broadcasting.
-    def distribution(self) -> ExponentiallyModifiedGaussianDistribution:
+    # By default, the batch shape is (K,).  Log likelihoods work as long as the last dimension of x -- the 'k' index --
+    # has the same size as the number of distributions, or size 1.  The batch index 'b' can actually be any number of
+    # dimensions of any size thanks to broadcasting.  For a tensor of indices the batch shape is that of the tensor.
+    def distribution(self, indices=slice(None)) -> ExponentiallyModifiedGaussianDistribution:
         # the parametrizations already constrain sigma and lambda, and validating them makes the CPU wait for the GPU
-        return ExponentiallyModifiedGaussianDistribution(self.mu_k, self.sigma_k, self.lambda_k, validate_args=False)
+        return ExponentiallyModifiedGaussianDistribution(
+            self.mu_k[indices], self.sigma_k[indices], self.lambda_k[indices], validate_args=False
+        )
 
     def forward(self, x):
         pass
