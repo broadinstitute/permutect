@@ -1,7 +1,9 @@
 import gzip
+import io
 import os
 import pickle
 import shutil
+import tarfile
 from collections import defaultdict
 from types import SimpleNamespace
 
@@ -13,6 +15,7 @@ from intervaltree import IntervalTree
 from torch.utils.data import DataLoader
 
 from permutect import misc_utils
+from permutect.data import memory_mapped_data as memory_mapped_data_module
 from permutect.data import reads_dataset
 from permutect.data.batch import Batch
 from permutect.data.batch import BatchIndexedTensor
@@ -112,6 +115,35 @@ def test_unused_capacity_is_left_out(tmp_path):
 def save_to_tarfile(data: list[Datum], tarfile_name: str):
     memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=len(data), estimated_num_reads=0)
     memory_mapped_data.save_to_tarfile(tarfile_name)
+
+
+@pytest.mark.parametrize("block_bytes", [None, 64])
+def test_saved_arrays_are_written_into_the_tarfile_as_np_save_writes_them(tmp_path, monkeypatch, block_bytes):
+    # rather than saved to temporary files first and then copied into the tarfile, here in blocks of 64 bytes or not
+    data = [make_datum(index, index % 4) for index in range(10)]
+    saved = MemoryMappedData.from_generator(data, estimated_num_data=10, estimated_num_reads=20)
+    if block_bytes is not None:
+        monkeypatch.setattr(memory_mapped_data_module, "NPY_WRITE_BLOCK_BYTES", block_bytes)
+
+    def no_temporary_files(*args, **kwargs):
+        raise AssertionError("save_to_tarfile made a temporary file")
+
+    monkeypatch.setattr(memory_mapped_data_module, "NamedTemporaryFile", no_temporary_files)
+    tar = str(tmp_path / "data.tar")
+    saved.save_to_tarfile(tar)
+
+    with tarfile.open(tar) as archive:
+        members = {member.name: archive.extractfile(member).read() for member in archive.getmembers()}
+    arrays = {
+        "int_array" + memory_mapped_data_module.SUFFIX_FOR_INT_MMAP: saved.int_mmap,
+        "float_array" + memory_mapped_data_module.SUFFIX_FOR_FLOAT_MMAP: saved.float_mmap,
+        "reads_array" + memory_mapped_data_module.SUFFIX_FOR_READS_MMAP: saved.reads_mmap,
+    }
+    for name, array in arrays.items():
+        np_save_bytes = io.BytesIO()
+        np.save(np_save_bytes, array)
+        assert members[name] == np_save_bytes.getvalue(), name
+    assert_same_data(MemoryMappedData.load_from_tarfile(tar), data)
 
 
 def test_uncompressed_tarfile_is_mapped_in_place(tmp_path):
