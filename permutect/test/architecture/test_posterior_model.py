@@ -9,6 +9,7 @@ from permutect.architecture.posterior_model import PosteriorModel
 from permutect.architecture.posterior_model import best_error_probability_threshold
 from permutect.architecture.posterior_model_priors import PosteriorModelPriors
 from permutect.data.count_binning import COUNT_BIN_SKIP
+from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.datum import Data
 from permutect.test.architecture.test_posterior_model_priors import make_batch
@@ -183,9 +184,14 @@ def test_theoretical_roc_has_sensitivity_on_x(monkeypatch):
     model = make_posterior_model(torch.device("cpu"))
     rng = np.random.default_rng(seed=1)
     probs_by_type = {var_type: rng.beta(0.5, 2.0, size=200).astype(np.float32) for var_type in Variation}
-    # like posterior data, which have no reads and so an ALT_COUNT of 0.  Each variant type has its own alt count bin.
+    # like posterior data, which have no reads and so an ALT_COUNT of 0.  Each variant type's original alt counts are in a
+    # bin other than the first.  There are more variant types than such bins, so some types share a bin.
+    alt_count_bins = {var_type: 1 + var_type % (NUM_ALT_COUNT_BINS - 1) for var_type in Variation}
     loader = [
-        make_batch([1e-3] * 200, {Data.VARIANT_TYPE: var_type, Data.ORIGINAL_ALT_COUNT: 1 + COUNT_BIN_SKIP * var_type})
+        make_batch(
+            [1e-3] * 200,
+            {Data.VARIANT_TYPE: var_type, Data.ORIGINAL_ALT_COUNT: 1 + COUNT_BIN_SKIP * alt_count_bins[var_type]},
+        )
         for var_type in Variation
     ]
     batch_probs = iter(torch.from_numpy(probs_by_type[var_type]) for var_type in Variation)
@@ -211,7 +217,7 @@ def test_theoretical_roc_has_sensitivity_on_x(monkeypatch):
     by_alt_count_figure = summary_writer.figures["theoretical ROC by variant type and alt count "]
     for var_type, axis in zip(Variation, by_alt_count_figure.axes):
         curve_bins = [line.get_label() for line in axis.get_lines() if len(line.get_xdata()) > 1]
-        assert curve_bins == [alt_count_bin_name(var_type)], var_type.name
+        assert curve_bins == [alt_count_bin_name(alt_count_bins[var_type])], var_type.name
 
 
 def posterior_loader(num_batches: int) -> list:

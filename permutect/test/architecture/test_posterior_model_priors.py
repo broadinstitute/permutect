@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 
 from permutect.architecture.posterior_model_priors import PosteriorModelPriors
@@ -7,6 +8,7 @@ from permutect.data.datum import RAW_READS_ARRAY_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.utils.enums import Call
+from permutect.utils.enums import Variation
 
 
 def make_batch(allele_frequencies, values: dict = None) -> Batch:
@@ -44,3 +46,32 @@ def test_germline_log_prior_is_accurate_for_small_allele_frequencies():
     expected = torch.log1p(-torch.square(1 - afs))
     germline_log_prior = log_priors_bc[:, Call.GERMLINE] - log_priors_bc[:, Call.SEQ_ERROR]
     torch.testing.assert_close(germline_log_prior.double(), expected, rtol=0, atol=1e-4)
+
+
+def test_mnvs_have_their_own_priors():
+    priors = PosteriorModelPriors(
+        variant_log_prior=-10, artifact_log_prior=-8, no_germline_mode=False, device=torch.device("cpu")
+    )
+    # initially the same as the SNV priors
+    torch.testing.assert_close(priors.log_priors_vc[Variation.MNV], priors.log_priors_vc[Variation.SNV])
+
+    # MNVs don't use the context-dependent somatic priors of SNVs
+    with torch.no_grad():
+        priors.somatic_snv_log_priors_rrra.fill_(-20)
+        priors.log_priors_vc[Variation.MNV, Call.SOMATIC] = -5
+
+    def somatic_log_prior(variant_type: Variation) -> float:
+        # before the softmax normalization the sequencing error log prior is 0
+        log_priors_bc = priors.log_priors_bc(make_batch([1e-6], {Data.VARIANT_TYPE: variant_type}))
+        return (log_priors_bc[0, Call.SOMATIC] - log_priors_bc[0, Call.SEQ_ERROR]).item()
+
+    assert somatic_log_prior(Variation.SNV) == pytest.approx(-20)
+    assert somatic_log_prior(Variation.MNV) == pytest.approx(-5)
+
+    # the M step learns MNV priors from the MNV posterior totals alone
+    priors.disable_context_dependent_snv_priors()
+    totals_vc = torch.ones(len(Variation), len(Call))
+    totals_vc[Variation.MNV, Call.SOMATIC] = 100
+    totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra()
+    priors.update_priors_m_step(totals_vc, totals_rrra, totals_rrra, ignored_to_non_ignored_ratio=10)
+    assert priors.log_priors_vc[Variation.MNV, Call.SOMATIC] > priors.log_priors_vc[Variation.SNV, Call.SOMATIC]

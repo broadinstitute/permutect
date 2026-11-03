@@ -40,6 +40,9 @@ workflow Permutect {
         File? test_dataset_truth_vcf    # used for evaluation
         File? test_dataset_truth_vcf_idx
         String? concordance_header
+        # split each multi-nucleotide variant (MNV) into its constituent SNVs, eg to compare with a truth VCF that represents
+        # MNVs that way.  Concordance then evaluates the split VCFs; output_vcf keeps the MNVs.
+        Boolean split_mnvs = false
 
         # Mutect2's outputs from an earlier run, ie the m2_outputs output of that run: an uncompressed tar archive of
         # the Permutect test dataset, the Mutect2 VCF and its index, the contigs table, the Mutect2 stats, and the tumor
@@ -206,15 +209,31 @@ workflow Permutect {
             permutect_docker = permutect_docker,
     }
 
+    if (split_mnvs) {
+        call SplitMNVs as SplitPermutectMNVs {
+            input:
+                input_vcf = PermutectFiltering.output_vcf,
+                permutect_docker = permutect_docker
+        }
+    }
+
     if (defined(test_dataset_truth_vcf_hack)){
+        if (split_mnvs) {
+            call SplitMNVs as SplitM2MNVs {
+                input:
+                    input_vcf = select_first([Mutect2.output_vcf, ExtractM2Outputs.mutect2_vcf]),
+                    permutect_docker = permutect_docker
+            }
+        }
+
         call Concordance as PermutectConcordance {
             input:
                 intervals = intervals_hack,
                 masks = masks_hack,
                 truth_vcf = select_first([test_dataset_truth_vcf_hack]),
                 truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_hack]),
-                eval_vcf = PermutectFiltering.output_vcf,
-                eval_vcf_idx = PermutectFiltering.output_vcf_idx,
+                eval_vcf = select_first([SplitPermutectMNVs.output_vcf, PermutectFiltering.output_vcf]),
+                eval_vcf_idx = select_first([SplitPermutectMNVs.output_vcf_idx, PermutectFiltering.output_vcf_idx]),
                 gatk_docker = permutect_docker,
                 concordance_header = concordance_header,
         }
@@ -225,8 +244,8 @@ workflow Permutect {
                 masks = masks_hack,
                 truth_vcf = select_first([test_dataset_truth_vcf_hack]),
                 truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_hack]),
-                eval_vcf = select_first([Mutect2.output_vcf, ExtractM2Outputs.mutect2_vcf]),
-                eval_vcf_idx = select_first([Mutect2.output_vcf_idx, ExtractM2Outputs.mutect2_vcf_idx]),
+                eval_vcf = select_first([SplitM2MNVs.output_vcf, Mutect2.output_vcf, ExtractM2Outputs.mutect2_vcf]),
+                eval_vcf_idx = select_first([SplitM2MNVs.output_vcf_idx, Mutect2.output_vcf_idx, ExtractM2Outputs.mutect2_vcf_idx]),
                 gatk_docker = permutect_docker,
                 concordance_header = concordance_header
         }
@@ -235,6 +254,9 @@ workflow Permutect {
     output {
         File output_vcf = PermutectFiltering.output_vcf
         File output_vcf_idx = PermutectFiltering.output_vcf_idx
+        # output_vcf with each MNV split into SNVs, if split_mnvs is true
+        File? mnv_split_vcf = SplitPermutectMNVs.output_vcf
+        File? mnv_split_vcf_idx = SplitPermutectMNVs.output_vcf_idx
         File tensorboard_report = PermutectFiltering.tensorboard_report
         # Mutect2's outputs, for use as cached_m2_outputs in later runs: the archive of this run's Mutect2 outputs, or
         # else the given cached_m2_outputs, passed through as a String for the reason given where it is declared
@@ -422,6 +444,45 @@ task SplitMultiallelics {
     output {
         File output_vcf = "output.vcf"
         File output_vcf_idx = "output.vcf.idx"
+    }
+}
+
+# decompose each multi-nucleotide variant (MNV) into its constituent SNVs, each of which keeps the MNV's FILTER, INFO and
+# FORMAT fields.  Multiallelic records are split first, because atomizing a multiallelic record with an MNV allele gives
+# star alleles.  Other variants are unchanged.
+task SplitMNVs {
+    input {
+        File input_vcf
+        String permutect_docker
+        Int? preemptible
+        Int max_retries = 0
+        Int disk_space = 20
+        Int cpu = 1
+        Int mem = 2
+    }
+
+    # Mem is in units of GB but our command and memory runtime values are in MB
+    Int machine_mem = mem * 1000
+
+    command <<<
+        set -euo pipefail
+        bcftools norm -m -any --atomize ~{input_vcf} -Oz -o mnvs-split.vcf.gz
+        bcftools index -t mnvs-split.vcf.gz
+    >>>
+
+    runtime {
+        docker: permutect_docker
+        bootDiskSizeGb: 12
+        memory: machine_mem + " MB"
+        disks: "local-disk " + disk_space + " SSD"
+        preemptible: select_first([preemptible, 0])
+        maxRetries: max_retries
+        cpu: cpu
+    }
+
+    output {
+        File output_vcf = "mnvs-split.vcf.gz"
+        File output_vcf_idx = "mnvs-split.vcf.gz.tbi"
     }
 }
 
