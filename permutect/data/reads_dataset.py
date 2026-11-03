@@ -50,11 +50,17 @@ class ReadsDataset(IterableDataset):
         num_folds: int = 1,
         folds_to_use: List[int] = None,
         keep_probs_by_label_l=None,
+        rank: int = 0,
+        world_size: int = 1,
     ):
         """
         :param num_folds:
+        :param rank, world_size: in distributed training, this process and the number of processes.  Each process
+            iterates over its own shard of the data.
         """
         super(ReadsDataset, self).__init__()
+        # stored here because DataLoader workers started by spawn or forkserver aren't in the process group
+        self._rank, self._world_size = rank, world_size
         self.totals_slvra = BatchIndexedTensor.zeros(num_sources=1, include_logits=False, device=torch.device("cpu"))
         # if no folds, no copying is done; otherwise this creates a new file on disk
         self.memory_mapped_data = memory_mapped_data.restrict_to_folds(num_folds, folds_to_use, keep_probs_by_label_l)
@@ -93,22 +99,25 @@ class ReadsDataset(IterableDataset):
     def haplotypes_length(self) -> int:
         return self._haplotypes_length.value
 
-    # this is not required for an IterableDataset, but it can't hurt!
+    # this is not required for an IterableDataset, but it can't hurt!  In distributed training it is about the size of
+    # one process's shard.
     def __len__(self):
-        return self._size
+        return self._size // self._world_size
 
     def __iter__(self):
         print("Inside a ReadsDataset's .__iter__ function")
         worker_info = torch.utils.data.get_worker_info()
         worker_id = 0 if worker_info is None else worker_info.id
         num_workers = 1 if worker_info is None else worker_info.num_workers
+        # in distributed training every process has its own workers, and each worker of each process has its own shard
+        shard, num_shards = self._rank * num_workers + worker_id, self._world_size * num_workers
 
-        num_data_per_worker = self._size // num_workers
-        num_bytes_per_worker = self.memory_mapped_data.num_bytes() // num_workers
+        num_data_per_worker = self._size // num_shards
+        num_bytes_per_worker = self.memory_mapped_data.num_bytes() // num_shards
 
-        # note: this is the total available system memory, not per process
+        # note: this is the total available system memory, shared by every worker of every process
         total_available_memory_in_bytes = psutil.virtual_memory().available
-        available_memory_per_worker = total_available_memory_in_bytes // num_workers
+        available_memory_per_worker = total_available_memory_in_bytes // num_shards
 
         # we want the amount of memory loaded to RAM at any given time to be well below the total available memory
         # thus we multiply by a cautious fudge factor that accounts for: 1) maybe space in RAM is less efficient than space in disk,
@@ -131,8 +140,12 @@ class ReadsDataset(IterableDataset):
 
         # example of specific number: num_data = 21, num_workers = 4, then data_per_worker is 5 and the index ranges
         # are [0,5), [5,10), [10,15), [15,21)
-        worker_start_idx = worker_id * num_data_per_worker
-        worker_end_idx = (worker_id + 1) * num_data_per_worker if worker_id < num_workers - 1 else self._size
+        # In a single process the last worker also takes the remainder.  In distributed training every shard has the
+        # same size, dropping fewer than num_shards data, so that every process has the same number of batches of the
+        # same sizes, as DistributedDataParallel and the sums of statistics over processes need.
+        worker_start_idx = shard * num_data_per_worker
+        takes_remainder = self._world_size == 1 and shard == num_shards - 1
+        worker_end_idx = self._size if takes_remainder else worker_start_idx + num_data_per_worker
 
         num_data_for_this_worker = worker_end_idx - worker_start_idx
         data_per_chunk = num_data_for_this_worker // chunks_per_worker

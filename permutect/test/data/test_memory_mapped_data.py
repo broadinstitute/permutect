@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import psutil
 import pytest
+import torch
 from intervaltree import IntervalTree
 from torch.utils.data import DataLoader
 
@@ -119,6 +120,45 @@ def test_reads_dataset_gives_each_datum_its_reads(monkeypatch):
 
     iterated = sorted(dataset, key=lambda datum: datum.get(Data.POSITION))
     assert_same_data(MemoryMappedData.from_generator(iterated, 7, 13), data)
+
+
+def iterate_as_worker(dataset: ReadsDataset, worker: int, num_workers: int, monkeypatch) -> list[int]:
+    # the positions of the data that a DataLoader worker iterates over
+    worker_info = SimpleNamespace(id=worker, num_workers=num_workers)
+    monkeypatch.setattr(torch.utils.data, "get_worker_info", lambda: worker_info)
+    return [int(datum.get(Data.POSITION)) for datum in dataset]
+
+
+def test_reads_dataset_shards_are_disjoint_and_the_same_size(monkeypatch):
+    # In distributed training every worker of every process iterates over its own shard.  The shards have the same size,
+    # so that every process has the same number of batches of the same sizes, which drops fewer data than there are
+    # shards.
+    data = [make_datum(index, index % 3) for index in range(23)]
+    memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=23, estimated_num_reads=23)
+    world_size, num_workers = 2, 3
+    shards = []
+    for rank in range(world_size):
+        dataset = ReadsDataset(memory_mapped_data, rank=rank, world_size=world_size)
+        assert len(dataset) == 23 // world_size
+        shards += [iterate_as_worker(dataset, worker, num_workers, monkeypatch) for worker in range(num_workers)]
+
+    positions = [position for shard in shards for position in shard]
+    assert len(positions) == len(set(positions))
+    assert [len(shard) for shard in shards] == [23 // (world_size * num_workers)] * (world_size * num_workers)
+
+
+def test_reads_dataset_shards_share_the_memory(monkeypatch, capsys):
+    # all the processes and their workers load chunks into the same machine's memory at once, so each shard is loaded in
+    # as many chunks as all the data in a single process
+    data = [make_datum(index, num_reads) for index, num_reads in enumerate([2, 0, 3, 1, 4, 2, 1, 3])]
+    memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=8, estimated_num_reads=16)
+    memory = SimpleNamespace(available=4 * memory_mapped_data.num_bytes(), percent=50.0)
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: memory)
+
+    iterate_as_worker(ReadsDataset(memory_mapped_data), 0, 1, monkeypatch)
+    iterate_as_worker(ReadsDataset(memory_mapped_data, rank=1, world_size=2), 0, 1, monkeypatch)
+    chunk_messages = [line for line in capsys.readouterr().out.splitlines() if "chunks" in line]
+    assert chunk_messages == ["Worker 0 will divide its portion of the data into 3 chunks."] * 2
 
 
 def test_restrict_to_labeled_only_when_first_data_are_unlabeled():
