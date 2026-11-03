@@ -199,18 +199,20 @@ class ArtifactModel(torch.nn.Module):
     def haplotypes_length(self) -> int:
         return self._haplotypes_length
 
-    def set_epoch_type(self, epoch_type: Epoch, trainable_params: List[ParameterSet] = None):
-        if epoch_type == Epoch.TRAIN:
-            self.train(True)
-            if trainable_params is None:
-                unfreeze(self.parameters())
-            else:
-                freeze(self.parameters())
-                for parameter_set in trainable_params:
-                    unfreeze(parameter_set.get_parameters(self))
+    def set_trainable_parameters(self, trainable_params: List[ParameterSet] = None):
+        """
+        Called once, before training.  Validation turns off gradients with torch.no_grad() rather than by freezing, so
+        that the parameters that require gradients stay the same, as DistributedDataParallel needs.
+        """
+        if trainable_params is None:
+            unfreeze(self.parameters())
         else:
-            self.train(False)
             freeze(self.parameters())
+            for parameter_set in trainable_params:
+                unfreeze(parameter_set.get_parameters(self))
+
+    def set_epoch_type(self, epoch_type: Epoch):
+        self.train(epoch_type == Epoch.TRAIN)
 
     # I really don't like the forward method of torch.nn.Module with its implicit calling that PyCharm doesn't recognize
     def forward(self, batch: Batch):

@@ -4,7 +4,6 @@ import time
 from collections import defaultdict
 from queue import PriorityQueue
 from typing import Any
-from typing import List
 
 import torch
 from torch import device
@@ -37,7 +36,6 @@ from permutect.training.downsampler import Downsampler
 from permutect.training.loss_recorder import LossRecorder
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
-from permutect.utils.enums import ParameterSet
 
 WORST_OFFENDERS_QUEUE_SIZE = 100
 
@@ -74,6 +72,7 @@ def train_artifact_model(
     train_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(train_optimizer, **scheduler_kwargs)
 
     checkpoint = Checkpoint(device, model, train_optimizer)
+    model.set_trainable_parameters(training_params.trainable_parameter_sets)
 
     train_loader = train_dataset.make_data_loader(training_params.batch_size, is_cuda, training_params.num_workers)
     valid_loader = (
@@ -105,7 +104,6 @@ def train_artifact_model(
                 train_optimizer,
                 train_scheduler,
                 valid_loader,
-                training_params.trainable_parameter_sets,
             )
 
         # done with training and validation for this epoch
@@ -135,10 +133,9 @@ def train_one_epoch(
     train_optimizer: AdamW,
     train_scheduler: ReduceLROnPlateau,
     valid_loader: DataLoader[Any],
-    trainable_params: List[ParameterSet] = None,
 ):
     loss_recorder = LossRecorder(device, num_sources)
-    model.set_epoch_type(epoch_type, trainable_params)
+    model.set_epoch_type(epoch_type)
     loader = train_loader if epoch_type == Epoch.TRAIN else valid_loader
     # very large losses are tracked on the device, so that checking each batch doesn't make the CPU wait for the GPU
     largest_average_loss = torch.zeros((), device=model._device)
@@ -150,8 +147,10 @@ def train_one_epoch(
         for downsampling_iteration in range(2):
             ref_fracs_b, alt_fracs_b = downsampler.calculate_downsampling_fractions(parent_batch)
             batch = DownsampledBatch(parent_batch, ref_fracs_b, alt_fracs_b)
-            output = model.compute_batch_output(batch, balancer, update_balancer=epoch_type == Epoch.TRAIN)
-            losses = model.compute_batch_losses(output, batch)
+            # validation needs no autograd graph
+            with torch.set_grad_enabled(epoch_type == Epoch.TRAIN):
+                output = model.compute_batch_output(batch, balancer, update_balancer=epoch_type == Epoch.TRAIN)
+                losses = model.compute_batch_losses(output, batch)
             loss_recorder.record(output, losses, batch)
 
             if epoch_type == Epoch.TRAIN:
