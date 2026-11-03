@@ -312,7 +312,7 @@ workflow Permutect {
     # Mem is in units of GB but our command and memory runtime values are in MB
     Int machine_mem = if defined(mem) then mem * 1000 else 16000
     Int command_mem = machine_mem - 500
-    Int num_cpus = select_first([cpu, 2])
+    Int num_cpus = select_first([cpu, 4])
 
     command <<<
         set -euo pipefail
