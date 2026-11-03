@@ -1,7 +1,55 @@
-import numpy as np
+import io
+from collections import Counter
 
+import numpy as np
+import pytest
+
+from permutect.data.datum import FLOAT_DTYPE
+from permutect.data.plain_text_data import MAX_VALUE
 from permutect.data.plain_text_data import convert_quantile_normalized_to_uint8
 from permutect.data.plain_text_data import convert_uint8_to_quantile_normalized
+from permutect.data.plain_text_data import line_to_array
+from permutect.data.plain_text_data import read_2d_array
+from permutect.test.test_file_names import SMALL_PLAIN_TEXT_DATA
+
+
+def parse_one_number_at_a_time(line: str) -> np.ndarray:
+    # how lines were parsed before numpy parsed them all at once
+    return np.array([max(min(MAX_VALUE, float(token)), -MAX_VALUE) for token in line.split()], dtype=FLOAT_DTYPE)
+
+
+def numeric_lines(text_file) -> list[str]:
+    lines = []
+    with open(text_file) as file:
+        for line in file:
+            try:
+                parse_one_number_at_a_time(line)
+                lines.append(line)
+            except ValueError:
+                pass
+    return lines
+
+
+def test_numbers_are_parsed_as_before():
+    # every numeric line of a dataset, each alone and in blocks of consecutive lines with as many numbers
+    lines = numeric_lines(SMALL_PLAIN_TEXT_DATA) + ["1.5 nan inf -inf 20000 -20000\n"]
+    for line in lines:
+        assert line_to_array(line).tobytes() == parse_one_number_at_a_time(line).tobytes()
+
+    # the most common number of numbers in a line is that of the read lines
+    reads_width = Counter(len(line.split()) for line in lines).most_common(1)[0][0]
+    reads_lines = [line for line in lines if len(line.split()) == reads_width]
+    assert reads_width > 5 and len(reads_lines) > 1000
+    for start in range(0, len(reads_lines), 7):
+        block = reads_lines[start : start + 7]
+        expected = np.vstack([parse_one_number_at_a_time(line) for line in block])
+        assert read_2d_array(io.StringIO("".join(block)), len(block)).tobytes() == expected.tobytes()
+
+
+@pytest.mark.parametrize("text", ["1 2 3\n4 abc 6\n", "1 2 3\n4 5\n"])
+def test_malformed_lines_are_rejected(text):
+    with pytest.raises(ValueError):
+        read_2d_array(io.StringIO(text), 2)
 
 
 def test_uint8_decoding():

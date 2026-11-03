@@ -426,17 +426,24 @@ def normalize_raw_data_list(buffer: List[Datum], read_quantile_transform) -> Lis
     return normalized_result
 
 
+def tokens_to_array(tokens) -> np.ndarray:
+    """
+    The numbers of a list of strings, or of a list of lists of strings with as many in each, clipped to
+    [-MAX_VALUE, MAX_VALUE].  NaN becomes MAX_VALUE, as it did when each number was clipped with Python's min and max.
+    """
+    values = np.array(tokens, dtype=np.float64)
+    return np.clip(np.nan_to_num(values, nan=MAX_VALUE), -MAX_VALUE, MAX_VALUE).astype(FLOAT_DTYPE)
+
+
 def line_to_array(line: str) -> np.ndarray:
-    tokens = line.strip().split()
-    floats = [max(min(MAX_VALUE, float(token)), -MAX_VALUE) for token in tokens]
-    return np.array(floats, dtype=FLOAT_DTYPE)
+    return tokens_to_array(line.split())
 
 
 def read_2d_array(file, num_lines: int) -> np.ndarray:
     if num_lines == 0:
         return None
-    lines = [file.readline() for _ in range(num_lines)]
-    return np.vstack([line_to_array(line) for line in lines])
+    # numpy parses all the lines at once, rather than each number in Python
+    return tokens_to_array([file.readline().split() for _ in range(num_lines)])
 
 
 def read_integers(line: str):
