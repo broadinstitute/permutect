@@ -7,6 +7,7 @@ from permutect.architecture.exponentially_modified_gaussian import STDEV_CONSTRA
 from permutect.architecture.exponentially_modified_gaussian import ExponentiallyModifiedGaussianDistribution
 from permutect.architecture.feature_clustering import ArtifactClusterDistribution
 from permutect.architecture.feature_clustering import FeatureClustering
+from permutect.architecture.feature_clustering import component_name
 from permutect.sets.ragged_sets import RaggedSets
 from permutect.test.architecture.test_exponentially_modified_gaussian import make_emg
 from permutect.test.architecture.test_exponentially_modified_gaussian import scipy_emg
@@ -271,6 +272,30 @@ def test_sample_mean_embeddings_follow_the_model():
             # the orthogonal part is an isotropic Gaussian with variance divided by n
             orthogonal_chi_squared_n = np.sum(np.square(orthogonal_ne), axis=-1) * alt_count / artifact_stdev_k[k] ** 2
             assert stats.kstest(orthogonal_chi_squared_n, stats.chi2(df=feature_dim - 1).cdf).pvalue > 0.001
+
+
+def test_sample_components():
+    torch.manual_seed(0)
+    num_clusters, num_variants = 3, 20000
+    clustering = make_random_clustering(feature_dim=3, num_clusters=num_clusters)
+
+    # variants that aren't artifacts are nonartifact, and artifacts' clusters are drawn according to the cluster weights
+    nonartifact_b = clustering.sample_components_b(torch.zeros(num_variants, dtype=torch.float64))
+    assert torch.equal(nonartifact_b, torch.zeros(num_variants, dtype=torch.long))
+    artifact_b = clustering.sample_components_b(torch.ones(num_variants, dtype=torch.float64))
+    cluster_fractions_k = torch.bincount(artifact_b - 2, minlength=num_clusters).double() / num_variants
+    torch.testing.assert_close(cluster_fractions_k, torch.exp(clustering.log_cluster_weights_k), atol=0.02, rtol=0)
+
+    half_b = clustering.sample_components_b(torch.full((num_variants,), 0.5, dtype=torch.float64))
+    assert set(half_b.tolist()) == {0} | {2 + k for k in range(num_clusters)}
+    assert torch.mean((half_b >= 2).float()).item() == pytest.approx(0.5, abs=0.02)
+
+    assert [component_name(component) for component in range(4)] == [
+        "nonartifact",
+        "outlier",
+        "artifact cluster 0",
+        "artifact cluster 1",
+    ]
 
 
 def test_sample_mean_embeddings_of_one_component():

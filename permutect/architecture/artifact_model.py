@@ -11,6 +11,7 @@ from permutect.architecture.adversarial import Adversarial
 from permutect.architecture.dna_sequence_convolution import DNASequenceConvolution
 from permutect.architecture.euclidean_transformation import EuclideanTransformation
 from permutect.architecture.feature_clustering import FeatureClustering
+from permutect.architecture.feature_clustering import component_name
 from permutect.architecture.gated_mlp import GatedRefAltMLP
 from permutect.architecture.mlp import MLP
 from permutect.data.batch import Batch
@@ -27,6 +28,7 @@ from permutect.parameters import ModelParameters
 from permutect.sets.ragged_sets import RaggedSets
 from permutect.training.balancer import Balancer
 from permutect.utils.enums import Epoch
+from permutect.utils.enums import Label
 from permutect.utils.enums import ParameterSet
 
 MAX_OUTLIER_LOGIT = 10
@@ -342,6 +344,24 @@ def load_model(path, device: torch.device = None):
     return model
 
 
+def simulate_alt_means(clustering: FeatureClustering, alt_bre: RaggedSets, batch: Batch) -> tuple[Tensor, List[str]]:
+    """
+    The mean alt embedding of a variant simulated from the feature clustering model for each variant in the batch, with
+    the same alt count, and the name of the component from which it was drawn.  A labeled variant's twin is an artifact
+    if and only if it is, while an unlabeled variant's twin is an artifact with the probability that the model assigns
+    to the variant.
+    """
+    labels_b = batch.get(Data.LABEL)
+    logits_b, _ = clustering.calculate_logits(alt_bre, batch)
+    unlabeled_probs_b = torch.sigmoid(logits_b)
+    artifact_probs_b = torch.where(
+        labels_b == Label.ARTIFACT, 1.0, torch.where(labels_b == Label.VARIANT, 0.0, unlabeled_probs_b)
+    )
+    components_b = clustering.sample_components_b(artifact_probs_b)
+    simulated_means_be = clustering.sample_mean_embeddings_be(components_b, alt_bre.lengths_b)
+    return simulated_means_be, [component_name(component) for component in components_b.tolist()]
+
+
 # after training for visualizing clustering etc of base model embeddings
 @torch.no_grad()
 def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWriter):
@@ -355,11 +375,20 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
         alt_means_be = alt_bre.means_over_sets().cpu()
         ref_means_be = ref_bre.means_over_sets().cpu()
         ref_alt_seq_embeddings_be = ref_alt_seq_embeddings_be.cpu()
+        simulated_alt_means_be, simulated_sources = simulate_alt_means(model.feature_clustering, alt_bre, batch)
 
         labels = batch.get(Data.LABEL).tolist()
         variant_types = batch.get(Data.VARIANT_TYPE).tolist()
         alt_counts = batch.get(Data.ALT_COUNT).tolist()
-        embedding_metrics.record_batch(labels, variant_types, alt_counts, alt_means_be, ref_features_be=ref_means_be)
+        embedding_metrics.record_batch(
+            labels,
+            variant_types,
+            alt_counts,
+            alt_means_be,
+            ref_features_be=ref_means_be,
+            simulated_features_be=simulated_alt_means_be.cpu(),
+            simulated_sources=simulated_sources,
+        )
         ref_alt_seq_metrics.record_batch(labels, variant_types, alt_counts, ref_alt_seq_embeddings_be)
     embedding_metrics.output_to_summary_writer(summary_writer)
     ref_alt_seq_metrics.output_to_summary_writer(summary_writer, prefix="ref and alt allele context")

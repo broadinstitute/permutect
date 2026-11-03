@@ -4,6 +4,7 @@ import torch
 from torch import IntTensor
 from torch import Tensor
 from torch import nn
+from torch.distributions import Categorical
 from torch.distributions import Distribution
 from torch.distributions import Independent
 from torch.distributions import Normal
@@ -31,6 +32,13 @@ def parallel_and_orthogonal_projections(vectors: Tensor, unit_vectors: Tensor) -
     """
     dot_products = torch.sum(vectors * unit_vectors, dim=-1)
     return dot_products, vectors - dot_products[..., None] * unit_vectors
+
+
+def component_name(component: int) -> str:
+    """
+    The name of a component, i.e. a column of FeatureClustering.weighted_log_likelihoods_bk
+    """
+    return "nonartifact" if component == 0 else ("outlier" if component == 1 else f"artifact cluster {component - 2}")
 
 
 def diagonal_gaussian(stdev_e: Tensor) -> Independent:
@@ -177,6 +185,16 @@ class FeatureClustering(nn.Module):
             orthogonal_stdev_k=self.artifact_stdev_k[clusters],
             validate_args=False,
         )
+
+    @torch.no_grad()
+    def sample_components_b(self, artifact_probs_b: Tensor) -> Tensor:
+        """
+        Draw a component, as a column of weighted_log_likelihoods_bk, for each variant, which is an artifact with the given
+        probability.  The clusters of artifacts are drawn in proportion to the clusters' weights.
+        """
+        is_artifact_b = torch.bernoulli(artifact_probs_b).bool()
+        clusters_b = Categorical(logits=self.log_cluster_weights_k).sample(artifact_probs_b.shape)
+        return torch.where(is_artifact_b, 2 + clusters_b, 0)
 
     @torch.no_grad()
     def sample_mean_embeddings_be(self, components_b: Tensor, alt_counts_b: Tensor) -> Tensor:
