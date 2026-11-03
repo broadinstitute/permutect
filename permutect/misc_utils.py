@@ -1,4 +1,6 @@
+import os
 import time
+from datetime import timedelta
 from typing import Iterator
 from typing import Set
 
@@ -6,6 +8,7 @@ import cyvcf2
 import numpy as np
 import psutil
 import torch
+import torch.distributed as dist
 from torch import Tensor
 from torch import nn
 from torch.nn import Parameter
@@ -57,6 +60,50 @@ def resolve_device(device=None) -> torch.device:
     gpu_if_available() is evaluated only once, at import.
     """
     return gpu_if_available() if device is None else torch.device(device)
+
+
+def is_distributed() -> bool:
+    return dist.is_available() and dist.is_initialized()
+
+
+def distributed_rank() -> int:
+    return dist.get_rank() if is_distributed() else 0
+
+
+def distributed_world_size() -> int:
+    return dist.get_world_size() if is_distributed() else 1
+
+
+def is_main_process() -> bool:
+    return distributed_rank() == 0
+
+
+def init_distributed() -> torch.device:
+    """
+    Under torchrun with more than one process, join the process group and return this process's own GPU.  Otherwise
+    return gpu_if_available() for training in a single process.
+    """
+    if int(os.environ.get("WORLD_SIZE", "1")) == 1:
+        return gpu_if_available()
+    local_rank = int(os.environ["LOCAL_RANK"])
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+        device = torch.device("cuda", local_rank)
+    else:
+        device = torch.device("cpu")
+    # the other processes wait in their next collective while process 0 makes TensorBoard plots, and NCCL's default
+    # timeout is 10 minutes
+    dist.init_process_group(backend="nccl" if device.type == "cuda" else "gloo", timeout=timedelta(minutes=30))
+    return device
+
+
+def all_reduce_sum_(tensor: Tensor) -> Tensor:
+    """
+    In distributed training, sum a tensor over processes in place.  In a single process this does nothing.
+    """
+    if is_distributed():
+        dist.all_reduce(tensor)
+    return tensor
 
 
 def report_device(device: torch.device):

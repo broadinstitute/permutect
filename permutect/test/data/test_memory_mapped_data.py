@@ -1,16 +1,23 @@
+import gzip
 import os
 import pickle
+import shutil
 from collections import defaultdict
 from types import SimpleNamespace
 
 import numpy as np
 import psutil
 import pytest
+import torch
 from intervaltree import IntervalTree
 from torch.utils.data import DataLoader
 
 from permutect import misc_utils
+from permutect.data import reads_dataset
 from permutect.data.batch import Batch
+from permutect.data.batch import BatchIndexedTensor
+from permutect.data.count_binning import alt_count_bin_index
+from permutect.data.count_binning import ref_count_bin_index
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.datum import NUMBER_OF_BYTES_IN_PACKED_READ
 from permutect.data.datum import Data
@@ -22,6 +29,7 @@ from permutect.test.test_misc_utils import VCF_HEADER
 from permutect.test.test_misc_utils import make_datum as make_datum_with_alleles
 from permutect.test.test_misc_utils import vcf_line
 from permutect.utils.enums import Label
+from permutect.utils.enums import Variation
 
 
 def make_datum(index: int, num_reads: int, label: Label = Label.UNLABELED) -> Datum:
@@ -87,6 +95,30 @@ def test_unused_capacity_is_left_out(tmp_path):
     assert os.path.getsize(tarfile) == os.path.getsize(exact_tarfile)
 
 
+def save_to_tarfile(data: list[Datum], tarfile_name: str):
+    memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=len(data), estimated_num_reads=0)
+    memory_mapped_data.save_to_tarfile(tarfile_name)
+
+
+def test_uncompressed_tarfile_is_mapped_in_place(tmp_path):
+    # rather than extracted, which copied all the data, in every process of distributed training
+    data = [make_datum(index, index % 4) for index in range(10)]
+    tar = str(tmp_path / "data.tar")
+    save_to_tarfile(data, tar)
+    loaded = MemoryMappedData.load_from_tarfile(tar)
+    assert all(os.path.samefile(mmap.filename, tar) for mmap in (loaded.int_mmap, loaded.float_mmap, loaded.reads_mmap))
+    assert_same_data(loaded, data)
+
+
+def test_compressed_tarfile_is_extracted(tmp_path):
+    data = [make_datum(index, index % 4) for index in range(10)]
+    tar = str(tmp_path / "data.tar")
+    save_to_tarfile(data, tar)
+    with open(tar, "rb") as uncompressed, gzip.open(tar + ".gz", "wb") as compressed:
+        shutil.copyfileobj(uncompressed, compressed)
+    assert_same_data(MemoryMappedData.load_from_tarfile(tar + ".gz"), data)
+
+
 def test_reads_must_match_counts():
     # the reads of each datum are located by its ref and alt counts, so a datum whose reads didn't match its counts
     # used to misalign the reads of every later datum without an error
@@ -119,6 +151,90 @@ def test_reads_dataset_gives_each_datum_its_reads(monkeypatch):
 
     iterated = sorted(dataset, key=lambda datum: datum.get(Data.POSITION))
     assert_same_data(MemoryMappedData.from_generator(iterated, 7, 13), data)
+
+
+def test_reads_dataset_counts_its_data(monkeypatch):
+    # in several blocks, and with sources beyond the first, which the counts grow to fit
+    monkeypatch.setattr(reads_dataset, "COUNTING_BLOCK_SIZE", 3)
+    data = [make_datum(index, index % 4, label=list(Label)[index % len(Label)]) for index in range(10)]
+    for index, datum in enumerate(data):
+        datum.set(Data.SOURCE, 2 * (index % 2))
+        datum.set(Data.VARIANT_TYPE, index % len(Variation))
+    dataset = ReadsDataset(MemoryMappedData.from_generator(data, estimated_num_data=10, estimated_num_reads=20))
+
+    expected = torch.zeros(BatchIndexedTensor.shape_for(num_sources=3))
+    for datum in data:
+        source, label, variant_type = (int(datum.get(field)) for field in (Data.SOURCE, Data.LABEL, Data.VARIANT_TYPE))
+        ref_bin = int(ref_count_bin_index(datum.get(Data.REF_COUNT)))
+        alt_bin = int(alt_count_bin_index(datum.get(Data.ALT_COUNT)))
+        expected[source, label, variant_type, ref_bin, alt_bin] += 1
+    assert torch.equal(dataset.totals_slvra, expected)
+
+    assert dataset.num_read_features() == data[0].num_read_features()
+    assert dataset.num_info_features() == len(data[0].get_info_1d())
+    assert dataset.haplotypes_length() == data[0].get_haplotypes_array_size()
+
+
+@pytest.mark.parametrize("folds_to_use", [None, list(range(9))])
+def test_loading_a_dataset_does_not_loop_over_its_data(tmp_path, monkeypatch, folds_to_use):
+    # making a Datum of each datum took about a minute per million data, in every process of distributed training
+    data = [make_datum(index, index % 4) for index in range(50)]
+    tar = str(tmp_path / "data.tar")
+    MemoryMappedData.from_generator(data, estimated_num_data=50, estimated_num_reads=100).save_to_tarfile(tar)
+
+    num_datum_inits = 0
+    datum_init = Datum.__init__
+
+    def counted_init(self, *args, **kwargs):
+        nonlocal num_datum_inits
+        num_datum_inits += 1
+        datum_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(Datum, "__init__", counted_init)
+    ReadsDataset(MemoryMappedData.load_from_tarfile(tar), num_folds=10, folds_to_use=folds_to_use)
+    assert num_datum_inits <= 1
+
+
+def iterate_as_worker(dataset: ReadsDataset, worker: int, num_workers: int, monkeypatch) -> list[int]:
+    # the positions of the data that a DataLoader worker iterates over
+    worker_info = SimpleNamespace(id=worker, num_workers=num_workers)
+    monkeypatch.setattr(torch.utils.data, "get_worker_info", lambda: worker_info)
+    return [int(datum.get(Data.POSITION)) for datum in dataset]
+
+
+@pytest.mark.parametrize("num_folds, folds_to_use", [(1, None), (3, [0, 2])])
+def test_reads_dataset_shards_are_disjoint_and_the_same_size(monkeypatch, num_folds, folds_to_use):
+    # In distributed training every worker of every process iterates over its own shard.  The shards have the same size,
+    # so that every process has the same number of batches of the same sizes, which drops fewer data than there are
+    # shards.
+    data = [make_datum(index, index % 3) for index in range(23)]
+    memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=23, estimated_num_reads=23)
+    in_folds = [index for index in range(23) if folds_to_use is None or index % num_folds in folds_to_use]
+    world_size, num_workers = 2, 3
+    shards = []
+    for rank in range(world_size):
+        dataset = ReadsDataset(memory_mapped_data, num_folds, folds_to_use, rank=rank, world_size=world_size)
+        assert len(dataset) == len(in_folds) // world_size
+        shards += [iterate_as_worker(dataset, worker, num_workers, monkeypatch) for worker in range(num_workers)]
+
+    positions = [position for shard in shards for position in shard]
+    assert len(positions) == len(set(positions)) and set(positions) <= set(in_folds)
+    num_shards = world_size * num_workers
+    assert [len(shard) for shard in shards] == [len(in_folds) // num_shards] * num_shards
+
+
+def test_reads_dataset_shards_share_the_memory(monkeypatch, capsys):
+    # all the processes and their workers load chunks into the same machine's memory at once, so each shard is loaded in
+    # as many chunks as all the data in a single process
+    data = [make_datum(index, num_reads) for index, num_reads in enumerate([2, 0, 3, 1, 4, 2, 1, 3])]
+    memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=8, estimated_num_reads=16)
+    memory = SimpleNamespace(available=4 * memory_mapped_data.num_bytes(), percent=50.0)
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: memory)
+
+    iterate_as_worker(ReadsDataset(memory_mapped_data), 0, 1, monkeypatch)
+    iterate_as_worker(ReadsDataset(memory_mapped_data, rank=1, world_size=2), 0, 1, monkeypatch)
+    chunk_messages = [line for line in capsys.readouterr().out.splitlines() if "chunks" in line]
+    assert chunk_messages == ["Worker 0 will divide its portion of the data into 3 chunks."] * 2
 
 
 def test_restrict_to_labeled_only_when_first_data_are_unlabeled():
@@ -173,22 +289,28 @@ def test_vcf_annotation_keys_follow_misc_utils(tmp_path, monkeypatch):
     assert len(annotated_mafs(tmp_path)) == 2
 
 
-@pytest.mark.parametrize("num_folds, used_folds", [(3, [0, 2]), (3, [1]), (1000, [7])])
-def test_restrict_to_folds(num_folds, used_folds):
-    # with 1000 folds the estimated size rounds down to 0, and the capacity must grow to fit
+@pytest.mark.parametrize("num_folds, folds_to_use", [(3, [0, 2]), (3, [1]), (1000, [7]), (3, None)])
+def test_reads_dataset_selects_its_folds_without_copying(num_folds, folds_to_use, monkeypatch):
+    # the folds' data are selected as they are iterated over, here in nine chunks, some of them empty, rather than copied
+    # to new memory maps, which took as much disk as the data in every process of distributed training
     data = [make_datum(index, index % 4) for index in range(20)]
     memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=20, estimated_num_reads=40)
-    restricted = memory_mapped_data.restrict_to_folds(num_folds, used_folds)
-    assert_same_data(restricted, [datum for index, datum in enumerate(data) if index % num_folds in used_folds])
+    dataset = ReadsDataset(memory_mapped_data, num_folds, folds_to_use)
+    assert dataset.memory_mapped_data is memory_mapped_data
 
-    assert memory_mapped_data.restrict_to_folds(num_folds, used_folds=None) is memory_mapped_data
+    memory = SimpleNamespace(available=memory_mapped_data.num_bytes(), percent=50.0)
+    monkeypatch.setattr(psutil, "virtual_memory", lambda: memory)
+    iterated = sorted(dataset, key=lambda datum: datum.get(Data.POSITION))
+    expected = [datum for index, datum in enumerate(data) if folds_to_use is None or index % num_folds in folds_to_use]
+    assert len(dataset) == dataset.totals_slvra.sum().item() == len(expected)
+    assert_same_data(MemoryMappedData.from_generator(iterated, estimated_num_data=20, estimated_num_reads=40), expected)
 
 
 @pytest.mark.parametrize("folds_to_use", [None, [0, 2]])
 def test_pickled_reads_dataset_maps_its_files_instead_of_copying_the_data(folds_to_use):
     # DataLoader workers started with spawn, the default on macOS, or forkserver, the default on Linux from Python 3.14,
-    # receive a pickled dataset, whose memory maps used to be pickled as copies of all their data.  Without folds the
-    # data are memory maps of a tarfile's files, and with folds they are new memory maps.
+    # receive a pickled dataset, whose memory maps used to be pickled as copies of all their data.  With or without folds
+    # the data are memory maps of a tarfile's files.
     dataset = ReadsDataset(
         MemoryMappedData.load_from_tarfile(PREPROCESSED_DATA), num_folds=3, folds_to_use=folds_to_use
     )

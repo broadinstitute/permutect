@@ -507,6 +507,16 @@ def test_report_device_explains_running_on_the_cpu(capsys, monkeypatch):
     assert "Running on cpu" in output and "CUDA 13.0" in output
 
 
+@pytest.mark.parametrize("world_size", [None, "1"])
+def test_init_distributed_in_a_single_process(default_device_is_meta, monkeypatch, world_size):
+    # without torchrun, or under torchrun with one process, training runs as before, without a process group
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    if world_size is not None:
+        monkeypatch.setenv("WORLD_SIZE", world_size)
+    assert misc_utils.init_distributed() == torch.device("meta")
+    assert not misc_utils.is_distributed() and misc_utils.is_main_process()
+
+
 def test_resolve_device(default_device_is_meta):
     assert resolve_device() == torch.device("meta")
     assert resolve_device("cpu") == torch.device("cpu")

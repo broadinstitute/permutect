@@ -1,3 +1,6 @@
+import glob
+import subprocess
+import sys
 import tempfile
 
 import torch
@@ -86,3 +89,23 @@ def test_refine_artifact_model():
     assert vars(refined._params) == vars(pretrained._params)
     assert any(not torch.equal(p, q) for p, q in zip(refined.parameters(), pretrained.parameters()))
     assert events.Tags()["scalars"]
+
+
+def test_train_artifact_model_with_torchrun(tmp_path):
+    # as the WDL runs it on a machine with several GPUs, here in two processes on the CPU
+    argv = ["--" + constants.TRAIN_TAR_NAME, PREPROCESSED_DATA]
+    argv += ["--" + constants.PRETRAINED_ARTIFACT_MODEL_NAME, PERMUTECT_V0_9_2_ARTIFACT_MODEL]
+    argv += ["--" + constants.BATCH_SIZE_NAME, "64"]
+    argv += ["--" + constants.NUM_EPOCHS_NAME, "1"]
+    argv += ["--" + constants.OUTPUT_NAME, str(tmp_path / "model.pt")]
+    argv += ["--" + constants.TENSORBOARD_DIR_NAME, str(tmp_path / "tensorboard")]
+    # as in the WDL, but with a local address, since by default the processes find each other by this machine's hostname,
+    # which needn't resolve, as on some Macs
+    torchrun = [sys.executable, "-m", "torch.distributed.run", "--standalone", "--local-addr=127.0.0.1"]
+    command = torchrun + ["--nproc_per_node=2", "-m", "permutect.tools.train_artifact_model"] + argv
+    result = subprocess.run(command, capture_output=True, text=True, timeout=600)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    # only the first process writes to TensorBoard and saves the model
+    assert len(glob.glob(str(tmp_path / "tensorboard" / "events.out.tfevents.*"))) == 1
+    assert load_model(str(tmp_path / "model.pt"))._params is not None

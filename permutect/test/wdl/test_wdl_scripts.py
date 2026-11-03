@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import tarfile
+from collections import defaultdict
 
 import pytest
 
@@ -20,6 +21,7 @@ COMPARE_WDL = os.path.join(SCRIPTS_DIR, "compare_permutect_results.wdl")
 CONCATENATE_WDL = os.path.join(SCRIPTS_DIR, "concatenate.wdl")
 EDIT_DATASET_WDL = os.path.join(SCRIPTS_DIR, "permutect_edit_dataset.wdl")
 PERMUTECT_WDL = os.path.join(SCRIPTS_DIR, "permutect.wdl")
+TRAIN_ARTIFACT_MODEL_WDL = os.path.join(SCRIPTS_DIR, "train_artifact_model.wdl")
 DOCKERFILE = os.path.join(SCRIPTS_DIR, "..", "Dockerfile")
 
 # the minimum NVIDIA driver for each CUDA major version: https://docs.nvidia.com/cuda/cuda-toolkit-release-notes/
@@ -218,6 +220,18 @@ def test_edit_dataset_command():
     arguments = edit_dataset_arguments(new_source=None)
     assert getattr(arguments, constants.TRAIN_TAR_NAME) == ["data.tar"]
     assert getattr(arguments, constants.SOURCE_NAME) is None
+
+
+def test_training_runs_one_process_per_gpu():
+    # extra GPUs used to sit idle
+    with open(TRAIN_ARTIFACT_MODEL_WDL) as file:
+        assert re.search(r"gpuCount:\s*num_gpus\b", file.read())
+    inputs = defaultdict(lambda: None, train_tar="data.tar", num_gpus=4)
+    command = fill_placeholders(task_command(TRAIN_ARTIFACT_MODEL_WDL, "Train"), inputs)
+    words = shlex.split(command.replace("\\\n", " "))
+    launch = words[words.index("torchrun") : words.index("--" + constants.TRAIN_TAR_NAME) + 2]
+    module = ["-m", "permutect.tools.train_artifact_model"]
+    assert launch == ["torchrun", "--standalone", "--nproc_per_node=4"] + module + ["--train_tar", "data.tar"]
 
 
 def compare_command(working_dir) -> str:

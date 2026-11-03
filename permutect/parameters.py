@@ -166,7 +166,8 @@ def add_training_params_to_parser(parser):
         default=0.0,
         help="weight decay",
     )
-    parser.add_argument("--" + constants.BATCH_SIZE_NAME, type=int, default=2048, help="batch size")
+    batch_size_help = "batch size per GPU; with several GPUs under torchrun, each step uses this many data per GPU"
+    parser.add_argument("--" + constants.BATCH_SIZE_NAME, type=int, default=2048, help=batch_size_help)
     parser.add_argument(
         "--" + constants.NUM_WORKERS_NAME,
         type=int,

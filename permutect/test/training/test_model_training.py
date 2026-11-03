@@ -6,6 +6,7 @@ import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.tensorboard import SummaryWriter
 
+from permutect.architecture.artifact_model import ArtifactModel
 from permutect.architecture.artifact_model import load_model
 from permutect.data.batch import Batch
 from permutect.data.memory_mapped_data import MemoryMappedData
@@ -88,6 +89,20 @@ def test_evaluation_only_runs_when_plots_are_due(memory_mapped_data, tmp_path, m
         memory_mapped_data, tmp_path, monkeypatch, epoch=1, epochs_per_evaluation=5, last_epoch=2
     )
     assert num_evaluations == 0
+
+
+def test_validation_records_no_autograd_graph(memory_mapped_data, tmp_path, monkeypatch):
+    # validation never backpropagates, so recording a graph for it would only waste time and memory
+    logits_require_grad = []
+    compute_batch_losses = ArtifactModel.compute_batch_losses
+
+    def compute_batch_losses_spy(self, output, batch):
+        logits_require_grad.append(output.logits_b.requires_grad)
+        return compute_batch_losses(self, output, batch)
+
+    monkeypatch.setattr(ArtifactModel, "compute_batch_losses", compute_batch_losses_spy)
+    run_validation_epoch(memory_mapped_data, tmp_path, monkeypatch, epoch=1, epochs_per_evaluation=5, last_epoch=2)
+    assert logits_require_grad and not any(logits_require_grad)
 
 
 def count_permutect_item_calls(memory_mapped_data, num_batches: int, tensorboard_dir, monkeypatch) -> int:
