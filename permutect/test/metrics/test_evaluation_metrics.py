@@ -150,15 +150,21 @@ def test_record_batch_metadata():
 
 
 class EmbeddingRecorder:
-    # a stand-in for a SummaryWriter that records the features and metadata of each embedding projection
+    # a stand-in for a SummaryWriter that records the features and metadata of each embedding projection, and the tag
+    # of each figure
     def __init__(self):
         self.features_by_tag = {}
         self.metadata_by_tag = {}
+        self.figure_tags = []
 
     def add_embedding(self, features, metadata, metadata_header, tag, global_step=None):
         assert all(len(row) == len(metadata_header) for row in metadata)
         self.features_by_tag[tag] = features
         self.metadata_by_tag[tag] = metadata
+
+    def add_figure(self, tag, figure, global_step=None):
+        self.figure_tags.append(tag)
+        plt.close(figure)
 
 
 class FakeArtifactModel:
@@ -217,6 +223,9 @@ def test_training_projections_show_twins_simulated_from_the_model():
         else:
             # the model doesn't describe ref embeddings or the ref and alt allele context
             assert not twin_rows, tag
+
+    # and the fit of the feature clustering model's components to the reads
+    assert summary_writer.figure_tags == ["feature clustering fit"]
 
 
 def test_projections_pair_each_datum_with_its_twin():
