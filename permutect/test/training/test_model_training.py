@@ -69,7 +69,7 @@ def run_validation_epoch(memory_mapped_data, tensorboard_dir, monkeypatch, epoch
         valid_loader=valid_dataset.make_data_loader(batch_size=64),
     )
 
-    balancer_changed = balancer.count_since_last_recomputation != 0 or any(
+    balancer_changed = any(
         not torch.equal(tensor, balancer_state_before[name]) for name, tensor in balancer.state_dict().items()
     )
     return balancer_changed, len(evaluations)

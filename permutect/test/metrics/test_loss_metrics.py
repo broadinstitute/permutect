@@ -40,12 +40,14 @@ class RecordingSummaryWriter:
 
 
 class FigureRecorder:
-    # a stand-in for a SummaryWriter that keeps each figure
+    # a stand-in for a SummaryWriter that keeps each figure and its tag
     def __init__(self):
         self.figures = []
+        self.tags = []
 
     def add_figure(self, tag, figure, global_step=None):
         self.figures.append(figure)
+        self.tags.append(tag)
 
 
 def test_balancer_and_loss_metrics_plot_counts_alike():

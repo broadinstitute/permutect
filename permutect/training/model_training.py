@@ -74,9 +74,13 @@ def train_artifact_model(
     epochs_per_evaluation: int = 5,
 ):
     device, dtype = model._device, model._dtype
-    balancer = Balancer(num_sources=train_dataset.num_sources(), device=device).to(device=device, dtype=dtype)
     downsampler: Downsampler = Downsampler(num_sources=train_dataset.num_sources()).to(device=device, dtype=dtype)
-    downsampler.optimize_downsampling_balance(train_dataset.count_totals_slvcd.to(device=device))
+    count_totals_slvcd = train_dataset.count_totals_slvcd.to(device=device)
+    downsampler.optimize_downsampling_balance(count_totals_slvcd)
+    # labeled data are weighted by their counts after downsampling, which are known before training
+    with torch.no_grad():
+        downsampled_counts_slvra = downsampler.calculate_expected_downsampled_counts(count_totals_slvcd)
+    balancer = Balancer(train_dataset.num_sources(), device, downsampled_counts_slvra).to(device=device, dtype=dtype)
 
     num_sources = train_dataset.validate_sources()
     if is_main_process():
