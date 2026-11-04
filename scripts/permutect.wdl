@@ -18,6 +18,9 @@ workflow Permutect {
         File primary_bai
         File? control_bam
         File? control_bai
+        # ignore control_bam and control_bai and run Mutect2 on the primary sample alone, eg to compare a tumor-normal
+        # pair's tumor-only calls with its matched-normal calls.  Without control_bam, the run is tumor-only regardless.
+        Boolean tumor_only = false
         File? gnomad
         File? gnomad_idx
         File? variants_for_contamination
@@ -54,6 +57,10 @@ workflow Permutect {
         # and eventually the file name gets too long and throws an error in Terra/cromwell.
         # if we define it as a String it uses the literal value
         String? cached_m2_outputs
+        # likewise for tumor-only runs, ie runs with tumor_only true or without control_bam: the tumor_only_m2_outputs
+        # output of an earlier run.  A tumor-only run uses this instead of cached_m2_outputs, which may hold
+        # matched-normal outputs.
+        String? tumor_only_cached_m2_outputs
 
         String? permutect_filtering_extra_args
         String? gcs_project_for_requester_pays
@@ -94,10 +101,17 @@ workflow Permutect {
     File? gatk_override_hack = if select_first([gatk_override, ""]) == "" then NONE else gatk_override
 
     String? cached_m2_outputs_hack = if (select_first([cached_m2_outputs,""]) == "") then NONE else cached_m2_outputs
+    String? tumor_only_cached_m2_outputs_hack = if (select_first([tumor_only_cached_m2_outputs,""]) == "") then NONE else tumor_only_cached_m2_outputs
 
     String? gcs_project_for_requester_pays_hack = if select_first([gcs_project_for_requester_pays, ""]) == "" then NONE else gcs_project_for_requester_pays
 
-    Boolean use_cache = defined(cached_m2_outputs_hack)
+    # whether Mutect2 runs without a normal, which decides the cached Mutect2 outputs to use and the outputs to write
+    Boolean tumor_only_mode = tumor_only || !defined(control_bam_hack)
+    File? normal_bam = if tumor_only_mode then NONE else control_bam_hack
+    File? normal_bai = if tumor_only_mode then NONE else control_bai_hack
+    String? cached_m2_outputs_to_use = if tumor_only_mode then tumor_only_cached_m2_outputs_hack else cached_m2_outputs_hack
+
+    Boolean use_cache = defined(cached_m2_outputs_to_use)
     if(!use_cache) {
         call m2.Mutect2 {
             input:
@@ -112,8 +126,8 @@ workflow Permutect {
                 ref_dict = ref_dict,
                 tumor_reads = primary_bam,
                 tumor_reads_index = primary_bai,
-                normal_reads = control_bam_hack,
-                normal_reads_index = control_bai_hack,
+                normal_reads = normal_bam,
+                normal_reads_index = normal_bai,
 
                 scatter_count = scatter_count,
                 germline_resource = gnomad_hack,
@@ -158,12 +172,15 @@ workflow Permutect {
     if (use_cache) {
         call ExtractM2Outputs {
             input:
-                cached_m2_outputs = select_first([cached_m2_outputs_hack]),
+                cached_m2_outputs = select_first([cached_m2_outputs_to_use]),
                 permutect_docker = permutect_docker,
                 preemptible = preemptible,
                 max_retries = max_retries
         }
     }
+
+    # Mutect2's outputs for this run's mode: the archive of this run's Mutect2 outputs, or else the given cache
+    String this_run_m2_outputs = select_first([ArchiveM2Outputs.m2_outputs, cached_m2_outputs_to_use])
 
     call SplitMultiallelics {
         input:
@@ -252,15 +269,21 @@ workflow Permutect {
     }
 
     output {
-        File output_vcf = PermutectFiltering.output_vcf
-        File output_vcf_idx = PermutectFiltering.output_vcf_idx
+        # Permutect's calls go to output_vcf in a matched-normal run and to tumor_only_output_vcf in a tumor-only run
+        File? output_vcf = if tumor_only_mode then NONE else PermutectFiltering.output_vcf
+        File? output_vcf_idx = if tumor_only_mode then NONE else PermutectFiltering.output_vcf_idx
+        File? tumor_only_output_vcf = if tumor_only_mode then PermutectFiltering.output_vcf else NONE
+        File? tumor_only_output_vcf_idx = if tumor_only_mode then PermutectFiltering.output_vcf_idx else NONE
         # output_vcf with each MNV split into SNVs, if split_mnvs is true
         File? mnv_split_vcf = SplitPermutectMNVs.output_vcf
         File? mnv_split_vcf_idx = SplitPermutectMNVs.output_vcf_idx
         File tensorboard_report = PermutectFiltering.tensorboard_report
         # Mutect2's outputs, for use as cached_m2_outputs in later runs: the archive of this run's Mutect2 outputs, or
-        # else the given cached_m2_outputs, passed through as a String for the reason given where it is declared
-        String m2_outputs = select_first([ArchiveM2Outputs.m2_outputs, cached_m2_outputs_hack])
+        # else the given cached_m2_outputs, passed through as a String for the reason given where it is declared.
+        # A tumor-only run passes cached_m2_outputs through, so that it doesn't overwrite matched-normal outputs in Terra.
+        String? m2_outputs = if tumor_only_mode then cached_m2_outputs_hack else this_run_m2_outputs
+        # likewise for tumor_only_cached_m2_outputs
+        String? tumor_only_m2_outputs = if tumor_only_mode then this_run_m2_outputs else tumor_only_cached_m2_outputs_hack
 
         File? fn = PermutectConcordance.fn
         File? fn_idx = PermutectConcordance.fn_idx
