@@ -1,5 +1,6 @@
 import gzip
 import io
+import itertools
 import os
 import pickle
 import shutil
@@ -19,6 +20,9 @@ from permutect.data import memory_mapped_data as memory_mapped_data_module
 from permutect.data import reads_dataset
 from permutect.data.batch import Batch
 from permutect.data.batch import BatchIndexedTensor
+from permutect.data.count_binning import MAX_ALT_COUNT
+from permutect.data.count_binning import MAX_REF_COUNT
+from permutect.data.count_binning import MIN_ALT_COUNT
 from permutect.data.count_binning import alt_count_bin_index
 from permutect.data.count_binning import ref_count_bin_index
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
@@ -28,6 +32,9 @@ from permutect.data.datum import Datum
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.memory_mapped_data import StackedData
 from permutect.data.reads_dataset import ReadsDataset
+from permutect.data.reads_dataset import bin_count_totals
+from permutect.data.reads_dataset import count_totals_shape
+from permutect.data.reads_dataset import record_count_totals
 from permutect.test.test_file_names import PREPROCESSED_DATA
 from permutect.test.test_misc_utils import VCF_HEADER
 from permutect.test.test_misc_utils import make_datum as make_datum_with_alleles
@@ -209,16 +216,48 @@ def test_reads_dataset_counts_its_data(monkeypatch):
     dataset = ReadsDataset(MemoryMappedData.from_generator(data, estimated_num_data=10, estimated_num_reads=20))
 
     expected = torch.zeros(BatchIndexedTensor.shape_for(num_sources=3))
+    expected_count_totals = torch.zeros(count_totals_shape(num_sources=3))
     for datum in data:
         source, label, variant_type = (int(datum.get(field)) for field in (Data.SOURCE, Data.LABEL, Data.VARIANT_TYPE))
         ref_bin = int(ref_count_bin_index(datum.get(Data.REF_COUNT)))
         alt_bin = int(alt_count_bin_index(datum.get(Data.ALT_COUNT)))
         expected[source, label, variant_type, ref_bin, alt_bin] += 1
+        ref_count, alt_count = int(datum.get(Data.REF_COUNT)), int(datum.get(Data.ALT_COUNT))
+        # an alt count of 0 is counted as MIN_ALT_COUNT, as in the bins
+        alt_index = max(alt_count, MIN_ALT_COUNT) - MIN_ALT_COUNT
+        expected_count_totals[source, label, variant_type, ref_count, alt_index] += 1
     assert torch.equal(dataset.totals_slvra, expected)
+    assert torch.equal(dataset.count_totals_slvcd, expected_count_totals)
 
     assert dataset.num_read_features() == data[0].num_read_features()
     assert dataset.num_info_features() == len(data[0].get_info_1d())
     assert dataset.haplotypes_length() == data[0].get_haplotypes_array_size()
+
+
+def test_counts_above_the_maximums_are_counted_at_the_top_counts_and_bins():
+    datum = Datum(
+        int_array=np.zeros(Data.NUM_SCALAR_INT_ELEMENTS), float_array=np.zeros(Data.NUM_SCALAR_FLOAT_ELEMENTS)
+    )
+    datum.set(Data.LABEL, Label.ARTIFACT)
+    datum.set(Data.VARIANT_TYPE, Variation.SNV)
+    datum.set(Data.REF_COUNT, MAX_REF_COUNT + 2)
+    datum.set(Data.ALT_COUNT, MAX_ALT_COUNT + 5)
+
+    count_totals_slvcd = torch.zeros(count_totals_shape(num_sources=1))
+    count_totals_slvcd = record_count_totals(count_totals_slvcd, datum.get_int_array()[None, :])
+    assert count_totals_slvcd[0, Label.ARTIFACT, Variation.SNV, -1, -1].item() == count_totals_slvcd.sum().item() == 1
+    totals_slvra = bin_count_totals(count_totals_slvcd)
+    assert totals_slvra[0, Label.ARTIFACT, Variation.SNV, -1, -1].item() == totals_slvra.sum().item() == 1
+
+
+def test_binned_count_totals_add_up_the_counts_in_each_bin():
+    torch.manual_seed(0)
+    count_totals_slvcd = torch.randint(0, 10, count_totals_shape(num_sources=2)).float()
+    expected = torch.zeros(BatchIndexedTensor.shape_for(num_sources=2))
+    for ref_count, alt_count in itertools.product(range(MAX_REF_COUNT + 1), range(MIN_ALT_COUNT, MAX_ALT_COUNT + 1)):
+        ref_bin, alt_bin = int(ref_count_bin_index(ref_count)), int(alt_count_bin_index(alt_count))
+        expected[..., ref_bin, alt_bin] += count_totals_slvcd[..., ref_count, alt_count - MIN_ALT_COUNT]
+    assert torch.equal(bin_count_totals(count_totals_slvcd), expected)
 
 
 @pytest.mark.parametrize("folds_to_use", [None, list(range(9))])

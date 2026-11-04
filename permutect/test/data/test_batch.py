@@ -74,6 +74,47 @@ def test_downsampled_reads_belong_to_their_variant():
         assert len(set(map(tuple, reads.tolist()))) == len(reads)
 
 
+def test_downsampled_int_arrays_leave_the_parent_batch_unchanged():
+    parent = make_batch()
+    parent_int_tensor = parent.int_tensor.clone()
+    keep_none = torch.zeros(parent.size())
+    downsampled = DownsampledBatch(parent, ref_fracs_b=keep_none, alt_fracs_b=keep_none)
+    assert downsampled.get_int_array_be()[:, Data.ALT_COUNT.idx].tolist() == [1] * parent.size()
+    assert torch.equal(parent.int_tensor, parent_int_tensor)
+
+
+def test_each_variant_keeps_a_random_alt_read_of_its_own():
+    # keeping no reads at random leaves each variant only the alt read that downsampling always keeps, which must be
+    # uniformly random and independent of other variants' choices
+    parent = make_batch()  # alt counts 2, 4, 1, 3
+    keep_none = torch.zeros(parent.size())
+    torch.manual_seed(0)
+    # the read number of each variant's kept alt read, in each of many downsamplings
+    kept_nb = torch.stack(
+        [
+            DownsampledBatch(parent, ref_fracs_b=keep_none, alt_fracs_b=keep_none).get_reads_re()[:, 2]
+            for _ in range(2000)
+        ]
+    ).long()
+    for variant, (_, alt_count) in enumerate(COUNTS):
+        frequencies = torch.bincount(kept_nb[:, variant], minlength=alt_count) / len(kept_nb)
+        assert torch.allclose(frequencies, torch.full((alt_count,), 1 / alt_count), atol=0.05)
+    # one draw shared by the batch made the variant with 2 alt reads keep read n mod 2 whenever the one with 4 kept n
+    assert abs((kept_nb[:, 0] == kept_nb[:, 1] % 2).float().mean() - 0.5) < 0.05
+
+
+def test_downsampling_is_reproducible_from_the_torch_seed():
+    parent = make_batch()
+    keep_none = torch.zeros(parent.size())
+    runs = []
+    for _ in range(2):
+        torch.manual_seed(0)
+        runs.append(
+            [DownsampledBatch(parent, ref_fracs_b=keep_none, alt_fracs_b=keep_none).get_reads_re() for _ in range(10)]
+        )
+    assert all(torch.equal(first, second) for first, second in zip(*runs))
+
+
 def test_batch_get_matches_datum_get_for_every_field():
     # uint32 fields such as the position are stored as two int16s, and decoding them only worked for a single Datum
     data = [make_datum(variant, ref, alt) for variant, (ref, alt) in enumerate(COUNTS)]
@@ -133,11 +174,6 @@ def test_batch_indexed_tensor_shapes(include_logits):
     zeros = BatchIndexedTensor.zeros(3, include_logits, device=cpu)
     ones = BatchIndexedTensor.ones(3, include_logits, device=cpu)
     assert zeros.shape == ones.shape == shape and ones.has_logits() == include_logits
-
-    # growing the source dimension keeps the existing sources and zeroes the new ones
-    ones.resize_sources(5)
-    assert ones.shape == BatchIndexedTensor.shape_for(5, include_logits)
-    assert torch.all(ones[:3] == 1) and torch.all(ones[3:] == 0)
 
     if include_logits:
         accuracy_metrics = AccuracyMetrics.create(3, device=cpu)

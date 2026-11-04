@@ -3,7 +3,6 @@ from __future__ import annotations
 import copy
 import math
 from enum import IntEnum
-from random import randint
 from typing import List
 
 import numpy as np
@@ -339,27 +338,6 @@ class BatchIndexedTensor(Tensor):
     def ones(cls, num_sources: int, include_logits: bool = False, device=None):
         return cls(torch.ones(cls.shape_for(num_sources, include_logits), device=resolve_device(device)))
 
-    def resize_sources(self, new_num_sources):
-        old_num_sources = self.num_sources()
-        self.resize_(BatchIndexedTensor.shape_for(new_num_sources, self.has_logits()))
-        self[old_num_sources:] = 0
-
-    def record_int_arrays(self, int_array_be: np.ndarray):
-        """
-        Count data by their int arrays, the rows of a 2D array such as a slice of a memory map, growing the sources to
-        fit the data
-        """
-        assert not self.has_logits(), "this only works when not including logits"
-        fields = (Data.SOURCE, Data.LABEL, Data.VARIANT_TYPE, Data.REF_COUNT, Data.ALT_COUNT)
-        sources, labels, var_types, ref_counts, alt_counts = (
-            torch.from_numpy(get_data_field(int_array_be, None, field).astype(np.int64)).to(self.device)
-            for field in fields
-        )
-        if len(sources) > 0 and int(sources.max()) >= self.num_sources():
-            self.resize_sources(int(sources.max()) + 1)
-        indices = BatchIndices(sources, labels, var_types, ref_counts, alt_counts)
-        indices.increment_tensor(self, values=torch.ones(len(sources), dtype=self.dtype, device=self.device))
-
     def record(self, batch: Batch, values: Tensor, logits: Tensor = None, use_original_counts: bool = False):
         batch.batch_indices(use_original_counts).increment_tensor(self, values=values, logits=logits)
 
@@ -406,12 +384,12 @@ class DownsampledBatch(Batch):
 
         # unlike ref, we need to ensure at least one alt read.  One way to do that is to set one random element from each range of alts
         # to be masked to keep.  If e.g. we have alt counts of 3, 4, 7, 2 in the batch, the cumsums are
-        # 3, 7, 14, 16.   If we do torch.remainder(torch.tensor([random integer]), alt counts) we get offsets within each group of
-        # alts.  For example if the random integer is 11 the offsets are [2,3,4,1].  Subtracting these offsets from the cumsums
-        # gives mask indices 1, 4, 10, 15 to set to 1
-        random_int = randint(0, 100)
+        # 3, 7, 14, 16.  A random offset within each group of alts, such as [2, 3, 4, 1], subtracted from the cumsums
+        # gives mask indices 0, 3, 9, 14 to set to 1.  torch.randint takes a single upper bound, so the offsets are
+        # remainders of large random integers, which are uniform up to a bias of at most 15 in 2^31.
+        offset_b = torch.randint(0, 2**31, (len(old_alt_counts),), device=self.device) % old_alt_counts
         alt_ends = torch.cumsum(old_alt_counts, dim=0)
-        alt_override_idx = alt_ends - torch.remainder(random_int, old_alt_counts) - 1
+        alt_override_idx = alt_ends - offset_b - 1
         keep_alt_mask[alt_override_idx] = 1
 
         # the alt counts are the sums of the mask within the ranges of each datum
@@ -445,7 +423,7 @@ class DownsampledBatch(Batch):
 
     # override
     def get_int_array_be(self) -> np.ndarray:
-        result = self.int_tensor.cpu().numpy(force=True)  # force it to make a copy because we modify it
+        result = self.int_tensor.to(device="cpu", copy=True).numpy()  # a copy, even on the CPU, because we modify it
         result[:, Data.REF_COUNT.idx] = self.ref_counts.cpu().numpy()
         result[:, Data.ALT_COUNT.idx] = self.alt_counts.cpu().numpy()
         return result
