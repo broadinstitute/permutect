@@ -4,14 +4,23 @@ from typing import List
 import numpy as np
 import psutil
 import torch
+from torch import Tensor
 from torch.utils.data import DataLoader
 from torch.utils.data import IterableDataset
 
 from permutect.data.batch import Batch
 from permutect.data.batch import BatchIndexedTensor
 from permutect.data.batch import BatchProperty
+from permutect.data.count_binning import MAX_ALT_COUNT
+from permutect.data.count_binning import MAX_REF_COUNT
+from permutect.data.count_binning import MIN_ALT_COUNT
+from permutect.data.count_binning import alt_count_bin_index
+from permutect.data.count_binning import clamp_count
+from permutect.data.count_binning import ref_count_bin_index
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
+from permutect.data.datum import Data
 from permutect.data.datum import Datum
+from permutect.data.datum import get_data_field
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.misc_utils import Timer
 from permutect.misc_utils import report_memory_usage
@@ -45,6 +54,49 @@ def ratio_with_pseudocount(a, b):
     return (a + WEIGHT_PSEUDOCOUNT) / (b + WEIGHT_PSEUDOCOUNT)
 
 
+def count_totals_shape(num_sources: int) -> tuple[int, ...]:
+    """
+    the shape of numbers of data by source, label, variant type, ref count from 0 to MAX_REF_COUNT, and alt count from
+    MIN_ALT_COUNT to MAX_ALT_COUNT
+    """
+    return (num_sources, len(Label), len(Variation), MAX_REF_COUNT + 1, MAX_ALT_COUNT - MIN_ALT_COUNT + 1)
+
+
+def record_count_totals(count_totals_slvcd: Tensor, int_array_be: np.ndarray) -> Tensor:
+    """
+    add data, given by their int arrays, the rows of a 2D array such as a slice of a memory map, to numbers of data by
+    source, label, variant type, ref count (c) and alt count (d).  Counts beyond the ends of the count dimensions are
+    counted at the ends, as the count bins do.
+    :return: the numbers of data, in place if they have room for the data's sources and otherwise grown to fit them
+    """
+    fields = (Data.SOURCE, Data.LABEL, Data.VARIANT_TYPE, Data.REF_COUNT, Data.ALT_COUNT)
+    sources, labels, var_types, ref_counts, alt_counts = (
+        torch.from_numpy(get_data_field(int_array_be, None, field).astype(np.int64)) for field in fields
+    )
+    if len(sources) > 0 and int(sources.max()) >= len(count_totals_slvcd):
+        grown_slvcd = torch.zeros(count_totals_shape(num_sources=int(sources.max()) + 1))
+        grown_slvcd[: len(count_totals_slvcd)] = count_totals_slvcd
+        count_totals_slvcd = grown_slvcd
+    ref_indices = clamp_count(ref_counts, 0, MAX_REF_COUNT)
+    alt_indices = clamp_count(alt_counts, MIN_ALT_COUNT, MAX_ALT_COUNT) - MIN_ALT_COUNT
+    indices = (sources, labels, var_types, ref_indices, alt_indices)
+    return count_totals_slvcd.index_put_(indices, torch.ones(len(sources)), accumulate=True)
+
+
+def bin_count_totals(count_totals_slvcd: Tensor) -> BatchIndexedTensor:
+    """
+    numbers of data by source, label, variant type, ref count bin and alt count bin, from their numbers by ref and alt
+    count
+    """
+    ref_bins_c = ref_count_bin_index(torch.arange(MAX_REF_COUNT + 1))
+    alt_bins_d = alt_count_bin_index(torch.arange(MIN_ALT_COUNT, MAX_ALT_COUNT + 1))
+    totals_slvra = BatchIndexedTensor.zeros(num_sources=len(count_totals_slvcd), device=count_totals_slvcd.device)
+    # add each count's numbers to its bin's, first along the ref dimension and then along the alt dimension
+    totals_slvrd = torch.zeros(totals_slvra.shape[:4] + count_totals_slvcd.shape[4:])
+    totals_slvrd.index_add_(3, ref_bins_c, count_totals_slvcd)
+    return totals_slvra.index_add_(4, alt_bins_d, totals_slvrd)
+
+
 class ReadsDataset(IterableDataset):
     def __init__(
         self,
@@ -63,7 +115,8 @@ class ReadsDataset(IterableDataset):
         super(ReadsDataset, self).__init__()
         # stored here because DataLoader workers started by spawn or forkserver aren't in the process group
         self._rank, self._world_size = rank, world_size
-        self.totals_slvra = BatchIndexedTensor.zeros(num_sources=1, include_logits=False, device=torch.device("cpu"))
+        # numbers of data by source, label, variant type, ref count (c) and alt count (d)
+        self.count_totals_slvcd = torch.zeros(count_totals_shape(num_sources=1))
         # the folds are selected as the data are iterated over, without copying them
         self.memory_mapped_data = memory_mapped_data
         self._num_folds, self._folds = (
@@ -82,8 +135,11 @@ class ReadsDataset(IterableDataset):
         int_mmap = self.memory_mapped_data.int_mmap
         for start in range(0, len(int_mmap), COUNTING_BLOCK_SIZE):
             block = int_mmap[start : start + COUNTING_BLOCK_SIZE]
-            self.totals_slvra.record_int_arrays(block[self._in_folds(np.arange(start, start + len(block)))])
+            in_folds = block[self._in_folds(np.arange(start, start + len(block)))]
+            self.count_totals_slvcd = record_count_totals(self.count_totals_slvcd, in_folds)
         data_recording_timer.report("Time to record data counts")
+        # the same by ref and alt count bin
+        self.totals_slvra = bin_count_totals(self.count_totals_slvcd)
 
         # the rows of the memory maps all have the same widths, so every datum has as many features as the first
         first_datum = self.memory_mapped_data.get_datum(self._original_index(0)) if self._size > 0 else None

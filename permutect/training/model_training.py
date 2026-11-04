@@ -76,7 +76,7 @@ def train_artifact_model(
     device, dtype = model._device, model._dtype
     balancer = Balancer(num_sources=train_dataset.num_sources(), device=device).to(device=device, dtype=dtype)
     downsampler: Downsampler = Downsampler(num_sources=train_dataset.num_sources()).to(device=device, dtype=dtype)
-    downsampler.optimize_downsampling_balance(train_dataset.totals_slvra.to(device=device))
+    downsampler.optimize_downsampling_balance(train_dataset.count_totals_slvcd.to(device=device))
 
     num_sources = train_dataset.validate_sources()
     if is_main_process():

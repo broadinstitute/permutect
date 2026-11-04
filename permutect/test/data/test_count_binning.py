@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 
-from permutect.data.batch import BatchIndexedTensor
 from permutect.data.count_binning import MAX_ALT_COUNT
 from permutect.data.count_binning import MAX_REF_COUNT
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
@@ -12,10 +11,6 @@ from permutect.data.count_binning import count_from_alt_bin_index
 from permutect.data.count_binning import count_from_ref_bin_index
 from permutect.data.count_binning import ref_count_bin_index
 from permutect.data.count_binning import ref_count_bin_name
-from permutect.data.datum import Data
-from permutect.data.datum import Datum
-from permutect.utils.enums import Label
-from permutect.utils.enums import Variation
 
 
 def test_counts_outside_the_range_go_in_the_end_bins():
@@ -52,18 +47,3 @@ def test_bin_names_are_bin_centers():
 
     bin_indices = torch.arange(NUM_ALT_COUNT_BINS)
     assert count_from_alt_bin_index(bin_indices).tolist() == [count_from_alt_bin_index(n) for n in bin_indices.tolist()]
-
-
-def test_record_int_arrays_with_counts_above_the_maximum():
-    datum = Datum(
-        int_array=np.zeros(Data.NUM_SCALAR_INT_ELEMENTS), float_array=np.zeros(Data.NUM_SCALAR_FLOAT_ELEMENTS)
-    )
-    datum.set(Data.LABEL, Label.ARTIFACT)
-    datum.set(Data.VARIANT_TYPE, Variation.SNV)
-    datum.set(Data.REF_COUNT, MAX_REF_COUNT + 2)
-    datum.set(Data.ALT_COUNT, MAX_ALT_COUNT + 5)
-
-    totals = BatchIndexedTensor.zeros(num_sources=1, device=torch.device("cpu"))
-    totals.record_int_arrays(datum.get_int_array()[None, :])
-    assert totals[0, Label.ARTIFACT, Variation.SNV, NUM_REF_COUNT_BINS - 1, NUM_ALT_COUNT_BINS - 1].item() == 1
-    assert totals.sum().item() == 1

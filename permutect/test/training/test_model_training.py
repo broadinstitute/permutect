@@ -38,7 +38,7 @@ def run_validation_epoch(memory_mapped_data, tensorboard_dir, monkeypatch, epoch
 
     balancer = Balancer(num_sources=num_sources, device=device).to(device=device, dtype=model._dtype)
     downsampler = Downsampler(num_sources=num_sources).to(device=device, dtype=model._dtype)
-    downsampler.optimize_downsampling_balance(train_dataset.totals_slvra.to(device=device))
+    downsampler.optimize_downsampling_balance(train_dataset.count_totals_slvcd.to(device=device))
     balancer_state_before = {name: tensor.clone() for name, tensor in balancer.state_dict().items()}
 
     evaluations = []

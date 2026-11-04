@@ -1,7 +1,4 @@
-import itertools
-
 import torch
-from torch import IntTensor
 from torch import Tensor
 from torch.distributions import Beta
 from torch.nn import Module
@@ -12,9 +9,9 @@ from torch.nn.utils import parametrize
 from permutect.architecture.parameterizations import LogWeights
 from permutect.data.batch import Batch
 from permutect.data.batch import BatchIndexedTensor
-from permutect.data.count_binning import COUNT_BIN_SKIP
 from permutect.data.count_binning import MAX_ALT_COUNT
 from permutect.data.count_binning import MAX_REF_COUNT
+from permutect.data.count_binning import MIN_ALT_COUNT
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import NUM_REF_COUNT_BINS
 from permutect.data.count_binning import alt_count_bin_index
@@ -22,29 +19,35 @@ from permutect.data.count_binning import ref_count_bin_index
 from permutect.misc_utils import backpropagate
 from permutect.utils.stats_utils import beta_binomial_log_lk
 
+# fitting stops when the loss decreases by less than FITTING_TOLERANCE times itself over FITTING_STEPS_PER_CHECK steps
+FITTING_LEARNING_RATE = 0.01
+FITTING_TOLERANCE = 1e-5
+FITTING_STEPS_PER_CHECK = 100
+MAX_FITTING_STEPS = 20000
 
-def binned_transitions(max_count: int, num_bins: int, bin_index, alpha_k11: Tensor, beta_k11: Tensor) -> Tensor:
+
+def count_transitions(
+    counts: Tensor, num_bins: int, bin_index, alpha_k11: Tensor, beta_k11: Tensor, num_always_kept: int = 0
+) -> Tensor:
     """
-    The probabilities of downsampling each count bin to each count bin under each beta binomial basis component 'k',
-    indexed by k, the original count bin and the downsampled count bin
+    The probabilities of downsampling each of the counts to each count bin under each beta binomial basis component
+    'k', indexed by k, the count and the downsampled count bin.  Downsampling always keeps num_always_kept reads and
+    keeps each other read with a beta-distributed probability, so it takes a count n to a count m with probability
+    BetaBinomial(m - num_always_kept | n - num_always_kept).
     """
-    counts = IntTensor(range(max_count + 1))
-    counts_k1d, downsampled_counts_k1d = counts.view(1, -1, 1), counts.view(1, 1, -1)  # dummy indices for broadcasting
-    trans_kcd = torch.where(
-        counts_k1d >= downsampled_counts_k1d,
-        torch.exp(beta_binomial_log_lk(n=counts_k1d, k=downsampled_counts_k1d, alpha=alpha_k11, beta=beta_k11)),
+    downsampled_counts = torch.arange(num_always_kept, int(counts.max()) + 1)
+    # the numbers of reads beyond those always kept, with dummy indices for broadcasting
+    extra_k1m = (downsampled_counts - num_always_kept).view(1, 1, -1)
+    extra_kn1 = (counts - num_always_kept).view(1, -1, 1)
+    trans_knm = torch.where(
+        extra_kn1 >= extra_k1m,
+        torch.exp(beta_binomial_log_lk(n=extra_kn1, k=extra_k1m, alpha=alpha_k11, beta=beta_k11)),
         0,
     )
 
-    # now we need to bin this.  If you think about it carefully, the appropriate thing to do is *sum* over downsampled
-    # counts that correspond to the same bin and to *average* over original counts.  We could do this in some fancy vectorized
-    # way, but because this is a one-time cost during construction we employ a slower but clearer approach.
-    # we implement the average by summing over everything and dividing by the count bin skip, which is the number
-    # of counts per bin
-    binned_trans_kbb = torch.zeros(len(alpha_k11), num_bins, num_bins)
-    for count, downsampled_count in itertools.product(range(max_count + 1), repeat=2):
-        binned_trans_kbb[:, bin_index(count), bin_index(downsampled_count)] += trans_kcd[:, count, downsampled_count]
-    return binned_trans_kbb / COUNT_BIN_SKIP
+    # sum over the downsampled counts in each bin
+    trans_knb = torch.zeros(len(alpha_k11), len(counts), num_bins)
+    return trans_knb.index_add_(2, bin_index(downsampled_counts), trans_knm)
 
 
 class Downsampler(Module):
@@ -62,15 +65,22 @@ class Downsampler(Module):
         alpha_k11 = self.beta_basis[:, 0].view(-1, 1, 1)
         beta_k11 = self.beta_basis[:, 1].view(-1, 1, 1)
 
-        # transitions to downsampled count bins, indexed by basis 'k', then ref (r) and downsampled ref (y) count bins, or
-        # alt (a) and downsampled alt (z) count bins
-        self.binned_ref_trans_kry = Buffer(
-            binned_transitions(MAX_REF_COUNT, NUM_REF_COUNT_BINS, ref_count_bin_index, alpha_k11, beta_k11)
+        # the ref counts (c) and alt counts (d) of the count totals that the downsampler balances, and their bins
+        ref_counts_c = torch.arange(MAX_REF_COUNT + 1)
+        alt_counts_d = torch.arange(MIN_ALT_COUNT, MAX_ALT_COUNT + 1)
+        self.ref_bins_c = Buffer(ref_count_bin_index(ref_counts_c))
+        self.alt_bins_d = Buffer(alt_count_bin_index(alt_counts_d))
+
+        # transitions to downsampled count bins, indexed by basis 'k', then ref count (c) and downsampled ref count bin
+        # (y), or alt count (d) and downsampled alt count bin (z)
+        self.ref_trans_kcy = Buffer(
+            count_transitions(ref_counts_c, NUM_REF_COUNT_BINS, ref_count_bin_index, alpha_k11, beta_k11)
         )
-        # in the downsampling we guarantee at least one alt read count, so a beta binomial that samples no alt reads
-        # ends up with one read, hence is in bin 0, which is where alt_count_bin_index puts 0.
-        self.binned_alt_trans_haz = Buffer(
-            binned_transitions(MAX_ALT_COUNT, NUM_ALT_COUNT_BINS, alt_count_bin_index, alpha_k11, beta_k11)
+        # DownsampledBatch always keeps one alt read and keeps each of the others with the beta-distributed probability
+        self.alt_trans_hdz = Buffer(
+            count_transitions(
+                alt_counts_d, NUM_ALT_COUNT_BINS, alt_count_bin_index, alpha_k11, beta_k11, num_always_kept=1
+            )
         )
 
         # for each source/label/var type/ ref/alt bin we have mixture component weights for both ref and alt downsampling
@@ -115,38 +125,55 @@ class Downsampler(Module):
         alt_fracs_b = Beta(alt_shapes_b2[:, 0], alt_shapes_b2[:, 1]).sample().view(-1)
         return ref_fracs_b, alt_fracs_b
 
-    # used to fit the downsampler, log weights are NOT detach()ed
-    def calculate_expected_downsampled_counts(self, counts_slvra: BatchIndexedTensor):
-        ref_weights_slvrak = torch.exp(self.log_ref_weights_slvrak)
-        alt_weights_slvrah = torch.exp(self.log_alt_weights_slvrah)
+    def _count_weights(self, log_weights_slvrak: Tensor) -> Tensor:
+        # the weights of each ref and alt count (c, d) are those of their bins (r, a)
+        return torch.exp(log_weights_slvrak)[:, :, :, self.ref_bins_c][:, :, :, :, self.alt_bins_d]
 
+    # used to fit the downsampler, log weights are NOT detach()ed
+    def calculate_expected_downsampled_counts(self, count_totals_slvcd: Tensor):
         # in words, we're calculating (recall that y, z are downsampled ref, alt count bins)
-        # result_slvyz = sum_{rakh} counts_slvra * ref_weights_slvrak * alt_weights_slvrah * ref_trans_kry * alt_trans_haz
+        # result_slvyz = sum_{cdkh} counts_slvcd * ref_weights_slvcdk * alt_weights_slvcdh * ref_trans_kcy * alt_trans_hdz
         result_slvyz = torch.einsum(
-            "slvra, slvrak, slvrah, kry, haz->slvyz",
-            counts_slvra,
-            ref_weights_slvrak,
-            alt_weights_slvrah,
-            self.binned_ref_trans_kry,
-            self.binned_alt_trans_haz,
+            "slvcd, slvcdk, slvcdh, kcy, hdz->slvyz",
+            count_totals_slvcd,
+            self._count_weights(self.log_ref_weights_slvrak),
+            self._count_weights(self.log_alt_weights_slvrah),
+            self.ref_trans_kcy,
+            self.alt_trans_hdz,
         )
         return result_slvyz
 
-    def optimize_downsampling_balance(self, counts_slvra: BatchIndexedTensor):
-        optimizer = torch.optim.AdamW(self.parameters())
-        # TODO: magic constant -- choose when to end optimization more intelligently
-        for step in range(10000):
-            expected_slvyz = self.calculate_expected_downsampled_counts(counts_slvra)
+    def balance_loss(self, count_totals_slvcd: Tensor) -> Tensor:
+        expected_slvyz = self.calculate_expected_downsampled_counts(count_totals_slvcd)
 
-            # divide by the total over all counts for each slv bin to get a probability distribution over output r/a count bins
-            # an slv bin with no data sums to 0, so clamp its total to normalize it to zeros instead of 0/0
-            totals_slv11 = torch.sum(expected_slvyz, dim=(-2, -1), keepdim=True)
-            normalized_slvyz = expected_slvyz / totals_slv11.clamp_min(torch.finfo(expected_slvyz.dtype).tiny)
+        # divide by the total over all counts for each slv bin to get a probability distribution over output r/a count bins
+        # an slv bin with no data sums to 0, so clamp its total to normalize it to zeros instead of 0/0
+        totals_slv11 = torch.sum(expected_slvyz, dim=(-2, -1), keepdim=True)
+        normalized_slvyz = expected_slvyz / totals_slv11.clamp_min(torch.finfo(expected_slvyz.dtype).tiny)
 
-            # we want downsampled counts to be as even as possible among all ref and alt count bins.  This is equivalent
-            # to minimizing the sum of squared downsampled counts.  Since the downsampling
-            # preserves total probability, it can't minimize this loss by scaling down the result.  It can only minimize
-            # it by redistributing.
-            sums_of_squares_slv = torch.sum(torch.square(normalized_slvyz), dim=(-2, -1))
-            loss = torch.sum(sums_of_squares_slv)
+        # we want downsampled counts to be as even as possible among all ref and alt count bins.  This is equivalent
+        # to minimizing the sum of squared downsampled counts.  Since the downsampling
+        # preserves total probability, it can't minimize this loss by scaling down the result.  It can only minimize
+        # it by redistributing.
+        sums_of_squares_slv = torch.sum(torch.square(normalized_slvyz), dim=(-2, -1))
+        return torch.sum(sums_of_squares_slv)
+
+    def optimize_downsampling_balance(self, count_totals_slvcd: Tensor) -> int:
+        """
+        :param count_totals_slvcd: numbers of data by source, label, variant type, ref count and alt count, as
+            ReadsDataset counts them
+        :return: the number of steps until the fit converged
+        """
+        # no weight decay: the fit is to known totals, so there is nothing to overfit
+        optimizer = torch.optim.Adam(self.parameters(), lr=FITTING_LEARNING_RATE)
+        previous_loss = None
+        for step in range(MAX_FITTING_STEPS):
+            loss = self.balance_loss(count_totals_slvcd)
+            # checking only every so many steps keeps the CPU from waiting for the GPU at every step
+            if step % FITTING_STEPS_PER_CHECK == 0:
+                current_loss = loss.item()
+                if previous_loss is not None and previous_loss - current_loss <= FITTING_TOLERANCE * previous_loss:
+                    return step
+                previous_loss = current_loss
             backpropagate(optimizer, loss)
+        return MAX_FITTING_STEPS
