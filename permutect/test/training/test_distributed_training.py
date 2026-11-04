@@ -35,19 +35,20 @@ def process_batches(balancer: Balancer, batches):
 
 
 def balancer_state_after_one_batch_per_process(data) -> dict:
-    Balancer.DATA_BEFORE_RECOMPUTE = BATCH_SIZE + 1  # so that the weights are recomputed after both batches
     balancer = Balancer(num_sources=1, device=torch.device("cpu"))
     rank = dist.get_rank()
     process_batches(balancer, [Batch(data[rank * BATCH_SIZE : (rank + 1) * BATCH_SIZE])])
     return balancer.state_dict()
 
 
-def test_balancer_sums_counts_over_processes(data, monkeypatch):
-    # every process has the counts and weights of a single process that sees the batches of both
-    monkeypatch.setattr(Balancer, "DATA_BEFORE_RECOMPUTE", BATCH_SIZE + 1)
+def test_balancer_sums_counts_over_processes(data):
+    # every process has the counts and weights of a single process that sees the batches of both as one batch
     single_process = Balancer(num_sources=1, device=torch.device("cpu"))
-    process_batches(single_process, [Batch(data[:BATCH_SIZE]), Batch(data[BATCH_SIZE:])])
-    assert not torch.equal(single_process.weights_slvra, torch.ones_like(single_process.weights_slvra))
+    single_process.process_batch_and_compute_weights(
+        Batch(data), artifact_probs_b=torch.linspace(0, 1, BATCH_SIZE).repeat(2)
+    )
+    unseen = Balancer(num_sources=1, device=torch.device("cpu"))
+    assert not torch.equal(single_process.unlabeled_weights_slvra, unseen.unlabeled_weights_slvra)
 
     for state in run_in_process_group(2, balancer_state_after_one_batch_per_process, data):
         for name, tensor in single_process.state_dict().items():
