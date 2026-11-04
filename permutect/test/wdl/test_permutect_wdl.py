@@ -20,7 +20,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def make_cached_m2_outputs(working_dir, with_segments: bool) -> str:
+def make_cached_m2_outputs(working_dir, archive_name: str, with_segments: bool) -> str:
     """
     An archive of Mutect2 outputs for SEQC2 WES chr20, as made by the ArchiveM2Outputs task, with or without segments
     """
@@ -34,7 +34,7 @@ def make_cached_m2_outputs(working_dir, with_segments: bool) -> str:
     if with_segments:
         m2_outputs.update(maf_segments=SEQC2_WES_TUMOR_SEGMENTS, normal_maf_segments=SEQC2_WES_NORMAL_SEGMENTS)
 
-    archive = os.path.join(working_dir, "cached_m2_outputs.tar")
+    archive = os.path.join(working_dir, archive_name)
     file_names_in_archive = task_output_files(PERMUTECT_WDL, "ExtractM2Outputs")
     with tarfile.open(archive, "w") as tar:
         for name, m2_output in m2_outputs.items():
@@ -42,11 +42,15 @@ def make_cached_m2_outputs(working_dir, with_segments: bool) -> str:
     return archive
 
 
-def run_permutect_wdl(working_dir, filter_pcr_errors: bool, with_segments: bool) -> dict:
+def run_permutect_wdl(
+    working_dir, filter_pcr_errors: bool, with_segments: bool, tumor_only: bool, with_normal: bool
+) -> dict:
     """
     Run permutect.wdl with Cromwell on SEQC2 WES chr20 data, giving cached Mutect2 outputs so that Mutect2 is skipped.
     Returns the Cromwell workflow metadata.
     """
+    tumor_only_mode = tumor_only or not with_normal
+
     # the workflow requires reads, but only Mutect2 uses them
     placeholder_bam, placeholder_bai = os.path.join(working_dir, "reads.bam"), os.path.join(working_dir, "reads.bai")
     for placeholder in (placeholder_bam, placeholder_bai):
@@ -59,18 +63,27 @@ def run_permutect_wdl(working_dir, filter_pcr_errors: bool, with_segments: bool)
         "Permutect.ref_dict": HG38_CHR20_REFERENCE_DICT,
         "Permutect.primary_bam": placeholder_bam,
         "Permutect.primary_bai": placeholder_bai,
+        "Permutect.control_bam": placeholder_bam if with_normal else "",
+        "Permutect.control_bai": placeholder_bai if with_normal else "",
         "Permutect.scatter_count": 1,
         "Permutect.batch_size": 64,
         # data loader workers share tensors through a Unix socket in TMPDIR, which Cromwell's Local backend puts too
         # deep in the execution directory for the socket path length limit
         "Permutect.num_workers": 0,
         "Permutect.filter_pcr_errors": filter_pcr_errors,
-        "Permutect.cached_m2_outputs": make_cached_m2_outputs(working_dir, with_segments),
+        # a tumor-only run is also given matched-normal cached outputs, which it must ignore
+        "Permutect.cached_m2_outputs": make_cached_m2_outputs(working_dir, "cached_m2_outputs.tar", with_segments),
+        "Permutect.tumor_only": tumor_only,
         "Permutect.permutect_docker": PERMUTECT_TEST_DOCKER,
         # Terra turns unset optional inputs into empty strings, which the workflow must treat as unset
         "Permutect.masks": "",
         "Permutect.test_dataset_truth_vcf": "",
         "Permutect.test_dataset_truth_vcf_idx": "",
+        "Permutect.tumor_only_cached_m2_outputs": (
+            make_cached_m2_outputs(working_dir, "tumor_only_cached_m2_outputs.tar", with_segments)
+            if tumor_only_mode
+            else ""
+        ),
     }
     inputs_json, metadata_json = os.path.join(working_dir, "inputs.json"), os.path.join(working_dir, "metadata.json")
     with open(inputs_json, "w") as file:
@@ -91,22 +104,35 @@ def run_permutect_wdl(working_dir, filter_pcr_errors: bool, with_segments: bool)
     return metadata
 
 
-def check_cached_m2_outputs(metadata: dict, with_segments: bool):
-    # the cache is unpacked rather than running Mutect2, and passed through to the output as is
+def check_cached_m2_outputs(metadata: dict, with_segments: bool, tumor_only_mode: bool):
+    # the cache for this run's mode is unpacked rather than running Mutect2, and both caches are passed through to the
+    # outputs as is
     calls = metadata["calls"]
     assert "Permutect.ExtractM2Outputs" in calls
     assert "Permutect.Mutect2" not in calls and "Permutect.ArchiveM2Outputs" not in calls
-    assert metadata["outputs"]["Permutect.m2_outputs"] == metadata["inputs"]["cached_m2_outputs"]
+    inputs, outputs = metadata["inputs"], metadata["outputs"]
+    cache_used = inputs["tumor_only_cached_m2_outputs" if tumor_only_mode else "cached_m2_outputs"]
+    assert calls["Permutect.ExtractM2Outputs"][0]["inputs"]["cached_m2_outputs"] == cache_used
+    assert outputs["Permutect.m2_outputs"] == inputs["cached_m2_outputs"]
+    tumor_only_cache = inputs["tumor_only_cached_m2_outputs"] if tumor_only_mode else None
+    assert outputs["Permutect.tumor_only_m2_outputs"] == tumor_only_cache
 
     filtering_inputs = calls["Permutect.PermutectFiltering"][0]["inputs"]
     for segments in ("maf_segments", "normal_maf_segments"):
         assert (filtering_inputs[segments] is not None) == with_segments
 
 
-def output_vcf_records(metadata: dict) -> list[cyvcf2.Variant]:
-    for output_file in ("output_vcf", "output_vcf_idx", "tensorboard_report"):
-        assert os.path.exists(metadata["outputs"]["Permutect." + output_file])
-    return list(cyvcf2.VCF(metadata["outputs"]["Permutect.output_vcf"]))
+def output_vcf_records(metadata: dict, tumor_only_mode: bool) -> list[cyvcf2.Variant]:
+    # the calls go to the output VCF for the run's mode, and the other mode's output VCF is unset
+    outputs = metadata["outputs"]
+    vcf, other_vcf = (
+        ("tumor_only_output_vcf", "output_vcf") if tumor_only_mode else ("output_vcf", "tumor_only_output_vcf")
+    )
+    for suffix in ("", "_idx"):
+        assert os.path.exists(outputs["Permutect." + vcf + suffix])
+        assert outputs["Permutect." + other_vcf + suffix] is None
+    assert os.path.exists(outputs["Permutect.tensorboard_report"])
+    return list(cyvcf2.VCF(outputs["Permutect." + vcf]))
 
 
 def has_filter(v: cyvcf2.Variant, filter_name: str) -> bool:
@@ -116,22 +142,35 @@ def has_filter(v: cyvcf2.Variant, filter_name: str) -> bool:
 @pytest.fixture(scope="module")
 def metadata_with_pcr_error_filtering(tmp_path_factory):
     working_dir = tmp_path_factory.mktemp("with_pcr_error_filtering")
-    return run_permutect_wdl(working_dir, filter_pcr_errors=True, with_segments=True)
+    return run_permutect_wdl(
+        working_dir, filter_pcr_errors=True, with_segments=True, tumor_only=False, with_normal=True
+    )
 
 
 @pytest.fixture(scope="module")
 def metadata_without_pcr_error_filtering(tmp_path_factory):
-    # also without segments, which Mutect2 doesn't always make
+    # also without segments, which Mutect2 doesn't always make, and with tumor_only overriding the normal
     working_dir = tmp_path_factory.mktemp("without_pcr_error_filtering")
-    return run_permutect_wdl(working_dir, filter_pcr_errors=False, with_segments=False)
+    return run_permutect_wdl(
+        working_dir, filter_pcr_errors=False, with_segments=False, tumor_only=True, with_normal=True
+    )
+
+
+@pytest.fixture(scope="module")
+def metadata_without_normal(tmp_path_factory):
+    # tumor-only because the normal is the empty string that Terra gives for unset inputs, although tumor_only is false
+    working_dir = tmp_path_factory.mktemp("without_normal")
+    return run_permutect_wdl(
+        working_dir, filter_pcr_errors=False, with_segments=False, tumor_only=False, with_normal=False
+    )
 
 
 def test_permutect_wdl_with_pcr_error_filtering(metadata_with_pcr_error_filtering):
-    check_cached_m2_outputs(metadata_with_pcr_error_filtering, with_segments=True)
+    check_cached_m2_outputs(metadata_with_pcr_error_filtering, with_segments=True, tumor_only_mode=False)
     assert "Permutect.PrePermutectFiltering" in metadata_with_pcr_error_filtering["calls"]
     # the empty truth VCF counts as no truth VCF
     assert "Permutect.PermutectConcordance" not in metadata_with_pcr_error_filtering["calls"]
-    records = output_vcf_records(metadata_with_pcr_error_filtering)
+    records = output_vcf_records(metadata_with_pcr_error_filtering, tumor_only_mode=False)
     assert any(v.INFO.get(POST_PROB_INFO_KEY) is not None for v in records)
 
     target_records = [v for v in records if v.CHROM == "chr20" and v.POS == 4932703]
@@ -140,8 +179,14 @@ def test_permutect_wdl_with_pcr_error_filtering(metadata_with_pcr_error_filterin
 
 
 def test_permutect_wdl_without_pcr_error_filtering(metadata_without_pcr_error_filtering):
-    check_cached_m2_outputs(metadata_without_pcr_error_filtering, with_segments=False)
+    check_cached_m2_outputs(metadata_without_pcr_error_filtering, with_segments=False, tumor_only_mode=True)
     assert "Permutect.PrePermutectFiltering" not in metadata_without_pcr_error_filtering["calls"]
-    records = output_vcf_records(metadata_without_pcr_error_filtering)
+    records = output_vcf_records(metadata_without_pcr_error_filtering, tumor_only_mode=True)
     assert any(v.INFO.get(POST_PROB_INFO_KEY) is not None for v in records)
     assert not any(has_filter(v, HAIRPIN_FILTER) for v in records)
+
+
+def test_permutect_wdl_without_normal(metadata_without_normal):
+    check_cached_m2_outputs(metadata_without_normal, with_segments=False, tumor_only_mode=True)
+    records = output_vcf_records(metadata_without_normal, tumor_only_mode=True)
+    assert any(v.INFO.get(POST_PROB_INFO_KEY) is not None for v in records)
