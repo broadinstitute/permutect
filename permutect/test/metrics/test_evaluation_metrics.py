@@ -8,6 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from permutect import misc_utils
 from permutect.architecture.artifact_model import record_embeddings
+from permutect.architecture.feature_clustering import FeatureClustering
 from permutect.data.batch import Batch
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import alt_count_bin_name
@@ -16,6 +17,7 @@ from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.metrics.evaluation_metrics import EmbeddingMetrics
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
+from permutect.sets.ragged_sets import RaggedSets
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
@@ -148,31 +150,35 @@ def test_record_batch_metadata():
 
 
 class EmbeddingRecorder:
-    # a stand-in for a SummaryWriter that records the metadata of each embedding projection
+    # a stand-in for a SummaryWriter that records the features and metadata of each embedding projection, and the tag
+    # of each figure
     def __init__(self):
+        self.features_by_tag = {}
         self.metadata_by_tag = {}
+        self.figure_tags = []
 
     def add_embedding(self, features, metadata, metadata_header, tag, global_step=None):
+        assert all(len(row) == len(metadata_header) for row in metadata)
+        self.features_by_tag[tag] = features
         self.metadata_by_tag[tag] = metadata
 
-
-class FeatureSets:
-    def __init__(self, means_be):
-        self.means_be = means_be
-
-    def means_over_sets(self):
-        return self.means_be
+    def add_figure(self, tag, figure, global_step=None):
+        self.figure_tags.append(tag)
+        plt.close(figure)
 
 
 class FakeArtifactModel:
     def __init__(self, device=torch.device("cpu")):
         self._device = device
         self.batch_devices = set()
+        self.feature_clustering = FeatureClustering(feature_dimension=4, num_artifact_clusters=2)
 
     def calculate_features(self, batch):
         self.batch_devices.add(batch.get_reads_re().device)
-        size = batch.size()
-        return FeatureSets(torch.randn(size, 4)), FeatureSets(torch.randn(size, 4)), torch.randn(size, 4)
+        ref_counts_b, alt_counts_b = batch.get(Data.REF_COUNT), batch.get(Data.ALT_COUNT)
+        ref_bre = RaggedSets(torch.randn(int(ref_counts_b.sum()), 4), ref_counts_b)
+        alt_bre = RaggedSets(torch.randn(int(alt_counts_b.sum()), 4), alt_counts_b)
+        return ref_bre, alt_bre, torch.randn(batch.size(), 4)
 
 
 def test_training_projections_use_the_same_metadata_as_filter_variants():
@@ -184,9 +190,73 @@ def test_training_projections_use_the_same_metadata_as_filter_variants():
 
     assert summary_writer.metadata_by_tag
     for tag, metadata in summary_writer.metadata_by_tag.items():
-        labels, correctness = {row[0] for row in metadata}, {row[1] for row in metadata}
+        data_rows = [row for row in metadata if row[4] == EmbeddingMetrics.DATA_SOURCE]
+        labels, correctness = {row[0] for row in data_rows}, {row[1] for row in data_rows}
         assert labels == {label.name for label in Label}, tag
         assert correctness == {EmbeddingMetrics.UNKNOWN}, tag
+
+
+TWIN_LABELS = ("model artifact", "model variant", "model unlabeled")
+
+
+def test_training_projections_show_twins_simulated_from_the_model():
+    torch.manual_seed(0)
+    data = [make_datum(label, source=0) for label in Label for _ in range(20)]
+    summary_writer = EmbeddingRecorder()
+    record_embeddings(FakeArtifactModel(), [Batch(data)], summary_writer)
+
+    for tag, metadata in summary_writer.metadata_by_tag.items():
+        twin_rows = [row for row in metadata if row[4] != EmbeddingMetrics.DATA_SOURCE]
+        if tag.startswith("embedding"):
+            # the twins' correctness is "model", whatever their data's
+            assert {row[1] for row in twin_rows} == {EmbeddingMetrics.MODEL}, tag
+
+            # labeled data's twins are artifacts if and only if the data are, and unlabeled data's twins are either
+            sources_by_label = {label: {row[4] for row in twin_rows if row[0] == label} for label in TWIN_LABELS}
+            assert sources_by_label["model artifact"] == {"model artifact cluster 0", "model artifact cluster 1"}, tag
+            assert sources_by_label["model variant"] == {"model nonartifact"}, tag
+            assert sources_by_label["model unlabeled"] <= {
+                "model nonartifact",
+                "model artifact cluster 0",
+                "model artifact cluster 1",
+            }, tag
+        else:
+            # the model doesn't describe ref embeddings or the ref and alt allele context
+            assert not twin_rows, tag
+
+    # and the fit of the feature clustering model's components to the reads
+    assert summary_writer.figure_tags == ["feature clustering fit"]
+
+
+def test_projections_pair_each_datum_with_its_twin():
+    metrics = EmbeddingMetrics()
+    labels, variant_types, alt_counts = [Label.ARTIFACT, Label.VARIANT, Label.UNLABELED], [Variation.SNV] * 3, [1, 5, 9]
+    correctness = [EmbeddingMetrics.TRUE_NEGATIVE_ARTIFACT, EmbeddingMetrics.TRUE_POSITIVE, EmbeddingMetrics.UNKNOWN]
+    features_be, ref_features_be, simulated_be = torch.randn(3, 4), torch.randn(3, 4), torch.randn(3, 4)
+    sources = ["artifact cluster 1", "nonartifact", "artifact cluster 0"]
+    metrics.record_batch(
+        labels, variant_types, alt_counts, features_be, ref_features_be, correctness, simulated_be, sources
+    )
+    summary_writer = EmbeddingRecorder()
+    metrics.output_to_summary_writer(summary_writer)
+
+    tag = "embedding for variant type SNV"
+    metadata, features = summary_writer.metadata_by_tag[tag], summary_writer.features_by_tag[tag]
+    assert len(metadata) == 6
+    data_rows, twin_rows = metadata[:3], metadata[3:]
+    assert [row[4] for row in data_rows] == ["data"] * 3
+    for data_row, twin_row, data_features, twin_features in zip(data_rows, twin_rows, features[:3], features[3:]):
+        # the projection's subsample shuffles the data, so find each datum by its label
+        n = [label.name for label in labels].index(data_row[0])
+        assert data_row[1] == correctness[n]
+
+        # the twin shares the datum's type and count, but its label and correctness say that it's from the model
+        assert twin_row == (TWIN_LABELS[n], EmbeddingMetrics.MODEL, data_row[2], data_row[3], "model " + sources[n])
+        assert torch.equal(data_features, features_be[n])
+        assert torch.equal(twin_features, simulated_be[n])
+
+    ref_metadata = summary_writer.metadata_by_tag["ref embedding for variant type SNV"]
+    assert [row[4] for row in ref_metadata] == ["data"] * 3
 
 
 def test_record_embeddings_sends_batches_to_the_model_device(monkeypatch):

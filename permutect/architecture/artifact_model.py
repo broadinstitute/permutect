@@ -11,6 +11,7 @@ from permutect.architecture.adversarial import Adversarial
 from permutect.architecture.dna_sequence_convolution import DNASequenceConvolution
 from permutect.architecture.euclidean_transformation import EuclideanTransformation
 from permutect.architecture.feature_clustering import FeatureClustering
+from permutect.architecture.feature_clustering import component_name
 from permutect.architecture.gated_mlp import GatedRefAltMLP
 from permutect.architecture.mlp import MLP
 from permutect.data.batch import Batch
@@ -19,6 +20,7 @@ from permutect.data.count_binning import MAX_ALT_COUNT
 from permutect.data.datum import Data
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.metrics.evaluation_metrics import EmbeddingMetrics
+from permutect.metrics.feature_clustering_metrics import FeatureClusteringFitMetrics
 from permutect.misc_utils import float_dtype
 from permutect.misc_utils import freeze
 from permutect.misc_utils import resolve_device
@@ -27,6 +29,7 @@ from permutect.parameters import ModelParameters
 from permutect.sets.ragged_sets import RaggedSets
 from permutect.training.balancer import Balancer
 from permutect.utils.enums import Epoch
+from permutect.utils.enums import Label
 from permutect.utils.enums import ParameterSet
 
 MAX_OUTLIER_LOGIT = 10
@@ -342,11 +345,34 @@ def load_model(path, device: torch.device = None):
     return model
 
 
+def artifact_probabilities_b(labels_b: Tensor, logits_b: Tensor) -> Tensor:
+    """
+    The probability that each variant is an artifact: 1 or 0 for a labeled variant, and for an unlabeled variant the
+    probability that the model assigns to it, from its artifact logit
+    """
+    unlabeled_probs_b = torch.sigmoid(logits_b)
+    return torch.where(labels_b == Label.ARTIFACT, 1.0, torch.where(labels_b == Label.VARIANT, 0.0, unlabeled_probs_b))
+
+
+def simulate_alt_means(
+    clustering: FeatureClustering, artifact_probs_b: Tensor, alt_counts_b: Tensor
+) -> tuple[Tensor, List[str]]:
+    """
+    The mean alt embedding of a variant simulated from the feature clustering model for each variant, with the same alt
+    count and an artifact with the given probability, and the name of the component from which it was drawn
+    """
+    components_b = clustering.sample_components_b(artifact_probs_b)
+    simulated_means_be = clustering.sample_mean_embeddings_be(components_b, alt_counts_b)
+    return simulated_means_be, [component_name(component) for component in components_b.tolist()]
+
+
 # after training for visualizing clustering etc of base model embeddings
 @torch.no_grad()
 def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWriter):
     embedding_metrics = EmbeddingMetrics()
     ref_alt_seq_metrics = EmbeddingMetrics()
+    clustering = model.feature_clustering
+    clustering_fit_metrics = FeatureClusteringFitMetrics(clustering.num_artifact_clusters)
 
     batch: Batch
     for batch in tqdm(batches_on_device(loader, device=model._device), mininterval=60, total=len(loader)):
@@ -355,11 +381,26 @@ def record_embeddings(model: ArtifactModel, loader, summary_writer: SummaryWrite
         alt_means_be = alt_bre.means_over_sets().cpu()
         ref_means_be = ref_bre.means_over_sets().cpu()
         ref_alt_seq_embeddings_be = ref_alt_seq_embeddings_be.cpu()
+        # a labeled datum's twin is an artifact if and only if the datum is, and so are its reads in the fit metrics
+        logits_b, log_lks_bk = clustering.calculate_logits(alt_bre, batch)
+        artifact_probs_b = artifact_probabilities_b(batch.get(Data.LABEL), logits_b)
+        alt_counts_b = batch.get(Data.ALT_COUNT)
+        simulated_alt_means_be, simulated_sources = simulate_alt_means(clustering, artifact_probs_b, alt_counts_b)
+        clustering_fit_metrics.record_batch(clustering, alt_bre, log_lks_bk, artifact_probs_b)
 
         labels = batch.get(Data.LABEL).tolist()
         variant_types = batch.get(Data.VARIANT_TYPE).tolist()
         alt_counts = batch.get(Data.ALT_COUNT).tolist()
-        embedding_metrics.record_batch(labels, variant_types, alt_counts, alt_means_be, ref_features_be=ref_means_be)
+        embedding_metrics.record_batch(
+            labels,
+            variant_types,
+            alt_counts,
+            alt_means_be,
+            ref_features_be=ref_means_be,
+            simulated_features_be=simulated_alt_means_be.cpu(),
+            simulated_sources=simulated_sources,
+        )
         ref_alt_seq_metrics.record_batch(labels, variant_types, alt_counts, ref_alt_seq_embeddings_be)
     embedding_metrics.output_to_summary_writer(summary_writer)
     ref_alt_seq_metrics.output_to_summary_writer(summary_writer, prefix="ref and alt allele context")
+    summary_writer.add_figure("feature clustering fit", clustering_fit_metrics.make_figure(clustering))

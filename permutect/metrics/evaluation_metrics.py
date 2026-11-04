@@ -236,6 +236,20 @@ class EmbeddingMetrics:
     FALSE_NEGATIVE_ARTIFACT = "false-negative-artifact"
     TRUE_NEGATIVE_SEQ_ERROR = "true-negative-seq-error"
     UNKNOWN = "unknown"  # unlabeled data, or labeled data whose correctness isn't evaluated
+    MODEL = "model"  # embeddings simulated from the model, which have no correctness
+
+    # the Source metadata of data's embeddings, as opposed to embeddings simulated from the model
+    DATA_SOURCE = "data"
+
+    @staticmethod
+    def twin_metadata(data_metadata: tuple, source: str) -> tuple:
+        """
+        The metadata of a datum's simulated twin, given the datum's label, correctness, type, and count: the twin's label
+        is "model" and the datum's label, e.g. "model artifact", its correctness is "model", it shares the datum's type
+        and count, and its source is where in the model it came from.
+        """
+        label, _, variant_type, count = data_metadata
+        return "model " + label.lower(), EmbeddingMetrics.MODEL, variant_type, count, source
 
     def __init__(self):
         # things we will collect for the projections
@@ -245,6 +259,8 @@ class EmbeddingMetrics:
         self.truncated_count_metadata = []  # list of lists
         self.features = []  # list of 2D tensors (to be stacked into a single 2D tensor), features over batches
         self.ref_features = []
+        self.simulated_features = []  # optional simulated twins of the features
+        self.simulated_source_metadata = []  # where in the model each simulated twin came from
 
     def record_batch(
         self,
@@ -254,6 +270,8 @@ class EmbeddingMetrics:
         features_be: Tensor,
         ref_features_be: Tensor = None,
         correctness: List[str] = None,
+        simulated_features_be: Tensor = None,
+        simulated_sources: List[str] = None,
     ):
         """
         Record metadata and embeddings for a batch of data, so that every TensorBoard projection uses the same metadata.
@@ -264,6 +282,9 @@ class EmbeddingMetrics:
         :param features_be: embeddings, one row per datum
         :param ref_features_be: optional ref embeddings, one row per datum
         :param correctness: the correctness status of each datum, one of the class constants, or None if not evaluated
+        :param simulated_features_be: optional embeddings, one row per datum, simulated from the model for a datum like
+            each one, e.g. with the same alt count.  Projections of the embeddings show them alongside the data's.
+        :param simulated_sources: with simulated_features_be, where in the model each simulated embedding came from
         """
         self.label_metadata.extend(Label(label).name for label in labels)
         self.correct_metadata.extend([EmbeddingMetrics.UNKNOWN] * len(labels) if correctness is None else correctness)
@@ -272,6 +293,9 @@ class EmbeddingMetrics:
         self.features.append(features_be)
         if ref_features_be is not None:
             self.ref_features.append(ref_features_be)
+        if simulated_features_be is not None:
+            self.simulated_features.append(simulated_features_be)
+            self.simulated_source_metadata.extend("model " + source for source in simulated_sources)
 
     def output_to_summary_writer(
         self,
@@ -315,6 +339,7 @@ class EmbeddingMetrics:
 
         stacked_features = torch.vstack(self.features)
         stacked_ref_features = torch.vstack(self.ref_features) if self.ref_features else None
+        stacked_simulated_features = torch.vstack(self.simulated_features) if self.simulated_features else None
 
         # read average embeddings stratified by variant type, then by alt count
         groups = [("variant type " + var_type.name, self.type_metadata, var_type.name) for var_type in Variation]
@@ -330,13 +355,26 @@ class EmbeddingMetrics:
 
             # skip groups without data, e.g. indels in an SNV-only panel; tensorboard fails on empty embeddings
             if len(idx) > 0:
-                metadata = [all_metadata[round(n)] for n in idx.tolist()]
+                data_metadata = [all_metadata[round(n)] + (EmbeddingMetrics.DATA_SOURCE,) for n in idx.tolist()]
                 for features, kind in ((stacked_features, "embedding"), (stacked_ref_features, "ref embedding")):
                     if features is not None:
+                        projected_features, metadata = features[idx], data_metadata
+
+                        # each datum's simulated twin.  The model describes only the alt embeddings, not the ref
+                        # embeddings.
+                        if kind == "embedding" and stacked_simulated_features is not None:
+                            projected_features = torch.vstack((projected_features, stacked_simulated_features[idx]))
+                            metadata = data_metadata + [
+                                EmbeddingMetrics.twin_metadata(
+                                    all_metadata[round(n)], self.simulated_source_metadata[round(n)]
+                                )
+                                for n in idx.tolist()
+                            ]
+
                         summary_writer.add_embedding(
-                            features[idx],
+                            projected_features,
                             metadata=metadata,
-                            metadata_header=["Labels", "Correctness", "Types", "Counts"],
+                            metadata_header=["Labels", "Correctness", "Types", "Counts", "Source"],
                             tag=prefix + kind + " for " + group_name,
                             global_step=epoch,
                         )
