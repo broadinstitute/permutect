@@ -68,9 +68,9 @@ def test_dev_extra_requires_the_pytest_minversion():
 
 def test_docker_build_context_is_only_what_the_dockerfile_copies():
     # a COPY of something the .dockerignore leaves out would fail the build, and anything else not left out is sent to
-    # the build for nothing
+    # the build for nothing.  A COPY --from copies from another build stage, not from the build context.
     with open(os.path.join(REPO_DIR, "Dockerfile")) as file:
-        copy_lines = [line.split()[1:-1] for line in file if line.startswith("COPY ")]
+        copy_lines = [line.split()[1:-1] for line in file if line.startswith("COPY ") and "--from=" not in line]
     copied = {source.rstrip("/") for sources in copy_lines for source in sources if not source.startswith("--")}
     with open(os.path.join(REPO_DIR, ".dockerignore")) as file:
         patterns = [line.strip() for line in file if line.strip() and not line.startswith("#")]
