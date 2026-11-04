@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import io
+import itertools
 import math
 import os
 import tarfile
 import tempfile
+import time
 from collections import defaultdict
+from dataclasses import dataclass
 from tempfile import NamedTemporaryFile
 from typing import Generator
+from typing import Iterable
 from typing import NamedTuple
 from typing import Set
 
@@ -33,6 +38,56 @@ SUFFIX_FOR_INT_MMAP = ".int_mmap.npy"
 SUFFIX_FOR_FLOAT_MMAP = ".float_mmap.npy"
 SUFFIX_FOR_READS_MMAP = ".reads_mmap.npy"
 SUFFIX_FOR_METADATA = ".metadata.npy"
+
+# the most bytes of an array that save_to_tarfile copies into memory at once
+NPY_WRITE_BLOCK_BYTES = 2**24
+
+
+class BytesChunksReader(io.RawIOBase):
+    """
+    A file of the bytes of an iterable of byte strings, which tarfile.addfile copies without holding them all at once
+    """
+
+    def __init__(self, chunks):
+        self._chunks = iter(chunks)
+        self._chunk = memoryview(b"")
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer) -> int:
+        while len(self._chunk) == 0:
+            next_chunk = next(self._chunks, None)
+            if next_chunk is None:
+                return 0
+            self._chunk = memoryview(next_chunk)
+        num_bytes = min(len(buffer), len(self._chunk))
+        buffer[:num_bytes] = self._chunk[:num_bytes]
+        self._chunk = self._chunk[num_bytes:]
+        return num_bytes
+
+
+def add_to_tarfile(tar: tarfile.TarFile, name: str, chunks, size: int):
+    # the member's size precedes its bytes in the tarfile
+    info = tarfile.TarInfo(name)
+    info.size, info.mtime, info.mode = size, int(time.time()), 0o644
+    tar.addfile(info, io.BufferedReader(BytesChunksReader(chunks)))
+
+
+def add_array_to_tarfile(tar: tarfile.TarFile, name: str, array: np.ndarray):
+    """
+    Write an array into a tarfile as a .npy file, as np.save writes it, copying a block of its rows into memory at a time
+    """
+    header = io.BytesIO()
+    header_data = np.lib.format.header_data_from_array_1_0(array)
+    try:
+        np.lib.format.write_array_header_1_0(header, header_data)
+    except ValueError:  # as np.save does for a header too long for version 1.0
+        np.lib.format.write_array_header_2_0(header, header_data)
+
+    rows_per_block = max(1, NPY_WRITE_BLOCK_BYTES // max(1, array[:1].nbytes))
+    blocks = (array[start : start + rows_per_block].tobytes() for start in range(0, len(array), rows_per_block))
+    add_to_tarfile(tar, name, itertools.chain([header.getvalue()], blocks), size=len(header.getvalue()) + array.nbytes)
 
 
 def grown_memory_map(old_mmap, required_rows: int, estimated_rows: int, row_shape: tuple, dtype, suffix: str):
@@ -117,6 +172,31 @@ def array_in_tarfile(data_tarfile, member: tarfile.TarInfo) -> np.ndarray:
     if math.prod(shape) == 0:
         return np.zeros(shape, dtype=dtype)
     return np.memmap(data_tarfile, dtype=dtype, mode="r", offset=offset, shape=shape)
+
+
+@dataclass(frozen=True)
+class StackedData:
+    """
+    Some data in memory: their int arrays and float arrays stacked as rows, and their reads stacked as rows, of which
+    datum n's are rows read_offsets[n]:read_offsets[n + 1]
+    """
+
+    int_array_ve: np.ndarray
+    float_array_ve: np.ndarray
+    reads_re: np.ndarray
+    read_offsets: np.ndarray
+
+    @classmethod
+    def of(cls, data: list[Datum]) -> StackedData:
+        return cls(
+            int_array_ve=np.vstack([datum.int_array for datum in data]),
+            float_array_ve=np.vstack([datum.float_array for datum in data]),
+            reads_re=np.vstack([datum.reads_re for datum in data]),
+            read_offsets=stacked_read_offsets([len(datum.reads_re) for datum in data]),
+        )
+
+    def __len__(self) -> int:
+        return len(self.int_array_ve)
 
 
 class MemoryMappedData:
@@ -305,7 +385,7 @@ class MemoryMappedData:
             2) the files don't know how much of the data are actually used
             3) the files might be temporary files and won't persist after the Python program executes
             4) it's convenient to package things as a single tarfile
-        :return:
+        Each array is written straight into the tarfile as a .npy file, without a temporary copy.
         """
         # num_data, data dimension; num_reads, reads dimension
         metadata = np.array(
@@ -318,27 +398,16 @@ class MemoryMappedData:
             ],
             dtype=np.uint32,
         )
-        metadata_file = NamedTemporaryFile(suffix=SUFFIX_FOR_METADATA)
-        torch.save(metadata, metadata_file.name)
-
-        # For some reason, self.data_mmap.filename and self.reads_mmap.filename point to an empty file.  I have no clue why this is,
-        # so at risk of redundant copying I just use numpy's save function, followed later by numpy.open_memmap
-        int_array_file = NamedTemporaryFile(suffix=SUFFIX_FOR_INT_MMAP)
-        np.save(int_array_file.name, self.int_mmap)
-
-        float_array_file = NamedTemporaryFile(suffix=SUFFIX_FOR_FLOAT_MMAP)
-        np.save(float_array_file.name, self.float_mmap)
-
-        if self.reads_mmap is not None:
-            reads_file = NamedTemporaryFile(suffix=SUFFIX_FOR_READS_MMAP)
-            np.save(reads_file.name, self.reads_mmap)
+        metadata_bytes = io.BytesIO()
+        torch.save(metadata, metadata_bytes)
 
         with tarfile.open(output_tarfile, "w") as output_tar:
-            output_tar.add(metadata_file.name, arcname=("metadata" + SUFFIX_FOR_METADATA))
-            output_tar.add(int_array_file.name, arcname=("int_array" + SUFFIX_FOR_INT_MMAP))
-            output_tar.add(float_array_file.name, arcname=("float_array" + SUFFIX_FOR_FLOAT_MMAP))
+            metadata_name = "metadata" + SUFFIX_FOR_METADATA
+            add_to_tarfile(output_tar, metadata_name, [metadata_bytes.getvalue()], size=len(metadata_bytes.getvalue()))
+            add_array_to_tarfile(output_tar, "int_array" + SUFFIX_FOR_INT_MMAP, self.int_mmap)
+            add_array_to_tarfile(output_tar, "float_array" + SUFFIX_FOR_FLOAT_MMAP, self.float_mmap)
             if self.reads_mmap is not None:
-                output_tar.add(reads_file.name, arcname=("reads_array" + SUFFIX_FOR_READS_MMAP))
+                add_array_to_tarfile(output_tar, "reads_array" + SUFFIX_FOR_READS_MMAP, self.reads_mmap)
 
     @classmethod
     def load_from_tarfile(cls, data_tarfile) -> MemoryMappedData:
@@ -443,6 +512,67 @@ class MemoryMappedData:
             if len(reads_array) > 0:
                 reads_mmap[num_reads - len(reads_array) : num_reads] = reads_array
 
+        return cls._from_written_memory_maps(
+            num_data, num_reads, (int_mmap, float_mmap, reads_mmap), (int_file, float_file, reads_file)
+        )
+
+    @classmethod
+    def from_chunks(cls, chunks: Iterable[StackedData], estimated_num_data, estimated_num_reads) -> MemoryMappedData:
+        """
+        Like from_generator, but for chunks of data, each of which is written to the memory maps all at once rather than
+        datum by datum
+        """
+        num_data, num_reads = 0, 0
+        int_mmap, float_mmap, reads_mmap = None, None, None
+        int_file, float_file, reads_file = None, None, None
+
+        chunk: StackedData
+        for chunk in chunks:
+            int_array_ve, float_array_ve, reads_re = chunk.int_array_ve, chunk.float_array_ve, chunk.reads_re
+            # every chunk's rows must have the widths of the first chunk's, as every datum's did
+            for array, memmap in ((int_array_ve, int_mmap), (float_array_ve, float_mmap), (reads_re, reads_mmap)):
+                if memmap is not None and len(array) > 0 and array.shape[1:] != memmap.shape[1:]:
+                    raise ValueError(f"A chunk has rows of shape {array.shape[1:]} rather than {memmap.shape[1:]}.")
+            end, reads_end = num_data + len(int_array_ve), num_reads + len(reads_re)
+            if end > (0 if int_mmap is None else len(int_mmap)):
+                int_mmap, int_file = grown_memory_map(
+                    int_mmap, end, estimated_num_data, int_array_ve.shape[1:], int_array_ve.dtype, SUFFIX_FOR_INT_MMAP
+                )
+                float_mmap, float_file = grown_memory_map(
+                    float_mmap,
+                    end,
+                    estimated_num_data,
+                    float_array_ve.shape[1:],
+                    float_array_ve.dtype,
+                    SUFFIX_FOR_FLOAT_MMAP,
+                )
+            if reads_end > (0 if reads_mmap is None else len(reads_mmap)):
+                reads_mmap, reads_file = grown_memory_map(
+                    reads_mmap,
+                    reads_end,
+                    estimated_num_reads,
+                    reads_re.shape[1:],
+                    reads_re.dtype,
+                    SUFFIX_FOR_READS_MMAP,
+                )
+
+            int_mmap[num_data:end] = int_array_ve
+            float_mmap[num_data:end] = float_array_ve
+            if len(reads_re) > 0:
+                reads_mmap[num_reads:reads_end] = reads_re
+            num_data, num_reads = end, reads_end
+
+        return cls._from_written_memory_maps(
+            num_data, num_reads, (int_mmap, float_mmap, reads_mmap), (int_file, float_file, reads_file)
+        )
+
+    @classmethod
+    def _from_written_memory_maps(cls, num_data, num_reads, memory_maps, files) -> MemoryMappedData:
+        """
+        MemoryMappedData of the memory maps that from_generator or from_chunks wrote, reopened read-only, which keeps their
+        temporary files
+        """
+        int_mmap, float_mmap, reads_mmap = memory_maps
         for memmap in (int_mmap, float_mmap, reads_mmap):
             if memmap is not None:
                 memmap.flush()
@@ -465,5 +595,5 @@ class MemoryMappedData:
             num_reads=num_reads,
         )
         # keep the files on disk, so that a pickled copy can map them
-        result._temp_files = [file for file in (int_file, float_file, reads_file) if file is not None]
+        result._temp_files = [file for file in files if file is not None]
         return result

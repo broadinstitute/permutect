@@ -312,17 +312,19 @@ workflow Permutect {
     # Mem is in units of GB but our command and memory runtime values are in MB
     Int machine_mem = if defined(mem) then mem * 1000 else 16000
     Int command_mem = machine_mem - 500
+    Int num_cpus = select_first([cpu, 4])
 
     command <<<
         set -euo pipefail
         genomic_span=`grep "callable" ~{mutect_stats} | while read name value; do echo $value; done`
 
+        # one process per CPU reads and normalizes chunks of the test dataset
         filter_variants --input ~{mutect2_vcf} --test_dataset ~{test_dataset} \
             --artifact_model ~{artifact_model} \
             --contigs_table ~{contigs_table} \
             --output permutect-filtered.vcf \
             --tensorboard_dir tensorboard \
-            --batch_size ~{batch_size} --num_workers ~{num_workers} \
+            --batch_size ~{batch_size} --num_workers ~{num_workers} --num_processes ~{num_cpus} \
             ~{" --num_spectrum_iterations " + num_spectrum_iterations} \
             ~{" --spectrum_learning_rate " + spectrum_learning_rate} \
             ~{" --maf_segments " + maf_segments} ~{" --normal_maf_segments " + normal_maf_segments} \
@@ -343,7 +345,7 @@ workflow Permutect {
         disks: "local-disk " + select_first([disk_space, 100]) + " SSD"
         preemptible: select_first([preemptible, 0])
         maxRetries: select_first([max_retries, 0])
-        cpu: select_first([cpu, 2])
+        cpu: num_cpus
         gpuType: "nvidia-tesla-t4"
         gpuCount: select_first([gpu_count, 1])
         # at least the driver that the docker image's CUDA needs.  Cromwell on Google Batch, and so Terra, ignores this

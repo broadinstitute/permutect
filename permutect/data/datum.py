@@ -308,7 +308,12 @@ class Datum:
     def get_nbytes(self) -> int:
         return self.int_array.nbytes + self.float_array.nbytes + self.reads_re.nbytes
 
-    def copy_with_downsampled_reads(self, ref_downsample: int, alt_downsample: int) -> Datum:
+    def copy_with_downsampled_reads(
+        self, ref_downsample: int, alt_downsample: int, generator: torch.Generator = None
+    ) -> Datum:
+        """
+        :param generator: the torch random number generator that chooses the reads to keep, by default torch's global one
+        """
         old_alt_count = self.get(Data.ALT_COUNT)
         old_ref_count = len(self.reads_re) - old_alt_count
         new_ref_count = min(old_ref_count, ref_downsample)
@@ -318,8 +323,8 @@ class Datum:
             return self
         else:
             # new reads are random selection of ref reads vstacked on top of all the alts
-            random_ref_read_indices = torch.randperm(old_ref_count)[:new_ref_count]
-            random_alt_read_indices = old_ref_count + torch.randperm(old_alt_count)[:new_alt_count]
+            random_ref_read_indices = torch.randperm(old_ref_count, generator=generator)[:new_ref_count]
+            random_alt_read_indices = old_ref_count + torch.randperm(old_alt_count, generator=generator)[:new_alt_count]
             new_reads = np.vstack((self.reads_re[random_ref_read_indices], self.reads_re[random_alt_read_indices]))
             result = Datum(
                 int_array=self.int_array.copy(),

@@ -136,6 +136,8 @@ def test_filtering_on_seqc2_wes_chr20():
             constants.NORMAL_MAF_SEGMENTS_NAME: SEQC2_WES_NORMAL_SEGMENTS,
             constants.OUTPUT_NAME: permutect_vcf.name,
             constants.TENSORBOARD_DIR_NAME: tensorboard_dir.name,
+            # normalizing the test dataset in a process of its own
+            constants.NUM_PROCESSES_NAME: "2",
         }
     )
 

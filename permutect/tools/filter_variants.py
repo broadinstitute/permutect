@@ -34,6 +34,7 @@ from permutect.misc_utils import report_device
 from permutect.misc_utils import report_memory_usage
 from permutect.misc_utils import tumor_depths
 from permutect.parameters import TrainingParameters
+from permutect.parameters import add_num_processes_to_parser
 from permutect.parameters import add_training_params_to_parser
 from permutect.parameters import parse_training_params
 from permutect.tools.pre_permutect_filtering import HAIRPIN_FILTER
@@ -154,6 +155,7 @@ def parse_arguments(argv=None):
         "somatic, artifact, and sequencing error.  This is useful for certain validation where "
         "pseudo-somatic events are created by mixing germline events at varying fractions",
     )
+    add_num_processes_to_parser(parser)
     return parser.parse_args(argv)
 
 
@@ -216,6 +218,7 @@ def main_without_parsing(args):
         het_beta=getattr(args, constants.HET_BETA_NAME),
         segmentation=get_segmentation(getattr(args, constants.MAF_SEGMENTS_NAME)),
         normal_segmentation=get_segmentation(getattr(args, constants.NORMAL_MAF_SEGMENTS_NAME)),
+        num_processes=getattr(args, constants.NUM_PROCESSES_NAME),
     )
 
 
@@ -238,7 +241,11 @@ def make_filtered_vcf(
     het_beta: float = None,
     segmentation=None,
     normal_segmentation=None,
+    num_processes: int = 1,
 ):
+    """
+    :param num_processes: the number of processes that read and normalize chunks of the plain text test dataset at once
+    """
     print("Loading artifact model and test dataset")
     contig_index_to_name_map = {}
     with open(contigs_table) as file:
@@ -256,6 +263,7 @@ def make_filtered_vcf(
         contig_index_to_name_map=contig_index_to_name_map,
         segmentation=segmentation,
         normal_segmentation=normal_segmentation,
+        num_processes=num_processes,
     )
 
     model.assert_compatible(annotated_dataset)
@@ -363,9 +371,10 @@ def make_annotated_dataset(
     contig_index_to_name_map,
     segmentation=None,
     normal_segmentation=None,
+    num_processes: int = 1,
 ):
     normalizing_timer = Timer("Normalizing data. . .")
-    normalized_mmap_data = plain_text_data.make_normalized_mmap_data(dataset_files=[dataset_file])
+    normalized_mmap_data = plain_text_data.make_normalized_mmap_data([dataset_file], num_processes=num_processes)
     normalizing_timer.report("Time to normalize test data:")
 
     report_memory_usage("Creating ReadsDataset with AF and MAF.")

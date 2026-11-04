@@ -142,11 +142,14 @@ task Preprocess {
     # Mem is in units of GB but our command and memory runtime values are in MB
     Int machine_mem = if defined(mem) then mem * 1000 else 16000
     Int command_mem = machine_mem - 500
+    Int num_cpus = select_first([cpu, 4])
 
     command <<<
         set -e
 
-        preprocess_dataset --training_datasets ~{training_dataset} ~{"--sources " + source_label} --output train.tar
+        # one process per CPU reads and normalizes chunks of the data
+        preprocess_dataset --training_datasets ~{training_dataset} ~{"--sources " + source_label} \
+            --num_processes ~{num_cpus} --output train.tar
     >>>
 
     runtime {
@@ -156,7 +159,7 @@ task Preprocess {
         disks: "local-disk " + select_first([disk_space, 100]) + if use_ssd then " SSD" else " HDD"
         preemptible: select_first([preemptible, 2])
         maxRetries: select_first([max_retries, 0])
-        cpu: select_first([cpu, 1])
+        cpu: num_cpus
     }
 
     output {
