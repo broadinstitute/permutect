@@ -35,7 +35,7 @@ RUN wget -q https://github.com/samtools/bcftools/releases/download/${bcftoolsVer
     && make install
 
 # GATK launcher and jar
-RUN wget -q -O /root/gatk.jar https://storage.googleapis.com/broad-dsp-david-benjamin-public/gatk-builds/mnvs.jar
+RUN wget -q -O /root/gatk.jar https://storage.googleapis.com/broad-dsp-david-benjamin-public/gatk-builds/mnvs-2.jar
 RUN wget -q -O /bin/gatk https://raw.githubusercontent.com/broadinstitute/gatk/refs/heads/master/gatk \
     && chmod +x /bin/gatk
 
