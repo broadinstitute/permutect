@@ -2,7 +2,7 @@ version 1.0
 
 # run Mutect2 without filtering to get plain text training data, then run preprocess_dataset.
 
-import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2/versions/20/plain-WDL/descriptor" as m2
+import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/54/plain-WDL/descriptor" as m2
 
 workflow MakeTrainingDataset {
     input {
@@ -18,8 +18,8 @@ workflow MakeTrainingDataset {
         # NOTE: this is a HACK because call-caching on Terra is unreliable.
         String? cached_plain_text_dataset
 
-        File? gnomad
-        File? gnomad_idx
+        File? germline_resource
+        File? germline_resource_idx
         File? blacklist_vcf
         File? blacklist_vcf_idx
 
@@ -60,8 +60,8 @@ workflow MakeTrainingDataset {
 
     File? intervals_hack = if (select_first([intervals,""]) == "") then NONE else intervals
     File? masks_hack = if (select_first([masked_intervals,""]) == "") then NONE else masked_intervals
-    File? gnomad_hack = if select_first([gnomad, ""]) == "" then NONE else gnomad
-    File? gnomad_idx_hack = if select_first([gnomad_idx, ""]) == "" then NONE else gnomad_idx
+    File? germline_resource_hack = if select_first([germline_resource, ""]) == "" then NONE else germline_resource
+    File? germline_resource_idx_hack = if select_first([germline_resource_idx, ""]) == "" then NONE else germline_resource_idx
     File? blacklist_vcf_hack = if select_first([blacklist_vcf, ""]) == "" then NONE else blacklist_vcf
     File? blacklist_vcf_idx_hack = if select_first([blacklist_vcf_idx, ""]) == "" then NONE else blacklist_vcf_idx
     File? dragstr_model_hack = if select_first([dragstr_model, ""]) == "" then NONE else dragstr_model
@@ -81,8 +81,8 @@ workflow MakeTrainingDataset {
                 ref_dict = ref_dict,
                 tumor_reads = reads,
                 tumor_reads_index = reads_index,
-                gnomad = gnomad_hack,
-                gnomad_idx = gnomad_idx_hack,
+                germline_resource = germline_resource_hack,
+                germline_resource_idx = germline_resource_idx_hack,
                 pon = blacklist_vcf_hack,
                 pon_idx = blacklist_vcf_idx_hack,
                 m2_extra_args = m2_extra_args,

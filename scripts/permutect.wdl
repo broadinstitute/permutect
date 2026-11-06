@@ -1,6 +1,6 @@
 version 1.0
 
-import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/53/plain-WDL/descriptor" as m2
+import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/54/plain-WDL/descriptor" as m2
 
 workflow Permutect {
     input {
@@ -21,10 +21,13 @@ workflow Permutect {
         # ignore control_bam and control_bai and run Mutect2 on the primary sample alone, eg to compare a tumor-normal
         # pair's tumor-only calls with its matched-normal calls.  Without control_bam, the run is tumor-only regardless.
         Boolean tumor_only = false
-        File? gnomad
-        File? gnomad_idx
-        File? variants_for_contamination
-        File? variants_for_contamination_idx
+        File? germline_resource
+        File? germline_resource_idx
+        # common SNPs with population allele frequencies, for calculating contamination and, unless skip_model_segments
+        # is true, for segmenting the tumor and normal by allele fraction with ModelSegments.  For genomes these should
+        # be common SNPs throughout the genome, not only in exons.
+        File? common_variants_vcf
+        File? common_variants_vcf_idx
         File? realignment_index_bundle
         File? dragstr_model
         String? realignment_extra_args
@@ -33,9 +36,9 @@ workflow Permutect {
         Boolean filter_pcr_errors = false   # run pre_permutect_filtering, which applies the hairpin filter
         String? m2_extra_args
         String? split_intervals_extra_args
-        File? common_hets_for_segmentation  # Mutect2 runs ModelSegments if and only if this is given
-        String? collect_allelic_counts_extra_args
-        Int? model_segments_min_total_allele_count
+        Boolean skip_model_segments = false
+        Int? model_segments_min_total_allele_count_tumor
+        Int? model_segments_min_total_allele_count_normal
         String? model_segments_extra_args
         Int batch_size
         Int num_workers
@@ -88,14 +91,13 @@ workflow Permutect {
 
     File? control_bam_hack = if select_first([control_bam, ""]) == "" then NONE else control_bam
     File? control_bai_hack = if select_first([control_bai, ""]) == "" then NONE else control_bai
-    File? gnomad_hack = if select_first([gnomad, ""]) == "" then NONE else gnomad
-    File? gnomad_idx_hack = if select_first([gnomad_idx, ""]) == "" then NONE else gnomad_idx
+    File? germline_resource_hack = if select_first([germline_resource, ""]) == "" then NONE else germline_resource
+    File? germline_resource_idx_hack = if select_first([germline_resource_idx, ""]) == "" then NONE else germline_resource_idx
 
-    File? variants_for_contamination_hack = if select_first([variants_for_contamination, ""]) == "" then NONE else variants_for_contamination
-    File? variants_for_contamination_idx_hack = if select_first([variants_for_contamination_idx, ""]) == "" then NONE else variants_for_contamination_idx
+    File? common_variants_vcf_hack = if select_first([common_variants_vcf, ""]) == "" then NONE else common_variants_vcf
+    File? common_variants_vcf_idx_hack = if select_first([common_variants_vcf_idx, ""]) == "" then NONE else common_variants_vcf_idx
     File? realignment_index_bundle_hack = if select_first([realignment_index_bundle, ""]) == "" then NONE else realignment_index_bundle
     File? dragstr_model_hack = if select_first([dragstr_model, ""]) == "" then NONE else dragstr_model
-    File? common_hets_for_segmentation_hack = if select_first([common_hets_for_segmentation, ""]) == "" then NONE else common_hets_for_segmentation
     File? test_dataset_truth_vcf_hack = if select_first([test_dataset_truth_vcf, ""]) == "" then NONE else test_dataset_truth_vcf
     File? test_dataset_truth_vcf_idx_hack = if select_first([test_dataset_truth_vcf_idx, ""]) == "" then NONE else test_dataset_truth_vcf_idx
     File? gatk_override_hack = if select_first([gatk_override, ""]) == "" then NONE else gatk_override
@@ -130,10 +132,10 @@ workflow Permutect {
                 normal_reads_index = normal_bai,
 
                 scatter_count = scatter_count,
-                germline_resource = gnomad_hack,
-                germline_resource_idx = gnomad_idx_hack,
-                variants_for_contamination = variants_for_contamination_hack,
-                variants_for_contamination_idx = variants_for_contamination_idx_hack,
+                germline_resource = germline_resource_hack,
+                germline_resource_idx = germline_resource_idx_hack,
+                common_variants_vcf = common_variants_vcf_hack,
+                common_variants_vcf_idx = common_variants_vcf_idx_hack,
                 skip_filtering = skip_m2_filtering,
                 realignment_index_bundle = realignment_index_bundle_hack,
                 realignment_extra_args = realignment_extra_args,
@@ -141,9 +143,9 @@ workflow Permutect {
                 run_orientation_bias_mixture_model_filter = run_orientation_bias_mixture_model_filter,
                 m2_extra_args = m2_extra_args,
                 split_intervals_extra_args = split_intervals_extra_args,
-                common_hets_for_segmentation = common_hets_for_segmentation_hack,
-                collect_allelic_counts_extra_args = collect_allelic_counts_extra_args,
-                model_segments_min_total_allele_count = model_segments_min_total_allele_count,
+                skip_model_segments = skip_model_segments,
+                model_segments_min_total_allele_count_tumor = model_segments_min_total_allele_count_tumor,
+                model_segments_min_total_allele_count_normal = model_segments_min_total_allele_count_normal,
                 model_segments_extra_args = model_segments_extra_args,
                 make_bamout = false,
 
