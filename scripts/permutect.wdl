@@ -1,6 +1,6 @@
 version 1.0
 
-import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/54/plain-WDL/descriptor" as m2
+import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/55/plain-WDL/descriptor" as m2
 
 workflow Permutect {
     input {
