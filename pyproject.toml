@@ -40,6 +40,7 @@ filter_variants = "permutect.tools.filter_variants:main"
 pre_permutect_filtering = "permutect.tools.pre_permutect_filtering:main"
 preprocess_dataset = "permutect.tools.preprocess_dataset:main"
 edit_dataset = "permutect.tools.edit_dataset:main"
+segment_pileups = "permutect.tools.segment_pileups:main"
 
 [tool.setuptools.packages.find]
 include = ["permutect*"]
