@@ -1,17 +1,22 @@
 import argparse
 import math
+from dataclasses import dataclass
 
 import numpy as np
 import torch
 
 from permutect import constants
+from permutect.segmentation.contamination import calculate_contamination
+from permutect.segmentation.contamination import write_contamination_table
 from permutect.segmentation.emissions import Pileups
+from permutect.segmentation.pileup_summaries import SAMPLE_HEADER
+from permutect.segmentation.pileup_summaries import PileupSummaries
+from permutect.segmentation.pileup_summaries import read_pileup_summaries
 from permutect.segmentation.plotting import plot_segmentation
 from permutect.segmentation.segmenter import Segment
 from permutect.segmentation.segmenter import make_segments
 from permutect.segmentation.segmenter import segment
 
-SAMPLE_HEADER = "#<METADATA>SAMPLE="
 SEGMENTS_COLUMNS = (
     "contig",
     "start",
@@ -25,26 +30,44 @@ SEGMENTS_COLUMNS = (
 
 def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(
-        description="Segment a sample by minor allele fraction (MAF), using the population allele frequencies of the "
-        "common SNPs in its GATK GetPileupSummaries table.  The output has the format of the segmentation of GATK "
-        "CalculateContamination plus three columns.  The secondary MAF: between two segments a gap segment has the "
-        "MAF of the first and the secondary MAF of the second, and within a segment the secondary MAF equals the MAF.  "
-        "The low and high MAFs: the bounds of the narrowest interval with 80% of the posterior of a segment's MAF, or "
-        "NaN for a gap segment."
+        description="Segment a sample, and optionally its matched normal, by minor allele fraction (MAF), using the "
+        "population allele frequencies of the common SNPs in their GATK GetPileupSummaries tables, and estimate the "
+        "sample's contamination as GATK CalculateContamination does.  Segmentation and contamination alternate: the "
+        "first segmentation assumes no contamination and each later one uses the latest estimate.  The segments "
+        "tables have the format of the segmentation of GATK CalculateContamination plus three columns.  The secondary "
+        "MAF: between two segments a gap segment has the MAF of the first and the secondary MAF of the second, and "
+        "within a segment the secondary MAF equals the MAF.  The low and high MAFs: the bounds of the narrowest interval "
+        "with 80% of the posterior of a segment's MAF, or NaN for a gap segment."
     )
     parser.add_argument("--" + constants.INPUT_NAME, required=True, help="GetPileupSummaries table of the sample")
+    parser.add_argument(
+        "--" + constants.NORMAL_INPUT_NAME,
+        help="optional GetPileupSummaries table of a matched normal, which is segmented separately, assuming no "
+        "contamination, and genotypes the sites for the contamination estimate",
+    )
     parser.add_argument("--" + constants.OUTPUT_NAME, required=True, help="path to output segments table")
+    parser.add_argument("--" + constants.NORMAL_OUTPUT_NAME, help="path to optional output segments of the normal")
+    parser.add_argument(
+        "--" + constants.CONTAMINATION_TABLE_NAME,
+        help="path to optional output table of the contamination, in the format of GATK CalculateContamination",
+    )
+    parser.add_argument(
+        "--" + constants.PLOT_NAME,
+        help="path to an optional output plot of the sites' alt fractions and the segments' MAFs along the genome, like "
+        "GATK PlotModeledSegments'.  Matplotlib infers the format from the extension, eg .png.",
+    )
+    parser.add_argument("--" + constants.NORMAL_PLOT_NAME, help="path to an optional output plot of the normal")
+    parser.add_argument(
+        "--" + constants.NUM_CONTAMINATION_ITERATIONS_NAME,
+        type=int,
+        default=2,
+        help="number of rounds of segmenting the sample and then estimating its contamination",
+    )
     parser.add_argument(
         "--" + constants.NUM_MAF_STATES_NAME,
         type=int,
         default=51,
         help="number of hidden states of the hidden Markov model, ie of MAFs evenly spaced from 0 to 1/2",
-    )
-    parser.add_argument(
-        "--" + constants.CONTAMINATION_NAME,
-        type=float,
-        default=0.0,
-        help="fraction of the sample's reads that come from another person",
     )
     parser.add_argument(
         "--" + constants.MAX_BREAKPOINT_RATE_NAME,
@@ -65,11 +88,6 @@ def parse_arguments(argv=None):
         default=100,
         help="maximum number of iterations of expectation maximization",
     )
-    parser.add_argument(
-        "--" + constants.PLOT_NAME,
-        help="path to an optional output plot of the sites' alt fractions and the segments' MAFs along the genome, like "
-        "GATK PlotModeledSegments'.  Matplotlib infers the format from the extension, eg .png.",
-    )
     return parser.parse_args(argv)
 
 
@@ -77,52 +95,60 @@ def main_without_parsing(args):
     segment_pileups(
         input_table=getattr(args, constants.INPUT_NAME),
         output_table=getattr(args, constants.OUTPUT_NAME),
+        normal_input_table=getattr(args, constants.NORMAL_INPUT_NAME),
+        normal_output_table=getattr(args, constants.NORMAL_OUTPUT_NAME),
+        contamination_table=getattr(args, constants.CONTAMINATION_TABLE_NAME),
+        plot=getattr(args, constants.PLOT_NAME),
+        normal_plot=getattr(args, constants.NORMAL_PLOT_NAME),
+        num_contamination_iterations=getattr(args, constants.NUM_CONTAMINATION_ITERATIONS_NAME),
         num_maf_states=getattr(args, constants.NUM_MAF_STATES_NAME),
-        contamination=getattr(args, constants.CONTAMINATION_NAME),
         max_breakpoint_rate=getattr(args, constants.MAX_BREAKPOINT_RATE_NAME),
         maf_prior_concentration=getattr(args, constants.MAF_PRIOR_CONCENTRATION_NAME),
         max_em_iterations=getattr(args, constants.MAX_EM_ITERATIONS_NAME),
-        plot=getattr(args, constants.PLOT_NAME),
     )
 
 
-def read_pileup_summaries(table) -> tuple[str, list[str], np.ndarray, np.ndarray, Pileups]:
+@dataclass
+class SegmentationSites:
     """
-    The sample name, contigs, number of sites of each contig, positions and pileups of a GetPileupSummaries table, with
-    the sites of each contig consecutive and in order of position.  Sites without coverage are left out, as are sites
-    whose population allele frequency isn't strictly between 0 and 1.
+    The sites to segment: the contigs, the number of sites of each contig, their positions and their pileups, with the
+    sites of each contig consecutive and in order of position
     """
-    sample, contigs = "", []
-    with open(table) as file:
-        for line in file:
-            if line.startswith(SAMPLE_HEADER):
-                sample = line[len(SAMPLE_HEADER) :].strip()
-            elif not line.startswith("#"):
-                columns = line.split()
-                break
-        names = ("contig", "position", "ref_count", "alt_count", "allele_frequency")
-        contig_column, *number_columns = (columns.index(name) for name in names)
-        numbers = []
-        for line in file:
-            tokens = line.split()
-            contigs.append(tokens[contig_column])
-            numbers.append([float(tokens[column]) for column in number_columns])
 
-    positions_n, ref_counts_n, alt_counts_n, allele_frequencies_n = np.array(numbers, dtype=np.float64).reshape(-1, 4).T
-    depths_n = ref_counts_n + alt_counts_n
-    kept_n = (depths_n > 0) & (allele_frequencies_n > 0) & (allele_frequencies_n < 1)
-    kept_contigs = [contig for contig, kept in zip(contigs, kept_n) if kept]
+    contigs_c: list[str]
+    lengths_c: np.ndarray
+    positions_n: np.ndarray
+    pileups: Pileups
+
+
+def segmentation_sites(pileup_summaries: PileupSummaries) -> SegmentationSites:
+    """
+    The sites of a GetPileupSummaries table to segment, leaving out sites without coverage and sites whose population
+    allele frequency isn't strictly between 0 and 1.  Depth is ref plus alt count, without other alt alleles.
+    """
+    depths_n = pileup_summaries.ref_counts_n + pileup_summaries.alt_counts_n
+    allele_frequencies_n = pileup_summaries.allele_frequencies_n
+    kept = pileup_summaries.subset((depths_n > 0) & (allele_frequencies_n > 0) & (allele_frequencies_n < 1))
 
     # contigs in order of first appearance, which in GetPileupSummaries is the reference order
-    contigs_c = list(dict.fromkeys(kept_contigs))
+    contigs_c = list(dict.fromkeys(kept.contigs_n))
     contig_indices = {contig: index for index, contig in enumerate(contigs_c)}
-    contigs_n = np.array([contig_indices[contig] for contig in kept_contigs], dtype=np.int64)
-    order_n = np.lexsort((positions_n[kept_n], contigs_n))
-    pileups = Pileups(
-        *(torch.from_numpy(array[kept_n][order_n]) for array in (alt_counts_n, depths_n, allele_frequencies_n))
-    )
+    contigs_n = np.array([contig_indices[contig] for contig in kept.contigs_n], dtype=np.int64)
+    ordered = kept.subset(np.lexsort((kept.positions_n, contigs_n)))
+    arrays = (ordered.alt_counts_n, ordered.ref_counts_n + ordered.alt_counts_n, ordered.allele_frequencies_n)
+    pileups = Pileups(*(torch.from_numpy(np.asarray(array, dtype=np.float64)) for array in arrays))
     lengths_c = np.bincount(contigs_n, minlength=len(contigs_c))
-    return sample, contigs_c, lengths_c, positions_n[kept_n][order_n].astype(np.int64), pileups
+    return SegmentationSites(contigs_c, lengths_c, ordered.positions_n, pileups)
+
+
+def segment_sites(sites: SegmentationSites, contamination: float, **segmentation_arguments) -> list[Segment]:
+    if len(sites.positions_n) == 0:
+        return []
+    segmentation = segment(
+        sites.pileups, sites.positions_n, sites.lengths_c, contamination=contamination, **segmentation_arguments
+    )
+    args = (sites.contigs_c, sites.lengths_c, sites.positions_n, segmentation.run_starts_r, segmentation.run_mafs_r3)
+    return make_segments(*args)
 
 
 def write_segments(table, sample: str, segments: list[Segment]):
@@ -142,30 +168,53 @@ def _format_maf(maf: float) -> str:
 def segment_pileups(
     input_table,
     output_table,
+    normal_input_table=None,
+    normal_output_table=None,
+    contamination_table=None,
+    plot=None,
+    normal_plot=None,
+    num_contamination_iterations: int = 2,
     num_maf_states: int = 51,
-    contamination: float = 0.0,
     max_breakpoint_rate: float = 1e-7,
     maf_prior_concentration: float = 0.1,
     max_em_iterations: int = 100,
-    plot=None,
 ):
-    sample, contigs_c, lengths_c, positions_n, pileups = read_pileup_summaries(input_table)
-    segments = []
-    if len(positions_n) > 0:
-        segmentation = segment(
-            pileups,
-            positions_n,
-            lengths_c,
-            num_maf_states=num_maf_states,
-            contamination=contamination,
-            max_jump_rate=max_breakpoint_rate,
-            prior_concentration=maf_prior_concentration,
-            max_iterations=max_em_iterations,
+    assert num_contamination_iterations >= 1
+    assert normal_input_table is not None or (normal_output_table is None and normal_plot is None)
+    segmentation_arguments = dict(
+        num_maf_states=num_maf_states,
+        max_jump_rate=max_breakpoint_rate,
+        prior_concentration=maf_prior_concentration,
+        max_iterations=max_em_iterations,
+    )
+
+    pileup_summaries = read_pileup_summaries(input_table)
+    sites = segmentation_sites(pileup_summaries)
+    normal_pileup_summaries, normal_segments = None, None
+    if normal_input_table is not None:
+        normal_pileup_summaries = read_pileup_summaries(normal_input_table)
+        normal_sites = segmentation_sites(normal_pileup_summaries)
+        normal_segments = segment_sites(normal_sites, contamination=0.0, **segmentation_arguments)
+
+    contamination = 0.0
+    for iteration in range(num_contamination_iterations):
+        segments = segment_sites(sites, contamination, **segmentation_arguments)
+        contamination, error = calculate_contamination(
+            pileup_summaries, segments, normal_pileup_summaries, normal_segments
         )
-        segments = make_segments(contigs_c, lengths_c, positions_n, segmentation.run_starts_r, segmentation.run_mafs_r3)
-    write_segments(output_table, sample, segments)
+        print(f"contamination iteration {iteration}: contamination {contamination:.6f}, error {error:.6f}")
+
+    write_segments(output_table, pileup_summaries.sample, segments)
+    if contamination_table is not None:
+        write_contamination_table(contamination_table, pileup_summaries.sample, contamination, error)
     if plot is not None:
-        plot_segmentation(plot, sample, contigs_c, lengths_c, positions_n, pileups, segments)
+        args = (sites.contigs_c, sites.lengths_c, sites.positions_n, sites.pileups, segments)
+        plot_segmentation(plot, pileup_summaries.sample, *args)
+    if normal_output_table is not None:
+        write_segments(normal_output_table, normal_pileup_summaries.sample, normal_segments)
+    if normal_plot is not None:
+        args = (normal_sites.contigs_c, normal_sites.lengths_c, normal_sites.positions_n, normal_sites.pileups)
+        plot_segmentation(normal_plot, normal_pileup_summaries.sample, *args, normal_segments)
 
 
 def main():

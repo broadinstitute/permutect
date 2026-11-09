@@ -16,7 +16,7 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def simulated_tumor() -> SimulatedSample:
-    return simulate_sample(np.random.default_rng(0), purity=0.7, cell_fractions=[1.0, 0.5], contamination=0.0)
+    return simulate_sample(np.random.default_rng(0), purity=0.7, cell_fractions=[1.0, 0.5], contaminations=[])
 
 
 def plot_true_segments(sample: SimulatedSample, path):

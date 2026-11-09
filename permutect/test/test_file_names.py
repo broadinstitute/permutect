@@ -31,3 +31,8 @@ MUTECT2_SEQC2_WES_STATS = MUTECT2_SEQC2_WES_VCF + ".stats"
 
 # for testing SNV-dependent priors, this VCF only has true _ -> T substitution.
 MUTECT2_CHR20_FILTERED_VCF_ONLY_T_SNVS = os.path.join(integration_test_dir, "mutect2_chr20_only_T_snvs.vcf")
+
+# GATK's CalculateContamination test data: GetPileupSummaries tables of NA12891 reads spiked into NA12892 and of small
+# gene panels, and in a subdirectory the segments that GATK's CalculateContamination found in them
+CONTAMINATION_TEST_DIR = os.path.join(integration_test_dir, "calculate-contamination")
+GATK_CONTAMINATION_SEGMENTS_DIR = os.path.join(CONTAMINATION_TEST_DIR, "gatk-segments")

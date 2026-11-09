@@ -60,12 +60,16 @@ RECALL_WEIGHT_NAME = "recall_weight"
 HET_BETA_NAME = "het_beta"
 
 # arguments for segment_pileups
+NORMAL_INPUT_NAME = "normal_input"
+NORMAL_OUTPUT_NAME = "normal_output"
+CONTAMINATION_TABLE_NAME = "contamination_table"
+NUM_CONTAMINATION_ITERATIONS_NAME = "num_contamination_iterations"
 NUM_MAF_STATES_NAME = "num_maf_states"
-CONTAMINATION_NAME = "contamination"
 MAX_BREAKPOINT_RATE_NAME = "max_breakpoint_rate"
 MAF_PRIOR_CONCENTRATION_NAME = "maf_prior_concentration"
 MAX_EM_ITERATIONS_NAME = "max_em_iterations"
 PLOT_NAME = "plot"
+NORMAL_PLOT_NAME = "normal_plot"
 
 # numerical constants shared by the models
 IMPOSSIBLE_LOG_PROB = -9999  # rules out a call, while staying finite to avoid the NaNs that -inf can give

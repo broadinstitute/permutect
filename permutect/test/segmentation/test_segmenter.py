@@ -44,7 +44,7 @@ def runs(values_n: np.ndarray, lengths_c: np.ndarray) -> list[tuple[int, int]]:
 
 def test_simulated_tumor():
     sample = simulate_sample(
-        np.random.default_rng(0), purity=0.7, cell_fractions=[1.0, 0.5], contamination=CONTAMINATION
+        np.random.default_rng(0), purity=0.7, cell_fractions=[1.0, 0.5], contaminations=[CONTAMINATION]
     )
     segmentation = segment_simulated_sample(sample)
 
@@ -68,7 +68,7 @@ def test_simulated_tumor():
 def test_normal_has_one_segment_per_contig():
     # with every MAF 1/2, any breakpoint is a false positive
     rng = np.random.default_rng(1)
-    sample = simulate_sample(rng, purity=0.0, cell_fractions=[1.0], contamination=CONTAMINATION, num_contigs=2)
+    sample = simulate_sample(rng, purity=0.0, cell_fractions=[1.0], contaminations=[CONTAMINATION], num_contigs=2)
     segmentation = segment_simulated_sample(sample)
     assert np.all(segmentation.mafs_k[segmentation.states_n] == 0.5)
 
