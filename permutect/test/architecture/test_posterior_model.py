@@ -12,8 +12,10 @@ from permutect.data.count_binning import COUNT_BIN_SKIP
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.datum import Data
+from permutect.segmentation.segmentation_model import SegmentationModel
 from permutect.test.architecture.test_posterior_model_priors import make_batch
 from permutect.test.host_reads import permutect_calls
+from permutect.test.segmentation.test_segmentation_model import sample_segmentation
 from permutect.utils.enums import Call
 from permutect.utils.enums import Variation
 
@@ -241,3 +243,15 @@ def test_posterior_passes_read_no_values_for_each_batch(monkeypatch, posterior_p
         return len(calls)
 
     assert num_copies(1) == num_copies(3)
+
+
+def test_learning_leaves_the_segmentation_model_unchanged():
+    # the segmentation model was fit to the pileups of common SNPs, so fitting the spectra to the variants mustn't change it
+    segmentation_model = SegmentationModel(sample_segmentation("tumor"), sample_segmentation("normal"), 0.03, 0.002)
+    model = PosteriorModel(-10, -10, device="cpu", segmentation_model=segmentation_model)
+    before = {name: tensor.clone() for name, tensor in segmentation_model.state_dict().items()}
+    loader = [make_batch([0.01, 0.2, 0.5], PLAUSIBLE_VALUES | {Data.ORIGINAL_ALT_COUNT: alt}) for alt in (2, 15, 29)]
+    model.learn_priors_and_spectra(loader, num_iterations=2, ignored_to_non_ignored_ratio=10, learning_rate=0.1)
+    after = segmentation_model.state_dict()
+    assert all(torch.equal(before[name], after[name]) for name in before)
+    assert not any(parameter.requires_grad for parameter in segmentation_model.parameters())

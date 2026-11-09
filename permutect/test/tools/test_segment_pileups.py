@@ -8,13 +8,13 @@ import pytest
 from permutect import constants
 from permutect.segmentation.contamination import CONTAMINATION_TABLE_COLUMNS
 from permutect.segmentation.pileup_summaries import SAMPLE_HEADER
+from permutect.segmentation.segmentation_model import SegmentationModel
 from permutect.test.segmentation.simulation import SimulatedSample
 from permutect.test.segmentation.simulation import simulate_matched_normal
 from permutect.test.segmentation.simulation import simulate_sample
 from permutect.test.segmentation.test_segmenter import runs
 from permutect.test.test_file_names import CONTAMINATION_TEST_DIR
 from permutect.tools import segment_pileups
-from permutect.tools.filter_variants import get_segmentation
 
 PILEUPS_HEADER = "contig\tposition\tref_count\talt_count\tother_alt_count\tallele_frequency\tref_base\talt_base\n"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -45,15 +45,17 @@ class Outputs:
     normal_lines: list[str] | None
     contamination: float
     error: float
+    segmentation_model: SegmentationModel
 
 
 def run_segment_pileups(directory, tumor_table, normal_table=None) -> Outputs:
-    """run segment_pileups with every output, and check that it writes the plots"""
+    """run segment_pileups with every output, and check that it writes the plots and a consistent segmentation model"""
     arguments = {
         constants.INPUT_NAME: tumor_table,
         constants.OUTPUT_NAME: directory / "tumor.segments.table",
         constants.CONTAMINATION_TABLE_NAME: directory / "contamination.table",
         constants.PLOT_NAME: directory / "tumor.png",
+        constants.SEGMENTATION_MODEL_NAME: directory / "segmentation_model.pt",
     }
     if normal_table is not None:
         arguments[constants.NORMAL_INPUT_NAME] = normal_table
@@ -70,7 +72,21 @@ def run_segment_pileups(directory, tumor_table, normal_table=None) -> Outputs:
     contamination, error = (float(value) for value in contamination_lines[1].split()[1:])
     lines = arguments[constants.OUTPUT_NAME].read_text().splitlines()
     normal_lines = None if normal_table is None else arguments[constants.NORMAL_OUTPUT_NAME].read_text().splitlines()
-    return Outputs(lines, normal_lines, contamination, error)
+
+    # the segmentation model has the segments of the tables, and the contamination of the table
+    model = SegmentationModel.load(arguments[constants.SEGMENTATION_MODEL_NAME])
+    assert (model.contamination, model.contamination_error) == (contamination, error)
+    assert model.tumor.emission_model.contamination == contamination
+    for segmentation, expected_lines in ((model.tumor, lines), (model.normal, normal_lines)):
+        if expected_lines is None:
+            assert segmentation.segments == []
+        else:
+            table = directory / "from_model.segments.table"
+            segment_pileups.write_segments(table, segmentation.sample, segmentation.segments)
+            assert table.read_text().splitlines() == expected_lines
+    # the normal is segmented as if uncontaminated
+    assert model.normal.emission_model.contamination == 0
+    return Outputs(lines, normal_lines, contamination, error, model)
 
 
 def segments(lines: list[str]) -> list[list[str]]:
@@ -79,9 +95,9 @@ def segments(lines: list[str]) -> list[list[str]]:
     return [row for row in (line.split() for line in lines[2:]) if row[5] != "NaN"]
 
 
-def check_true_mafs(segments_table, sample: SimulatedSample):
-    """filter_variants reads the segments, and gets the true MAFs in the middle of the true segments"""
-    segmentation = get_segmentation(str(segments_table))
+def check_true_mafs(segmentation_model: SegmentationModel, sample: SimulatedSample):
+    """filter_variants gets the true MAFs in the middle of the true segments from the segmentation model"""
+    segmentation = segmentation_model.tumor.maf_intervals()
     contigs_n = np.repeat(sample.contigs_c, sample.lengths_c)
     for true_start, true_end in runs(sample.true_mafs_n, sample.lengths_c):
         middle = (true_start + true_end) // 2
@@ -135,7 +151,7 @@ def test_segment_pileups(tmp_path):
                 assert ends[index] in positions and secondary_mafs[index] == mafs[index]
                 assert float(lows[index]) <= float(mafs[index]) <= float(highs[index])
 
-    check_true_mafs(tmp_path / "tumor.segments.table", sample)
+    check_true_mafs(outputs.segmentation_model, sample)
     assert outputs.contamination < 0.005
 
 
@@ -184,7 +200,7 @@ def test_contaminated_tumor(tmp_path, contaminations, normal_contaminations):
 
     assert outputs.contamination == pytest.approx(sum(contaminations), abs=0.01)
     assert 0 < outputs.error < 0.01
-    check_true_mafs(tmp_path / "tumor.segments.table", tumor)
+    check_true_mafs(outputs.segmentation_model, tumor)
     if normal_contaminations is not None:
         check_normal_segments(outputs.normal_lines, tumor.contigs_c)
 
@@ -202,7 +218,7 @@ def test_tumor_and_normal_with_different_sites(tmp_path):
     outputs = run_segment_pileups(tmp_path, tumor_table, normal_table)
 
     assert outputs.contamination == pytest.approx(0.05, abs=0.01)
-    check_true_mafs(tmp_path / "tumor.segments.table", tumor)
+    check_true_mafs(outputs.segmentation_model, tumor)
     check_normal_segments(outputs.normal_lines, tumor.contigs_c)
 
 

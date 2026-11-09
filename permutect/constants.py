@@ -52,12 +52,11 @@ CONTIGS_TABLE_NAME = "contigs_table"
 REFERENCE_NAME = "reference"
 GENOMIC_SPAN_NAME = "genomic_span"
 STEM_LOOP_MAX_ENERGY_NAME = "stem_loop_max_energy"
-MAF_SEGMENTS_NAME = "maf_segments"
-NORMAL_MAF_SEGMENTS_NAME = "normal_maf_segments"
+# also an output of segment_pileups
+SEGMENTATION_MODEL_NAME = "segmentation_model"
 GERMLINE_MODE_NAME = "germline_mode"
 NO_GERMLINE_MODE_NAME = "no_germline_mode"
 RECALL_WEIGHT_NAME = "recall_weight"
-HET_BETA_NAME = "het_beta"
 
 # arguments for segment_pileups
 NORMAL_INPUT_NAME = "normal_input"

@@ -8,11 +8,14 @@ import torch
 from permutect import constants
 from permutect.segmentation.contamination import calculate_contamination
 from permutect.segmentation.contamination import write_contamination_table
+from permutect.segmentation.emissions import EmissionModel
 from permutect.segmentation.emissions import Pileups
 from permutect.segmentation.pileup_summaries import SAMPLE_HEADER
 from permutect.segmentation.pileup_summaries import PileupSummaries
 from permutect.segmentation.pileup_summaries import read_pileup_summaries
 from permutect.segmentation.plotting import plot_segmentation
+from permutect.segmentation.segmentation_model import SampleSegmentation
+from permutect.segmentation.segmentation_model import SegmentationModel
 from permutect.segmentation.segmenter import Segment
 from permutect.segmentation.segmenter import make_segments
 from permutect.segmentation.segmenter import segment
@@ -58,6 +61,11 @@ def parse_arguments(argv=None):
     )
     parser.add_argument("--" + constants.NORMAL_PLOT_NAME, help="path to an optional output plot of the normal")
     parser.add_argument(
+        "--" + constants.SEGMENTATION_MODEL_NAME,
+        help="path to an optional output SegmentationModel for filter_variants: the segments of the sample and of the "
+        "normal, the parameters of the hidden Markov models that found them, and the contamination",
+    )
+    parser.add_argument(
         "--" + constants.NUM_CONTAMINATION_ITERATIONS_NAME,
         type=int,
         default=2,
@@ -100,6 +108,7 @@ def main_without_parsing(args):
         contamination_table=getattr(args, constants.CONTAMINATION_TABLE_NAME),
         plot=getattr(args, constants.PLOT_NAME),
         normal_plot=getattr(args, constants.NORMAL_PLOT_NAME),
+        segmentation_model=getattr(args, constants.SEGMENTATION_MODEL_NAME),
         num_contamination_iterations=getattr(args, constants.NUM_CONTAMINATION_ITERATIONS_NAME),
         num_maf_states=getattr(args, constants.NUM_MAF_STATES_NAME),
         max_breakpoint_rate=getattr(args, constants.MAX_BREAKPOINT_RATE_NAME),
@@ -141,14 +150,20 @@ def segmentation_sites(pileup_summaries: PileupSummaries) -> SegmentationSites:
     return SegmentationSites(contigs_c, lengths_c, ordered.positions_n, pileups)
 
 
-def segment_sites(sites: SegmentationSites, contamination: float, **segmentation_arguments) -> list[Segment]:
+def segment_sites(
+    sample: str, sites: SegmentationSites, contamination: float, **segmentation_arguments
+) -> SampleSegmentation:
+    """the segments of a sample's sites and the parameters learned in finding them"""
     if len(sites.positions_n) == 0:
-        return []
+        return SampleSegmentation(sample, emission_model=EmissionModel(contamination=contamination))
     segmentation = segment(
         sites.pileups, sites.positions_n, sites.lengths_c, contamination=contamination, **segmentation_arguments
     )
     args = (sites.contigs_c, sites.lengths_c, sites.positions_n, segmentation.run_starts_r, segmentation.run_mafs_r3)
-    return make_segments(*args)
+    hmm_parameters = (torch.from_numpy(segmentation.mafs_k), torch.from_numpy(segmentation.prior_k))
+    return SampleSegmentation(
+        sample, make_segments(*args), segmentation.emission_model, *hmm_parameters, segmentation.jump_rate
+    )
 
 
 def write_segments(table, sample: str, segments: list[Segment]):
@@ -173,6 +188,7 @@ def segment_pileups(
     contamination_table=None,
     plot=None,
     normal_plot=None,
+    segmentation_model=None,
     num_contamination_iterations: int = 2,
     num_maf_states: int = 51,
     max_breakpoint_rate: float = 1e-7,
@@ -189,32 +205,38 @@ def segment_pileups(
     )
 
     pileup_summaries = read_pileup_summaries(input_table)
+    sample = pileup_summaries.sample
     sites = segmentation_sites(pileup_summaries)
-    normal_pileup_summaries, normal_segments = None, None
+    normal_pileup_summaries, normal_segmentation, normal_segments = None, None, None
     if normal_input_table is not None:
         normal_pileup_summaries = read_pileup_summaries(normal_input_table)
         normal_sites = segmentation_sites(normal_pileup_summaries)
-        normal_segments = segment_sites(normal_sites, contamination=0.0, **segmentation_arguments)
+        normal_segmentation = segment_sites(normal_pileup_summaries.sample, normal_sites, 0.0, **segmentation_arguments)
+        normal_segments = normal_segmentation.segments
 
     contamination = 0.0
     for iteration in range(num_contamination_iterations):
-        segments = segment_sites(sites, contamination, **segmentation_arguments)
+        tumor_segmentation = segment_sites(sample, sites, contamination, **segmentation_arguments)
         contamination, error = calculate_contamination(
-            pileup_summaries, segments, normal_pileup_summaries, normal_segments
+            pileup_summaries, tumor_segmentation.segments, normal_pileup_summaries, normal_segments
         )
         print(f"contamination iteration {iteration}: contamination {contamination:.6f}, error {error:.6f}")
+    segments = tumor_segmentation.segments
 
-    write_segments(output_table, pileup_summaries.sample, segments)
+    write_segments(output_table, sample, segments)
     if contamination_table is not None:
-        write_contamination_table(contamination_table, pileup_summaries.sample, contamination, error)
+        write_contamination_table(contamination_table, sample, contamination, error)
     if plot is not None:
-        args = (sites.contigs_c, sites.lengths_c, sites.positions_n, sites.pileups, segments)
-        plot_segmentation(plot, pileup_summaries.sample, *args)
+        plot_segmentation(plot, sample, sites.contigs_c, sites.lengths_c, sites.positions_n, sites.pileups, segments)
     if normal_output_table is not None:
         write_segments(normal_output_table, normal_pileup_summaries.sample, normal_segments)
     if normal_plot is not None:
         args = (normal_sites.contigs_c, normal_sites.lengths_c, normal_sites.positions_n, normal_sites.pileups)
         plot_segmentation(normal_plot, normal_pileup_summaries.sample, *args, normal_segments)
+    if segmentation_model is not None:
+        # the sample's emission model has the final contamination, not the one that its segmentation assumed
+        tumor_segmentation.emission_model.contamination = contamination
+        SegmentationModel(tumor_segmentation, normal_segmentation, contamination, error).save(segmentation_model)
 
 
 def main():

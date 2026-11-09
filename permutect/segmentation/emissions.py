@@ -55,6 +55,7 @@ class EmissionModel(nn.Module):
         super().__init__()
         assert 0 < outlier_weight < max_outlier_weight
         self.contamination = contamination
+        self.max_outlier_weight = max_outlier_weight
 
         def parameter(value: float) -> nn.Parameter:
             return nn.Parameter(torch.tensor(value, dtype=torch.float64))
@@ -80,27 +81,41 @@ class EmissionModel(nn.Module):
         biased = mixed / (mixed + (1 - mixed) * self.reference_bias)
         return biased * (1 - self.error_rate) + (1 - biased) * self.error_rate
 
+    def genotype_log_likelihoods(
+        self, alt_counts: Tensor, depths: Tensor, allele_frequencies: Tensor, mafs: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """
+        log P(alt count | depth, allele frequency, genotype) for hom ref, het and hom alt, where the het term is the sum
+        over the het's two phases, ie with the alt allele as the minor allele, of fraction MAF, and as the major allele.
+        The inputs broadcast together.
+        """
+
+        def log_beta_binomial(sample_alt_fractions, concentration: Tensor) -> Tensor:
+            means = self.alt_fractions(sample_alt_fractions, allele_frequencies)
+            return beta_binomial_log_lk(depths, alt_counts, means * concentration, (1 - means) * concentration)
+
+        hom_ref = log_beta_binomial(0.0, self.hom_concentration)
+        het = torch.logaddexp(
+            log_beta_binomial(mafs, self.het_concentration), log_beta_binomial(1 - mafs, self.het_concentration)
+        )
+        hom_alt = log_beta_binomial(1.0, self.hom_concentration)
+        return hom_ref, het, hom_alt
+
     def log_likelihoods(self, pileups: Pileups, mafs_k: Tensor) -> Tensor:
         """log P(alt count | depth, allele frequency, MAF) for each site n and MAF k"""
         alt_counts_n1, depths_n1, allele_frequencies_n1 = (
             tensor[:, None] for tensor in (pileups.alt_counts_n, pileups.depths_n, pileups.allele_frequencies_n)
         )
-
-        def log_beta_binomial(sample_alt_fractions, concentration: Tensor) -> Tensor:
-            means = self.alt_fractions(sample_alt_fractions, allele_frequencies_n1)
-            return beta_binomial_log_lk(depths_n1, alt_counts_n1, means * concentration, (1 - means) * concentration)
-
-        log_af_n1, log_1m_af_n1 = torch.log(allele_frequencies_n1), torch.log1p(-allele_frequencies_n1)
-        hom_ref_n1 = 2 * log_1m_af_n1 + log_beta_binomial(0.0, self.hom_concentration)
-        hom_alt_n1 = 2 * log_af_n1 + log_beta_binomial(1.0, self.hom_concentration)
-        # the Hardy-Weinberg probability 2q(1 - q) of a het, times 1/2 for each phase
-        het_nk = (
-            log_af_n1
-            + log_1m_af_n1
-            + torch.logaddexp(
-                log_beta_binomial(mafs_k, self.het_concentration), log_beta_binomial(1 - mafs_k, self.het_concentration)
-            )
+        hom_ref_n1, het_nk, hom_alt_n1 = self.genotype_log_likelihoods(
+            alt_counts_n1, depths_n1, allele_frequencies_n1, mafs_k
         )
+
+        # the Hardy-Weinberg probabilities (1 - q)^2 of a hom ref, 2q(1 - q) of a het, times 1/2 for each phase, and q^2
+        # of a hom alt
+        log_af_n1, log_1m_af_n1 = torch.log(allele_frequencies_n1), torch.log1p(-allele_frequencies_n1)
+        hom_ref_n1 = 2 * log_1m_af_n1 + hom_ref_n1
+        het_nk = log_af_n1 + log_1m_af_n1 + het_nk
+        hom_alt_n1 = 2 * log_af_n1 + hom_alt_n1
         germline_nk = torch.logsumexp(torch.stack(torch.broadcast_tensors(hom_ref_n1, het_nk, hom_alt_n1)), dim=0)
 
         # uniform over alt counts from 0 to the depth

@@ -10,16 +10,15 @@ SMALL_ARTIFACT_MODEL = os.path.join(integration_test_dir, "small_artifact_model.
 
 HG19_CONTIGS_TABLE = os.path.join(integration_test_dir, "contigs.table")
 HG38_CONTIGS_TABLE = os.path.join(integration_test_dir, "hg38-contigs.table")
-SEGMENTS_TABLE = os.path.join(integration_test_dir, "segments.table")
 DREAM_1_CHR20_PLAIN_TEXT_DATA = os.path.join(integration_test_dir, "dream-1-chr-20-plain-text.dataset")
 HG19_CHR20_REFERENCE = os.path.join(integration_test_dir, "Homo_sapiens_assembly19_chr20.fasta")
 HG38_CHR20_REFERENCE = os.path.join(integration_test_dir, "Homo_sapiens_assembly38_chr20.fasta")
 HG38_CHR20_REFERENCE_INDEX = HG38_CHR20_REFERENCE + ".fai"
 HG38_CHR20_REFERENCE_DICT = os.path.join(integration_test_dir, "Homo_sapiens_assembly38_chr20.dict")
 SEQC2_WES_PLAIN_TEXT_DATA = os.path.join(integration_test_dir, "seqc2-wes-chr20-plain-text.dataset")
-# GATK ModelSegments output
-SEQC2_WES_TUMOR_SEGMENTS = os.path.join(integration_test_dir, "seqc2-wes-tumor.modelFinal.seg")
-SEQC2_WES_NORMAL_SEGMENTS = os.path.join(integration_test_dir, "seqc2-wes-normal.modelFinal.seg")
+# chr20 of the GetPileupSummaries tables of SEQC2's WES_IL_T_1 and WES_IL_N_1, with gnomAD allele frequencies
+SEQC2_WES_TUMOR_PILEUPS = os.path.join(integration_test_dir, "seqc2-wes-chr20-tumor.pileups.table")
+SEQC2_WES_NORMAL_PILEUPS = os.path.join(integration_test_dir, "seqc2-wes-chr20-normal.pileups.table")
 
 ARTIFACT_MODEL_V_0_4_0 = os.path.join(integration_test_dir, "artifact-model-v0.4.0.pt")
 PERMUTECT_V0_9_2_ARTIFACT_MODEL = os.path.join(integration_test_dir, "permutect-v0.9.2-artifact-model.pt")

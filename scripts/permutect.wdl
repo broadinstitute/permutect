@@ -1,6 +1,6 @@
 version 1.0
 
-import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/56/plain-WDL/descriptor" as m2
+import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/59/plain-WDL/descriptor" as m2
 
 workflow Permutect {
     input {
@@ -22,9 +22,9 @@ workflow Permutect {
         # pair's tumor-only calls with its matched-normal calls.  Without control_bam, the run is tumor-only regardless.
         Boolean tumor_only = false
         File? germline_resource
-        # common SNPs with population allele frequencies, for calculating contamination and, unless skip_model_segments
-        # is true, for segmenting the tumor and normal by allele fraction with ModelSegments.  For genomes these should
-        # be common SNPs throughout the genome, not only in exons.
+        # common SNPs with population allele frequencies, for segmenting the tumor and normal by minor allele fraction
+        # and estimating the tumor's contamination with segment_pileups.  Their allele frequencies must be accurate, eg
+        # from gnomAD.  For genomes these should be common SNPs throughout the genome, not only in exons.
         File? common_variants_vcf
         File? test_dataset_truth_vcf    # used for evaluation
 
@@ -43,10 +43,6 @@ workflow Permutect {
         Boolean filter_pcr_errors = false   # run pre_permutect_filtering, which applies the hairpin filter
         String? m2_extra_args
         String? split_intervals_extra_args
-        Boolean skip_model_segments = false
-        Int? model_segments_min_total_allele_count_tumor
-        Int? model_segments_min_total_allele_count_normal
-        String? model_segments_extra_args
         Int batch_size
         Int num_workers
         Int? gpu_count
@@ -57,7 +53,7 @@ workflow Permutect {
 
         # Mutect2's outputs from an earlier run, ie the m2_outputs output of that run: an uncompressed tar archive of
         # the Permutect test dataset, the Mutect2 VCF and its index, the contigs table, the Mutect2 stats, and the tumor
-        # and normal minor allele fraction segments if Mutect2 made them.  If this is given, Mutect2 is not run.
+        # and normal pileups at the common variants if Mutect2 made them.  If this is given, Mutect2 is not run.
         # This HACK is required to get around Terra's unreliable call-caching
         # note: defining it as a String instead of a File is essential because otherwise
         # a cached input gs://[some hash]/final-outputs/file.txt is written as
@@ -70,6 +66,8 @@ workflow Permutect {
         # matched-normal outputs.
         String? tumor_only_cached_m2_outputs
 
+        String? segment_pileups_extra_args
+        Int? segment_pileups_mem
         String? permutect_filtering_extra_args
         String? gcs_project_for_requester_pays
         File? gatk_override
@@ -151,16 +149,17 @@ workflow Permutect {
                 common_variants_vcf = common_variants_vcf_hack,
                 common_variants_vcf_idx = common_variants_vcf_idx_hack,
                 skip_filtering = skip_m2_filtering,
+                # segment_pileups estimates the contamination instead
+                skip_calculate_contamination = true,
                 realignment_index_bundle = realignment_index_bundle_hack,
                 realignment_extra_args = realignment_extra_args,
                 dragstr_model = dragstr_model_hack,
                 run_orientation_bias_mixture_model_filter = run_orientation_bias_mixture_model_filter,
                 m2_extra_args = m2_extra_args,
                 split_intervals_extra_args = split_intervals_extra_args,
-                skip_model_segments = skip_model_segments,
-                model_segments_min_total_allele_count_tumor = model_segments_min_total_allele_count_tumor,
-                model_segments_min_total_allele_count_normal = model_segments_min_total_allele_count_normal,
-                model_segments_extra_args = model_segments_extra_args,
+                # segment_pileups segments the samples using pileups at common variants with population allele
+                # frequencies up to 0.99, rather than the lower maximum of CalculateContamination
+                pileups_max_population_af = 0.99,
                 make_bamout = false,
 
                 gatk_docker = permutect_docker,
@@ -177,8 +176,8 @@ workflow Permutect {
                 mutect2_vcf_idx = Mutect2.output_vcf_idx,
                 contigs_table = Mutect2.permutect_contigs_table,
                 mutect_stats = Mutect2.mutect_stats,
-                maf_segments = Mutect2.modeled_segments_tumor,
-                normal_maf_segments = Mutect2.modeled_segments_normal,
+                tumor_pileups = Mutect2.tumor_pileups,
+                normal_pileups = Mutect2.normal_pileups,
                 permutect_docker = permutect_docker,
                 preemptible = preemptible,
                 max_retries = max_retries
@@ -218,10 +217,24 @@ workflow Permutect {
         }
     }
 
-    # minor allele fraction segments from Mutect2's ModelSegments if Mutect2 ran, otherwise the cached segments.
-    # Unlike select_first, this allows the segments to be absent.
-    File? tumor_segments = if defined(Mutect2.modeled_segments_tumor) then Mutect2.modeled_segments_tumor else ExtractM2Outputs.maf_segments
-    File? normal_segments = if defined(Mutect2.modeled_segments_normal) then Mutect2.modeled_segments_normal else ExtractM2Outputs.normal_maf_segments
+    # Mutect2's pileups at the common variants if Mutect2 ran, otherwise the cached pileups.  Unlike select_first, this
+    # allows them to be absent, as they are without common variants.
+    File? tumor_pileups = if defined(Mutect2.tumor_pileups) then Mutect2.tumor_pileups else ExtractM2Outputs.tumor_pileups
+    File? normal_pileups = if defined(Mutect2.normal_pileups) then Mutect2.normal_pileups else ExtractM2Outputs.normal_pileups
+
+    # without pileups, filter_variants uses minor allele fractions of 1/2 and default germline likelihoods
+    if (defined(tumor_pileups)) {
+        call SegmentPileups {
+            input:
+                tumor_pileups = select_first([tumor_pileups]),
+                normal_pileups = normal_pileups,
+                segment_pileups_extra_args = segment_pileups_extra_args,
+                permutect_docker = permutect_docker,
+                mem = segment_pileups_mem,
+                preemptible = preemptible,
+                max_retries = max_retries
+        }
+    }
 
     call PermutectFiltering {
         input:
@@ -230,8 +243,7 @@ workflow Permutect {
             artifact_model = artifact_model,
             test_dataset = select_first([Mutect2.permutect_test_dataset, ExtractM2Outputs.test_dataset]),
             contigs_table = select_first([Mutect2.permutect_contigs_table, ExtractM2Outputs.contigs_table]),
-            maf_segments = tumor_segments,
-            normal_maf_segments = normal_segments,
+            segmentation_model = SegmentPileups.segmentation_model,
             mutect_stats = select_first([Mutect2.mutect_stats, ExtractM2Outputs.mutect_stats]),
             batch_size = batch_size,
             num_workers = num_workers,
@@ -316,10 +328,13 @@ workflow Permutect {
 
         File? m2_concordance_summary = M2Concordance.summary
 
-        File? modeled_segments_tumor = Mutect2.modeled_segments_tumor
-        File? modeled_segments_plot_tumor = Mutect2.modeled_segments_plot_tumor
-        File? modeled_segments_normal = Mutect2.modeled_segments_normal
-        File? modeled_segments_plot_normal = Mutect2.modeled_segments_plot_normal
+        # segment_pileups' outputs, if there were common variants
+        File? segmentation_model = SegmentPileups.segmentation_model
+        File? tumor_segments = SegmentPileups.tumor_segments
+        File? tumor_segments_plot = SegmentPileups.tumor_segments_plot
+        File? normal_segments = SegmentPileups.normal_segments
+        File? normal_segments_plot = SegmentPileups.normal_segments_plot
+        File? contamination_table = SegmentPileups.contamination_table
     }
 }
 
@@ -330,8 +345,7 @@ workflow Permutect {
         File contigs_table
         File mutect2_vcf
         File mutect2_vcf_idx
-        File? maf_segments
-        File? normal_maf_segments
+        File? segmentation_model
         File mutect_stats
         Int? num_spectrum_iterations
         Float? spectrum_learning_rate
@@ -366,7 +380,7 @@ workflow Permutect {
             --batch_size ~{batch_size} --num_workers ~{num_workers} --num_processes ~{num_cpus} \
             ~{" --num_spectrum_iterations " + num_spectrum_iterations} \
             ~{" --spectrum_learning_rate " + spectrum_learning_rate} \
-            ~{" --maf_segments " + maf_segments} ~{" --normal_maf_segments " + normal_maf_segments} \
+            ~{" --segmentation_model " + segmentation_model} \
             --genomic_span $genomic_span ~{permutect_filtering_extra_args}
 
         tar cvf tensorboard.tar tensorboard/
@@ -602,6 +616,58 @@ task Concordance {
     }
 }
 
+# segment the tumor, and the normal if there is one, by minor allele fraction, and estimate the tumor's contamination
+task SegmentPileups {
+    input {
+        File tumor_pileups
+        File? normal_pileups
+        String? segment_pileups_extra_args
+
+        String permutect_docker
+        Int? preemptible
+        Int? max_retries
+        Int? cpu
+        Int? mem
+    }
+
+    # Mem is in units of GB but our runtime value is in MB.  TODO: the segmentation's memory grows with the number of
+    # sites, and for the tens of millions of common SNPs of a genome each sites x MAF states array takes about 11 GB.
+    Int machine_mem = if defined(mem) then mem * 1000 else 16000
+    Int disk_space = ceil(2 * size(tumor_pileups, "GB") + 2 * size(normal_pileups, "GB")) + 10
+
+    command <<<
+        set -euo pipefail
+        normal_pileups="~{default="" normal_pileups}"
+        normal_args=""
+        if [ -n "$normal_pileups" ]; then
+            normal_args="--normal_input $normal_pileups --normal_output normal.segments.table --normal_plot normal.segments.png"
+        fi
+
+        segment_pileups --input ~{tumor_pileups} --output tumor.segments.table --plot tumor.segments.png \
+            $normal_args --contamination_table contamination.table --segmentation_model segmentation-model.pt \
+            ~{segment_pileups_extra_args}
+    >>>
+
+    runtime {
+        docker: permutect_docker
+        bootDiskSizeGb: 12
+        memory: machine_mem + " MB"
+        disks: "local-disk " + disk_space + " SSD"
+        preemptible: select_first([preemptible, 0])
+        maxRetries: select_first([max_retries, 0])
+        cpu: select_first([cpu, 4])
+    }
+
+    output {
+        File segmentation_model = "segmentation-model.pt"
+        File tumor_segments = "tumor.segments.table"
+        File tumor_segments_plot = "tumor.segments.png"
+        File? normal_segments = "normal.segments.table"
+        File? normal_segments_plot = "normal.segments.png"
+        File contamination_table = "contamination.table"
+    }
+}
+
 # bundle Mutect2's outputs into a single uncompressed tar archive, which ExtractM2Outputs unpacks in later runs
 task ArchiveM2Outputs {
     input {
@@ -610,15 +676,16 @@ task ArchiveM2Outputs {
         File mutect2_vcf_idx
         File contigs_table
         File mutect_stats
-        File? maf_segments
-        File? normal_maf_segments
+        File? tumor_pileups
+        File? normal_pileups
         String permutect_docker
         Int? preemptible
         Int? max_retries
     }
 
     # room for the inputs and the archive
-    Int disk_space = ceil(2 * size([test_dataset, mutect2_vcf, mutect2_vcf_idx, contigs_table, mutect_stats], "GB")) + 10
+    Int disk_space = ceil(2 * (size([test_dataset, mutect2_vcf, mutect2_vcf_idx, contigs_table, mutect_stats], "GB")
+        + size(tumor_pileups, "GB") + size(normal_pileups, "GB"))) + 10
 
     command <<<
         set -euo pipefail
@@ -636,10 +703,10 @@ task ArchiveM2Outputs {
         ln -s ~{mutect2_vcf_idx} archive/mutect2.vcf.idx
         ln -s ~{contigs_table} archive/contigs.table
         ln -s ~{mutect_stats} archive/mutect.stats
-        maf_segments="~{default="" maf_segments}"
-        normal_maf_segments="~{default="" normal_maf_segments}"
-        if [ -n "$maf_segments" ]; then ln -s "$maf_segments" archive/maf_segments.seg; fi
-        if [ -n "$normal_maf_segments" ]; then ln -s "$normal_maf_segments" archive/normal_maf_segments.seg; fi
+        tumor_pileups="~{default="" tumor_pileups}"
+        normal_pileups="~{default="" normal_pileups}"
+        if [ -n "$tumor_pileups" ]; then ln -s "$tumor_pileups" archive/tumor-pileups.table; fi
+        if [ -n "$normal_pileups" ]; then ln -s "$normal_pileups" archive/normal-pileups.table; fi
 
         # uncompressed (no -z), and archiving the files that the links point to (-h)
         tar -chf cached_m2_outputs.tar -C archive .
@@ -694,8 +761,8 @@ task ExtractM2Outputs {
         File mutect2_vcf_idx = "mutect2.vcf.idx"
         File contigs_table = "contigs.table"
         File mutect_stats = "mutect.stats"
-        # absent if Mutect2 didn't make them
-        File? maf_segments = "maf_segments.seg"
-        File? normal_maf_segments = "normal_maf_segments.seg"
+        # absent if Mutect2 didn't make them, ie without common variants, and the normal's without a normal
+        File? tumor_pileups = "tumor-pileups.table"
+        File? normal_pileups = "normal-pileups.table"
     }
 }
