@@ -48,6 +48,24 @@ def test_germline_log_prior_is_accurate_for_small_allele_frequencies():
     torch.testing.assert_close(germline_log_prior.double(), expected, rtol=0, atol=1e-4)
 
 
+@pytest.mark.parametrize("no_germline_mode", [False, True])
+def test_contamination_log_prior_is_the_probability_that_the_contaminant_carries_the_allele(no_germline_mode):
+    # as for germline variants, but even in no-germline mode, and not learned in the M step
+    allele_frequencies = [1e-6, 1e-3, 0.1, 0.5]
+    priors = PosteriorModelPriors(
+        variant_log_prior=-10, artifact_log_prior=-10, no_germline_mode=no_germline_mode, device=torch.device("cpu")
+    )
+    priors.disable_context_dependent_snv_priors()
+    totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra()
+    priors.update_priors_m_step(torch.ones(len(Variation), len(Call)), totals_rrra, totals_rrra, 10)
+    log_priors_bc = priors.log_priors_bc(make_batch(allele_frequencies))
+
+    afs = torch.tensor(allele_frequencies, dtype=torch.float32).double()
+    contamination_log_prior = log_priors_bc[:, Call.CONTAMINATION] - log_priors_bc[:, Call.SEQ_ERROR]
+    expected = torch.log1p(-torch.square(1 - afs))
+    torch.testing.assert_close(contamination_log_prior.double(), expected, rtol=0, atol=1e-4)
+
+
 def test_mnvs_have_their_own_priors():
     priors = PosteriorModelPriors(
         variant_log_prior=-10, artifact_log_prior=-8, no_germline_mode=False, device=torch.device("cpu")

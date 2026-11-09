@@ -132,7 +132,7 @@ class PosteriorModel(torch.nn.Module):
         artifact_logits_b = torch.where(known_artifacts_b, 0, artifact_logits_b)
         log_posteriors_bc[:, Call.ARTIFACT] += artifact_logits_b
         log_posteriors_bc[:, Call.NORMAL_ARTIFACT] += artifact_logits_b
-        for non_artifact_call in (Call.SOMATIC, Call.SEQ_ERROR, Call.GERMLINE):
+        for non_artifact_call in (Call.SOMATIC, Call.SEQ_ERROR, Call.GERMLINE, Call.CONTAMINATION):
             log_posteriors_bc[:, non_artifact_call] = torch.where(
                 known_artifacts_b, constants.IMPOSSIBLE_LOG_PROB, log_posteriors_bc[:, non_artifact_call]
             )

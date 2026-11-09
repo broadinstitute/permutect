@@ -48,10 +48,9 @@ from permutect.utils.math_utils import LOGIT_EPS
 from permutect.utils.math_utils import prob_to_logit
 
 # Trusted filters in the input VCF come from Mutect2, except for hairpin, which comes from pre_permutect_filtering.
-# Variants with these non-artifact filters are skipped by the posterior model and written to the output VCF unchanged.
-TRUSTED_NON_ARTIFACT_FILTERS = {"contamination"}
 # Variants with these artifact filters keep them, and the posterior model sees them as definite artifacts (or normal
-# artifacts) regardless of the artifact model, so that they inform the artifact spectra and priors.
+# artifacts) regardless of the artifact model, so that they inform the artifact spectra and priors.  Other filters in the
+# input VCF, such as Mutect2's contamination filter, are replaced by the posterior model's calls.
 TRUSTED_ARTIFACT_FILTERS = {"slippage", HAIRPIN_FILTER}
 
 POST_PROB_INFO_KEY = "POST"
@@ -366,7 +365,6 @@ def make_annotated_dataset(
     annotated_mmap_data = normalized_mmap_data.make_vcf_annotate_memory_mapped_data(
         input_vcf,
         contig_index_to_name_map,
-        filters_to_exclude=TRUSTED_NON_ARTIFACT_FILTERS,
         artifact_filters=TRUSTED_ARTIFACT_FILTERS,
         segmentation=segmentation_model.tumor.maf_intervals(),
         normal_segmentation=segmentation_model.normal.maf_intervals(),
@@ -518,10 +516,6 @@ def apply_filtering_to_vcf(
 
     missing_encodings = []
     for v in editor:
-        # variants with trusted non-artifact filters were excluded from the posterior model
-        if overlapping_filters(v, TRUSTED_NON_ARTIFACT_FILTERS):
-            continue
-
         filters = overlapping_filters(v, TRUSTED_ARTIFACT_FILTERS)
 
         encoding = encode_variant(v)

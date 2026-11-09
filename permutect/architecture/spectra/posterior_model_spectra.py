@@ -19,7 +19,7 @@ class PosteriorModelSpectra(nn.Module):
         1) somatic variant spectrum
         2) artifact spectra
         3) normal artifact spectrum
-        4) germline likelihoods, of the segmentation model, which are fixed
+        4) germline and contamination likelihoods, of the segmentation model, which are fixed
     Basically, anything that computes the likelihood of alt and ref read counts goes here.
     """
 
@@ -67,12 +67,17 @@ class PosteriorModelSpectra(nn.Module):
         spectra_log_lks_bc[:, Call.GERMLINE] = self.segmentation_model.tumor.germline_log_likelihoods(
             alt_counts_b, depths_b, log_afs_b, mafs_b
         )
+        spectra_log_lks_bc[:, Call.CONTAMINATION] = self.segmentation_model.tumor.contamination_log_likelihoods(
+            alt_counts_b, depths_b, log_afs_b
+        )
 
         normal_seq_error_log_lks = batch.get(Data.NORMAL_SEQ_ERROR_LOG_LK)
         normal_log_lks_bc = torch.zeros_like(spectra_log_lks_bc)
         normal_log_lks_bc[:, Call.SOMATIC] = normal_seq_error_log_lks
         normal_log_lks_bc[:, Call.ARTIFACT] = normal_seq_error_log_lks
         normal_log_lks_bc[:, Call.SEQ_ERROR] = normal_seq_error_log_lks
+        # the contaminant's reads are in the tumor alone
+        normal_log_lks_bc[:, Call.CONTAMINATION] = normal_seq_error_log_lks
         normal_log_lks_bc[:, Call.NORMAL_ARTIFACT] = torch.where(
             normal_alt_counts_b < 1, constants.IMPOSSIBLE_LOG_PROB, na_normal_log_lks_b
         )

@@ -27,6 +27,7 @@ from torch.nn.utils import parametrize
 from permutect.architecture.parameterizations import BoundedNumber
 from permutect.architecture.parameterizations import PositiveNumber
 from permutect.utils.stats_utils import beta_binomial_log_lk
+from permutect.utils.stats_utils import binomial_log_lk
 
 
 @dataclass
@@ -72,13 +73,15 @@ class EmissionModel(nn.Module):
         self.outlier_weight = parameter(outlier_weight)
         parametrize.register_parametrization(self, "outlier_weight", BoundedNumber(0, max_outlier_weight))
 
-    def alt_fractions(self, sample_alt_fractions, allele_frequencies: Tensor) -> Tensor:
+    def alt_fractions(self, sample_alt_fractions, allele_frequencies: Tensor, sequencing_error: bool = True) -> Tensor:
         """
         The expected fraction of alt reads given the fraction of the sample's alleles that are alt, after contamination,
-        reference bias and sequencing error
+        reference bias and, unless sequencing_error is False, sequencing error
         """
         mixed = (1 - self.contamination) * sample_alt_fractions + self.contamination * allele_frequencies
         biased = mixed / (mixed + (1 - mixed) * self.reference_bias)
+        if not sequencing_error:
+            return biased
         return biased * (1 - self.error_rate) + (1 - biased) * self.error_rate
 
     def genotype_log_likelihoods(
@@ -100,6 +103,21 @@ class EmissionModel(nn.Module):
         )
         hom_alt = log_beta_binomial(1.0, self.hom_concentration)
         return hom_ref, het, hom_alt
+
+    def contaminant_log_likelihoods(self, alt_counts: Tensor, depths: Tensor) -> tuple[Tensor, Tensor]:
+        """
+        log P(alt count | depth) of a hom ref sample whose alt reads come from a het contaminant and from a hom alt
+        contaminant, whose alt fractions 1/2 and 1 take the place of the expected alt fraction of a contaminant of unknown
+        genotype, the allele frequency.  These are binomial, because the overdispersion of a beta binomial with the
+        concentration of hets or homs gives the tiny alt fractions of contaminants a heavy tail of high alt counts.  They
+        leave out sequencing error, which is a separate explanation of alt reads.
+        """
+
+        def log_binomial(contaminant_alt_fraction: float) -> Tensor:
+            means = self.alt_fractions(0.0, contaminant_alt_fraction, sequencing_error=False)
+            return binomial_log_lk(depths, alt_counts, means)
+
+        return log_binomial(0.5), log_binomial(1.0)
 
     def log_likelihoods(self, pileups: Pileups, mafs_k: Tensor) -> Tensor:
         """log P(alt count | depth, allele frequency, MAF) for each site n and MAF k"""

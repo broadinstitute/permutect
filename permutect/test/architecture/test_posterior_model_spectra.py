@@ -42,6 +42,28 @@ def test_germline_log_likelihoods_come_from_the_segmentation_model():
     assert not torch.allclose(normal_b, tumor_model_on_normal_b)
 
 
+def test_contamination_log_likelihoods_come_from_the_tumor_segmentation():
+    segmentation_model = SegmentationModel(sample_segmentation("tumor"), sample_segmentation("normal"), 0.03, 0.002)
+    model = PosteriorModel(-10, -10, device="cpu", segmentation_model=segmentation_model)
+    values = {
+        Data.ORIGINAL_DEPTH: 100,
+        Data.ORIGINAL_ALT_COUNT: 2,
+        Data.ORIGINAL_NORMAL_DEPTH: 30,
+        Data.ORIGINAL_NORMAL_ALT_COUNT: 1,
+        Data.NORMAL_SEQ_ERROR_LOG_LK: -3,
+    }
+    batch = make_batch([0.01, 0.2], values)
+    spectra_log_lks_bc, normal_log_lks_bc = model.spectra.spectra_log_likelihoods_bc(batch)
+
+    tumor_counts = (batch.get(Data.ORIGINAL_ALT_COUNT), batch.get(Data.ORIGINAL_DEPTH))
+    expected_b = segmentation_model.tumor.contamination_log_likelihoods(
+        *tumor_counts, batch.get(Data.LOG_ALLELE_FREQUENCY)
+    )
+    assert torch.allclose(spectra_log_lks_bc[:, Call.CONTAMINATION], expected_b)
+    # the contaminant's reads are in the tumor alone, so the normal's alt reads are sequencing errors
+    assert torch.allclose(normal_log_lks_bc[:, Call.CONTAMINATION], batch.get(Data.NORMAL_SEQ_ERROR_LOG_LK))
+
+
 def test_posterior_model_without_a_segmentation_model_uses_default_parameters():
     model = PosteriorModel(-10, -10, device="cpu")
     default = SegmentationModel()

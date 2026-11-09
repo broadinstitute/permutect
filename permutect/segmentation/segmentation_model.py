@@ -1,7 +1,7 @@
 """
 What segment_pileups learns about a sample and, optionally, its matched normal: each one's minor allele fraction (MAF)
 segments and the parameters of the hidden Markov model that found them, and the sample's contamination.  filter_variants
-uses it for the MAF at each variant and for the likelihoods of germline variants.
+uses it for the MAF at each variant and for the likelihoods of germline variants and of contamination.
 """
 
 import math
@@ -12,6 +12,7 @@ from intervaltree import IntervalTree
 from torch import Tensor
 from torch import nn
 
+from permutect import constants
 from permutect.misc_utils import freeze
 from permutect.segmentation.emissions import EmissionModel
 from permutect.segmentation.emissions import Pileups
@@ -79,6 +80,24 @@ class SampleSegmentation(nn.Module):
         log_weighted_het = log1mexp(log_allele_frequencies) + het
         log_weighted_hom_alt = log_allele_frequencies + hom_alt
         return torch.logaddexp(log_weighted_het, log_weighted_hom_alt) - torch.log(2 - allele_frequencies)
+
+    def contamination_log_likelihoods(
+        self, alt_counts: Tensor, depths: Tensor, log_allele_frequencies: Tensor
+    ) -> Tensor:
+        """
+        The log likelihood of each site's alt count given that the sample is hom ref and its alt reads come from a
+        contaminant who carries the alt allele: a het or hom alt contaminant, whose Hardy-Weinberg probabilities
+        2q(1 - q) and q^2 are divided by the probability q(2 - q) of carrying the alt allele, as in
+        germline_log_likelihoods.  This is the single-contaminant likelihood of GATK's contamination filter divided by
+        q(2 - q), with reference bias.  Without contamination, alt reads are impossible.
+        """
+        allele_frequencies = torch.exp(log_allele_frequencies)
+        het, hom_alt = self.emission_model.contaminant_log_likelihoods(alt_counts, depths)
+        log_weighted_het = math.log(2) + log1mexp(log_allele_frequencies) + het
+        log_weighted_hom_alt = log_allele_frequencies + hom_alt
+        result = torch.logaddexp(log_weighted_het, log_weighted_hom_alt) - torch.log(2 - allele_frequencies)
+        # finite, rather than the -inf of alt reads without contamination
+        return torch.clamp(result, min=constants.IMPOSSIBLE_LOG_PROB)
 
     def state(self) -> dict:
         """

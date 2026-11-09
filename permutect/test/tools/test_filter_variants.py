@@ -178,21 +178,25 @@ def test_filtering_on_seqc2_wes_chr20(tmp_path):
             values = v.INFO.get(info_key)
             assert values is None or len(values) == len(Call)
 
-    # variants with trusted non-artifact filters are output unchanged, while variants with trusted artifact filters
-    # keep them and are seen by the posterior model as definite artifacts or normal artifacts
-    input_records = {(v.CHROM, v.POS, v.REF, v.ALT[0]): str(v) for v in cyvcf2.VCF(pre_filtered_vcf.name)}
-    num_non_artifact_filtered, num_artifact_filtered = 0, 0
+    # variants with trusted artifact filters keep them and are seen by the posterior model as definite artifacts or
+    # normal artifacts, while variants that Mutect2 filtered for contamination are scored by the posterior model, which
+    # has its own contamination call
+    mutect2_contamination = {
+        (v.CHROM, v.POS, v.REF, v.ALT[0])
+        for v in cyvcf2.VCF(pre_filtered_vcf.name)
+        if "contamination" in record_filters(v)
+    }
+    num_scored_mutect2_contamination, num_artifact_filtered = 0, 0
     for v in cyvcf2.VCF(permutect_vcf.name):
         filters = record_filters(v)
-        if filters & filter_variants.TRUSTED_NON_ARTIFACT_FILTERS:
-            num_non_artifact_filtered += 1
-            assert str(v) == input_records[(v.CHROM, v.POS, v.REF, v.ALT[0])]
-        elif filters & filter_variants.TRUSTED_ARTIFACT_FILTERS:
+        posterior_probs = v.INFO.get(filter_variants.POST_PROB_INFO_KEY)
+        if (v.CHROM, v.POS, v.REF, v.ALT[0]) in mutect2_contamination and posterior_probs is not None:
+            num_scored_mutect2_contamination += 1
+        if filters & filter_variants.TRUSTED_ARTIFACT_FILTERS:
             num_artifact_filtered += 1
-            posterior_probs = v.INFO.get(filter_variants.POST_PROB_INFO_KEY)
             assert posterior_probs[Call.ARTIFACT] + posterior_probs[Call.NORMAL_ARTIFACT] == pytest.approx(1, abs=0.01)
             assert v.INFO.get(filter_variants.ARTIFACT_LOD_INFO_KEY) is None
-    assert num_non_artifact_filtered > 0 and num_artifact_filtered > 0
+    assert num_scored_mutect2_contamination > 0 and num_artifact_filtered > 0
 
     target_records = [v for v in cyvcf2.VCF(permutect_vcf.name) if v.CHROM == "chr20" and v.POS == 4932703]
     assert len(target_records) == 1

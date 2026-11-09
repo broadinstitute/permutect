@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import torch
 
+from permutect import constants
 from permutect.segmentation.emissions import EmissionModel
 from permutect.segmentation.emissions import Pileups
 from permutect.segmentation.segmentation_model import SampleSegmentation
@@ -127,6 +128,57 @@ def test_maf_of_zero_or_one():
     assert torch.all(torch.isfinite(result))
     # all reads ref or all alt are far likelier than half of them alt
     assert torch.all(result[:2] > result[2:] + 10)
+
+
+def test_contamination_log_likelihoods_are_normalized():
+    # the distribution of the alt count of a hom ref sample contaminated by a carrier of the alt allele
+    segmentation = sample_segmentation("tumor")
+    allele_frequencies_n = torch.tensor([1e-6, 0.01, 0.3, 0.9, 1.0], dtype=torch.float64)
+    alt_counts_nk, depths_nk = all_alt_counts(40, len(allele_frequencies_n))
+    log_likelihoods_nk = segmentation.contamination_log_likelihoods(
+        alt_counts_nk, depths_nk, torch.log(allele_frequencies_n)[:, None]
+    )
+    expected = torch.zeros(len(allele_frequencies_n), dtype=torch.float64)
+    assert torch.allclose(torch.logsumexp(log_likelihoods_nk, dim=1), expected)
+
+
+def test_contamination_log_likelihoods_are_gatks_single_contaminant_likelihoods():
+    # without reference bias, those of GATK's contamination filter, 2q(1 - q) Binom(k | n, c/2) + q^2 Binom(k | n, c),
+    # divided by the probability q(2 - q) that the contaminant carries the alt allele.  Sequencing error, a separate
+    # call, has no part in them.
+    contamination = 0.04
+    segmentation = SampleSegmentation(emission_model=EmissionModel(contamination=contamination, error_rate=0.01))
+    alt_counts_n = torch.tensor([0.0, 1.0, 3.0, 8.0, 20.0], dtype=torch.float64)
+    depths_n = torch.tensor([50.0, 50.0, 100.0, 100.0, 60.0], dtype=torch.float64)
+    q_n = torch.tensor([0.3, 1e-4, 0.05, 0.5, 0.9], dtype=torch.float64)
+    result_n = segmentation.contamination_log_likelihoods(alt_counts_n, depths_n, torch.log(q_n))
+
+    def binomial(alt_fraction: float) -> torch.Tensor:
+        probs = torch.tensor(alt_fraction, dtype=torch.float64)
+        return torch.exp(torch.distributions.Binomial(depths_n, probs=probs).log_prob(alt_counts_n))
+
+    expected_n = 2 * q_n * (1 - q_n) * binomial(contamination / 2) + q_n**2 * binomial(contamination)
+    assert torch.allclose(torch.exp(result_n), expected_n / (q_n * (2 - q_n)))
+
+
+def test_contamination_by_a_carrier_of_a_rare_allele_is_het():
+    # allele frequencies that underflow to 0 in float32, but whose logs are fine, give the likelihood of a het contaminant
+    segmentation = SampleSegmentation(emission_model=EmissionModel(contamination=0.02))
+    log_afs = torch.tensor([-50.0, -120.0, -300.0])
+    alt_counts, depths = torch.full((3,), 2.0), torch.full((3,), 100.0)
+    result = segmentation.contamination_log_likelihoods(alt_counts, depths, log_afs)
+    assert torch.all(torch.isfinite(result))
+    het, _ = segmentation.emission_model.contaminant_log_likelihoods(alt_counts, depths)
+    assert torch.allclose(result, het, atol=1e-5)
+
+
+def test_without_contamination_alt_reads_are_impossible():
+    segmentation = SampleSegmentation()
+    log_afs = torch.log(torch.tensor([1e-6, 0.1, 0.5]))
+    alt_counts, depths = torch.tensor([0.0, 2.0, 10.0]), torch.full((3,), 30.0)
+    result = segmentation.contamination_log_likelihoods(alt_counts, depths, log_afs)
+    assert result[0].item() == pytest.approx(0, abs=1e-5)
+    assert torch.all(result[1:] == constants.IMPOSSIBLE_LOG_PROB)
 
 
 def test_maf_intervals():

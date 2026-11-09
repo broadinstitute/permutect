@@ -348,7 +348,7 @@ def annotated_mafs(tmp_path, **segmentations) -> list:
     data = [make_datum_with_alleles(0, 100, "C", "T"), make_datum_with_alleles(0, 200, "CAG", "C")]
     memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=2, estimated_num_reads=6)
     annotated = memory_mapped_data.make_vcf_annotate_memory_mapped_data(
-        str(vcf), {0: "chr1"}, filters_to_exclude=set(), artifact_filters=set(), **segmentations
+        str(vcf), {0: "chr1"}, artifact_filters=set(), **segmentations
     )
     return [(float(datum.get(Data.MAF)), float(datum.get(Data.NORMAL_MAF))) for datum in annotated.generate()]
 
