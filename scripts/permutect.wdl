@@ -1,6 +1,6 @@
 version 1.0
 
-import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/55/plain-WDL/descriptor" as m2
+import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/56/plain-WDL/descriptor" as m2
 
 workflow Permutect {
     input {
@@ -22,12 +22,19 @@ workflow Permutect {
         # pair's tumor-only calls with its matched-normal calls.  Without control_bam, the run is tumor-only regardless.
         Boolean tumor_only = false
         File? germline_resource
-        File? germline_resource_idx
         # common SNPs with population allele frequencies, for calculating contamination and, unless skip_model_segments
         # is true, for segmenting the tumor and normal by allele fraction with ModelSegments.  For genomes these should
         # be common SNPs throughout the genome, not only in exons.
         File? common_variants_vcf
+        File? test_dataset_truth_vcf    # used for evaluation
+
+        # Indices of the VCFs above, usually unnecessary on both local and cloud backends.  Each VCF's index is assumed to
+        # be the VCF's path plus .tbi for a bgzipped VCF (.vcf.gz or .vcf.bgz) or .idx for a plain .vcf.  Specify an
+        # index only to override that, for example for a non-standard extension.
+        File? germline_resource_idx
         File? common_variants_vcf_idx
+        File? test_dataset_truth_vcf_idx
+
         File? realignment_index_bundle
         File? dragstr_model
         String? realignment_extra_args
@@ -43,8 +50,6 @@ workflow Permutect {
         Int batch_size
         Int num_workers
         Int? gpu_count
-        File? test_dataset_truth_vcf    # used for evaluation
-        File? test_dataset_truth_vcf_idx
         String? concordance_header
         # split each multi-nucleotide variant (MNV) into its constituent SNVs, eg to compare with a truth VCF that represents
         # MNVs that way.  Concordance then evaluates the split VCFs; output_vcf keeps the MNVs.
@@ -100,6 +105,15 @@ workflow Permutect {
     File? dragstr_model_hack = if select_first([dragstr_model, ""]) == "" then NONE else dragstr_model
     File? test_dataset_truth_vcf_hack = if select_first([test_dataset_truth_vcf, ""]) == "" then NONE else test_dataset_truth_vcf
     File? test_dataset_truth_vcf_idx_hack = if select_first([test_dataset_truth_vcf_idx, ""]) == "" then NONE else test_dataset_truth_vcf_idx
+
+    # The truth VCF's index, unless given, is its path plus .tbi if it's bgzipped or .idx if not.  Concordance needs it
+    # here.  Mutect2 finds the indices of the other VCFs the same way.
+    if (defined(test_dataset_truth_vcf_hack)) {
+        String test_dataset_truth_vcf_path = "~{test_dataset_truth_vcf_hack}"
+        File conventional_test_dataset_truth_vcf_idx = test_dataset_truth_vcf_path + (if sub(test_dataset_truth_vcf_path, "\\.b?gz$", "") != test_dataset_truth_vcf_path then ".tbi" else ".idx")
+    }
+    File? test_dataset_truth_vcf_idx_or_conventional = if defined(test_dataset_truth_vcf_idx_hack) then test_dataset_truth_vcf_idx_hack else conventional_test_dataset_truth_vcf_idx
+
     File? gatk_override_hack = if select_first([gatk_override, ""]) == "" then NONE else gatk_override
 
     String? cached_m2_outputs_hack = if (select_first([cached_m2_outputs,""]) == "") then NONE else cached_m2_outputs
@@ -120,7 +134,7 @@ workflow Permutect {
                 make_permutect_training_dataset = false,
                 make_permutect_test_dataset = true,
                 permutect_test_dataset_truth_vcf = test_dataset_truth_vcf_hack,
-                permutect_test_dataset_truth_vcf_idx = test_dataset_truth_vcf_idx_hack,
+                permutect_test_dataset_truth_vcf_idx = test_dataset_truth_vcf_idx_or_conventional,
                 intervals = intervals_hack,
                 masked_intervals = masks_hack,
                 ref_fasta = ref_fasta,
@@ -250,7 +264,7 @@ workflow Permutect {
                 intervals = intervals_hack,
                 masks = masks_hack,
                 truth_vcf = select_first([test_dataset_truth_vcf_hack]),
-                truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_hack]),
+                truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_or_conventional]),
                 eval_vcf = select_first([SplitPermutectMNVs.output_vcf, PermutectFiltering.output_vcf]),
                 eval_vcf_idx = select_first([SplitPermutectMNVs.output_vcf_idx, PermutectFiltering.output_vcf_idx]),
                 gatk_docker = permutect_docker,
@@ -262,7 +276,7 @@ workflow Permutect {
                 intervals = intervals_hack,
                 masks = masks_hack,
                 truth_vcf = select_first([test_dataset_truth_vcf_hack]),
-                truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_hack]),
+                truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_or_conventional]),
                 eval_vcf = select_first([SplitM2MNVs.output_vcf, Mutect2.output_vcf, ExtractM2Outputs.mutect2_vcf]),
                 eval_vcf_idx = select_first([SplitM2MNVs.output_vcf_idx, Mutect2.output_vcf_idx, ExtractM2Outputs.mutect2_vcf_idx]),
                 gatk_docker = permutect_docker,
