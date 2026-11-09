@@ -1,24 +1,36 @@
 import argparse
+import math
 
 import numpy as np
 import torch
 
 from permutect import constants
 from permutect.segmentation.emissions import Pileups
+from permutect.segmentation.plotting import plot_segmentation
 from permutect.segmentation.segmenter import Segment
 from permutect.segmentation.segmenter import make_segments
 from permutect.segmentation.segmenter import segment
 
 SAMPLE_HEADER = "#<METADATA>SAMPLE="
-SEGMENTS_COLUMNS = ("contig", "start", "end", "minor_allele_fraction", "secondary_minor_allele_fraction")
+SEGMENTS_COLUMNS = (
+    "contig",
+    "start",
+    "end",
+    "minor_allele_fraction",
+    "secondary_minor_allele_fraction",
+    "minor_allele_fraction_low",
+    "minor_allele_fraction_high",
+)
 
 
 def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(
         description="Segment a sample by minor allele fraction (MAF), using the population allele frequencies of the "
         "common SNPs in its GATK GetPileupSummaries table.  The output has the format of the segmentation of GATK "
-        "CalculateContamination plus a secondary MAF column: between two segments a gap segment has the MAF of the "
-        "first and the secondary MAF of the second, and within a segment the secondary MAF equals the MAF."
+        "CalculateContamination plus three columns.  The secondary MAF: between two segments a gap segment has the "
+        "MAF of the first and the secondary MAF of the second, and within a segment the secondary MAF equals the MAF.  "
+        "The low and high MAFs: the bounds of the narrowest interval with 80% of the posterior of a segment's MAF, or "
+        "NaN for a gap segment."
     )
     parser.add_argument("--" + constants.INPUT_NAME, required=True, help="GetPileupSummaries table of the sample")
     parser.add_argument("--" + constants.OUTPUT_NAME, required=True, help="path to output segments table")
@@ -53,6 +65,11 @@ def parse_arguments(argv=None):
         default=100,
         help="maximum number of iterations of expectation maximization",
     )
+    parser.add_argument(
+        "--" + constants.PLOT_NAME,
+        help="path to an optional output plot of the sites' alt fractions and the segments' MAFs along the genome, like "
+        "GATK PlotModeledSegments'.  Matplotlib infers the format from the extension, eg .png.",
+    )
     return parser.parse_args(argv)
 
 
@@ -65,6 +82,7 @@ def main_without_parsing(args):
         max_breakpoint_rate=getattr(args, constants.MAX_BREAKPOINT_RATE_NAME),
         maf_prior_concentration=getattr(args, constants.MAF_PRIOR_CONCENTRATION_NAME),
         max_em_iterations=getattr(args, constants.MAX_EM_ITERATIONS_NAME),
+        plot=getattr(args, constants.PLOT_NAME),
     )
 
 
@@ -112,7 +130,13 @@ def write_segments(table, sample: str, segments: list[Segment]):
         file.write(SAMPLE_HEADER + sample + "\n")
         file.write("\t".join(SEGMENTS_COLUMNS) + "\n")
         for s in segments:
-            file.write(f"{s.contig}\t{s.start}\t{s.end}\t{s.maf:.4f}\t{s.secondary_maf:.4f}\n")
+            mafs = "\t".join(_format_maf(maf) for maf in (s.maf, s.secondary_maf, s.maf_low, s.maf_high))
+            file.write(f"{s.contig}\t{s.start}\t{s.end}\t{mafs}\n")
+
+
+def _format_maf(maf: float) -> str:
+    # NaN as GATK writes it
+    return "NaN" if math.isnan(maf) else f"{maf:.4f}"
 
 
 def segment_pileups(
@@ -123,6 +147,7 @@ def segment_pileups(
     max_breakpoint_rate: float = 1e-7,
     maf_prior_concentration: float = 0.1,
     max_em_iterations: int = 100,
+    plot=None,
 ):
     sample, contigs_c, lengths_c, positions_n, pileups = read_pileup_summaries(input_table)
     segments = []
@@ -137,10 +162,10 @@ def segment_pileups(
             prior_concentration=maf_prior_concentration,
             max_iterations=max_em_iterations,
         )
-        segments = make_segments(
-            contigs_c, lengths_c, positions_n, segmentation.states_n, segmentation.posterior_mafs_n
-        )
+        segments = make_segments(contigs_c, lengths_c, positions_n, segmentation.run_starts_r, segmentation.run_mafs_r3)
     write_segments(output_table, sample, segments)
+    if plot is not None:
+        plot_segmentation(plot, sample, contigs_c, lengths_c, positions_n, pileups, segments)
 
 
 def main():

@@ -45,6 +45,10 @@ STEP_SIZE_GROWTH = 1.5
 MAX_STEP_SIZE = 10.0
 # sites per chunk when computing emissions, to bound the memory of intermediate tensors
 CHUNK_SIZE = 100_000
+# the posterior of each segment's MAF is computed on this many MAFs evenly spaced from 0 to 1/2
+NUM_POSTERIOR_MAFS = 501
+# each segment's MAF has an interval of the narrowest MAFs with this much of its posterior, ie a highest density interval
+MAF_INTERVAL_MASS = 0.8
 
 
 @dataclass
@@ -55,6 +59,10 @@ class Segmentation:
     states_n: np.ndarray
     # the posterior mean MAF of each site
     posterior_mafs_n: np.ndarray
+    # the first site of each run of consecutive sites of a contig in the same state, ie of each segment
+    run_starts_r: np.ndarray
+    # for each run, the lower bound of its MAF's interval, its MAF, and the upper bound
+    run_mafs_r3: np.ndarray
     prior_k: np.ndarray
     jump_rate: float
     emission_model: EmissionModel
@@ -70,6 +78,9 @@ class Segment:
     maf: float
     # in a gap between segments, the MAF of the segment after the gap; otherwise the same as the MAF
     secondary_maf: float
+    # the bounds of the MAF's interval, which has MAF_INTERVAL_MASS of its posterior, or NaN for a gap between segments
+    maf_low: float = math.nan
+    maf_high: float = math.nan
 
 
 def log_emissions(emission_model: EmissionModel, pileups: Pileups, mafs_k: np.ndarray) -> np.ndarray:
@@ -150,10 +161,14 @@ def segment(
         f"het concentration {model.het_concentration.item():.3g}, reference bias {model.reference_bias.item():.3g}, "
         f"outlier weight {model.outlier_weight.item():.3g}"
     )
+    states_n = active_k[viterbi(log_emissions_nk, jump_probs_n, prior_k[active_k], lengths_c)]
+    run_starts_r = find_runs(states_n, lengths_c)
     return Segmentation(
         mafs_k=mafs_k,
-        states_n=active_k[viterbi(log_emissions_nk, jump_probs_n, prior_k[active_k], lengths_c)],
+        states_n=states_n,
         posterior_mafs_n=posteriors.state_posteriors_nk @ mafs_k[active_k],
+        run_starts_r=run_starts_r,
+        run_mafs_r3=run_mafs(emission_model, pileups, run_starts_r),
         prior_k=prior_k,
         jump_rate=jump_rate,
         emission_model=emission_model,
@@ -161,25 +176,74 @@ def segment(
     )
 
 
+def find_runs(states_n: np.ndarray, lengths_c: np.ndarray) -> np.ndarray:
+    """the first site of each run of consecutive sites of a contig in the same state"""
+    new_run_n = np.ones(len(states_n), dtype=bool)
+    new_run_n[1:] = states_n[1:] != states_n[:-1]
+    new_run_n[np.cumsum(lengths_c) - lengths_c] = True
+    return np.flatnonzero(new_run_n)
+
+
+def run_mafs(emission_model: EmissionModel, pileups: Pileups, run_starts_r: np.ndarray) -> np.ndarray:
+    """
+    For each run, the lower bound, mode and upper bound of the posterior of its MAF, given its sites and the fitted
+    emission model, with a uniform prior on the MAF.  The bounds are those of the narrowest interval containing the mode
+    with MAF_INTERVAL_MASS of the posterior.  Posteriors are computed on NUM_POSTERIOR_MAFS evenly spaced MAFs, which
+    sets their precision.  Unlike the HMM's posteriors, they don't depend on which states EM pruned.
+
+    The mode, not the median, is the MAF, because the posterior of a balanced segment piles up against 1/2, the largest
+    MAF, which pulls its median and percentiles below 1/2.  Even so, a balanced segment's MAF is weakly identified: a
+    little more spread among its hets' allele fractions than the model expects looks like a MAF slightly below 1/2, so
+    its MAF can come out as low as about 0.47.
+    """
+    mafs_k = np.linspace(0, 0.5, NUM_POSTERIOR_MAFS)
+    num_sites = len(pileups.alt_counts_n)
+    runs_n = np.repeat(np.arange(len(run_starts_r)), np.diff(np.append(run_starts_r, num_sites)))
+    log_likelihoods_rk = np.zeros((len(run_starts_r), NUM_POSTERIOR_MAFS))
+    for start in range(0, num_sites, CHUNK_SIZE):
+        sites = slice(start, start + CHUNK_SIZE)
+        log_emissions_nk = log_emissions(emission_model, pileups.subset(sites), mafs_k)
+        # the chunk's sites in each run, which are consecutive and in different runs from the other blocks'
+        block_starts = np.flatnonzero(np.diff(runs_n[sites], prepend=-1))
+        log_likelihoods_rk[runs_n[sites][block_starts]] += np.add.reduceat(log_emissions_nk, block_starts, axis=0)
+
+    posteriors_rk = np.exp(log_likelihoods_rk - np.max(log_likelihoods_rk, axis=1, keepdims=True))
+    posteriors_rk /= np.sum(posteriors_rk, axis=1, keepdims=True)
+
+    # the highest density interval: the most probable MAFs, in decreasing order, until they have the interval's mass
+    order_rk = np.argsort(-posteriors_rk, axis=1)
+    sorted_cumulative_rk = np.cumsum(np.take_along_axis(posteriors_rk, order_rk, axis=1), axis=1)
+    num_in_interval_r = 1 + np.sum(sorted_cumulative_rk < MAF_INTERVAL_MASS, axis=1)
+    ranks_rk = np.argsort(order_rk, axis=1)
+    in_interval_rk = ranks_rk < num_in_interval_r[:, None]
+    lows_r = mafs_k[np.argmax(in_interval_rk, axis=1)]
+    highs_r = mafs_k[NUM_POSTERIOR_MAFS - 1 - np.argmax(in_interval_rk[:, ::-1], axis=1)]
+    return np.stack((lows_r, mafs_k[order_rk[:, 0]], highs_r), axis=1)
+
+
 def make_segments(
-    contigs_c: list[str], lengths_c: np.ndarray, positions_n: np.ndarray, states_n: np.ndarray, mafs_n: np.ndarray
+    contigs_c: list[str],
+    lengths_c: np.ndarray,
+    positions_n: np.ndarray,
+    run_starts_r: np.ndarray,
+    run_mafs_r3: np.ndarray,
 ) -> list[Segment]:
     """
-    Each run of consecutive sites of a contig in the same state is a segment from its first site to its last, whose MAF
-    is the mean MAF of its sites.  Between consecutive segments of a contig, unless their sites are adjacent, there's a
-    gap segment whose MAF is that of the segment before it and whose secondary MAF is that of the segment after it.
-    The ends of a contig, before its first site and after its last, aren't in any segment.
+    Each run of consecutive sites of a contig is a segment from its first site to its last.  Runs start at
+    run_starts_r and don't cross contigs; run_mafs_r3 has the lower bound of the MAF of each run, the MAF and the
+    upper bound.  Between consecutive segments of a contig, unless their sites are adjacent, there's a gap segment whose
+    MAF is that of the segment before it and whose secondary MAF is that of the segment after it.  The ends of a
+    contig, before its first site and after its last, aren't in any segment.
     """
+    run_ends_r = np.append(run_starts_r[1:], len(positions_n))
+    contigs_r = np.searchsorted(np.cumsum(lengths_c), run_starts_r, side="right")
     segments = []
-    for contig, start, length in zip(contigs_c, np.cumsum(lengths_c) - lengths_c, lengths_c):
-        positions = positions_n[start : start + length]
-        run_starts = np.flatnonzero(np.diff(states_n[start : start + length], prepend=-1))
-        run_ends = np.append(run_starts[1:], length)
-        run_mafs = np.add.reduceat(mafs_n[start : start + length], run_starts) / (run_ends - run_starts)
-        for run, (run_start, run_end) in enumerate(zip(run_starts, run_ends)):
-            if run > 0 and positions[run_start] > positions[run_start - 1] + 1:
-                gap_start, gap_end = int(positions[run_start - 1]) + 1, int(positions[run_start]) - 1
-                segments.append(Segment(contig, gap_start, gap_end, float(run_mafs[run - 1]), float(run_mafs[run])))
-            maf = float(run_mafs[run])
-            segments.append(Segment(contig, int(positions[run_start]), int(positions[run_end - 1]), maf, maf))
+    for run, (start, end) in enumerate(zip(run_starts_r, run_ends_r)):
+        contig = contigs_c[contigs_r[run]]
+        low, maf, high = (float(value) for value in run_mafs_r3[run])
+        if run > 0 and contigs_r[run - 1] == contigs_r[run] and positions_n[start] > positions_n[start - 1] + 1:
+            previous_maf = float(run_mafs_r3[run - 1, 1])
+            gap_start, gap_end = int(positions_n[start - 1]) + 1, int(positions_n[start]) - 1
+            segments.append(Segment(contig, gap_start, gap_end, previous_maf, maf))
+        segments.append(Segment(contig, int(positions_n[start]), int(positions_n[end - 1]), maf, maf, low, high))
     return segments

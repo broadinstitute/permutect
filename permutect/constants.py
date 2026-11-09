@@ -65,6 +65,7 @@ CONTAMINATION_NAME = "contamination"
 MAX_BREAKPOINT_RATE_NAME = "max_breakpoint_rate"
 MAF_PRIOR_CONCENTRATION_NAME = "maf_prior_concentration"
 MAX_EM_ITERATIONS_NAME = "max_em_iterations"
+PLOT_NAME = "plot"
 
 # numerical constants shared by the models
 IMPOSSIBLE_LOG_PROB = -9999  # rules out a call, while staying finite to avoid the NaNs that -inf can give
