@@ -73,6 +73,29 @@ def test_likelihoods_are_normalized(depth, allele_frequency):
     assert torch.allclose(torch.logsumexp(log_likelihoods_nk, dim=0), torch.zeros(len(MAFS_K), dtype=torch.float64))
 
 
+@pytest.mark.parametrize("contamination", [0.0, 0.03])
+def test_compiled_log_likelihoods_match_torch(contamination):
+    model = EmissionModel(
+        contamination=contamination,
+        error_rate=0.004,
+        hom_concentration=60.0,
+        het_concentration=25.0,
+        reference_bias=1.15,
+        outlier_weight=0.004,
+    )
+    # every alt count at depths from 0 up, at common and rare allele frequencies
+    sites = [every_alt_count(depth, frequency) for depth in (0, 1, 7, 60) for frequency in (1e-4, 0.3, 0.97)]
+    columns = zip(*((site.alt_counts_n, site.depths_n, site.allele_frequencies_n) for site in sites))
+    pileups = Pileups(*(torch.cat(column) for column in columns))
+    mafs_k = np.linspace(0, 0.5, 11)
+    with torch.no_grad():
+        expected_nk = model.log_likelihoods(pileups, torch.from_numpy(mafs_k)).numpy()
+    compiled_nk = model.compiled_log_likelihoods(pileups, mafs_k)
+    assert compiled_nk.dtype == np.float64
+    assert np.allclose(compiled_nk, expected_nk, rtol=1e-12, atol=1e-12)
+    assert model.compiled_log_likelihoods(pileups, mafs_k, dtype=np.float32).dtype == np.float32
+
+
 def test_ref_alt_symmetry():
     # without reference bias, swapping ref and alt reads and the population frequencies of the alleles changes nothing
     model = EmissionModel(contamination=0.03, error_rate=0.01, hom_concentration=50.0, het_concentration=80.0)

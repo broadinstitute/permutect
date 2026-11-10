@@ -15,11 +15,18 @@ fit no genotype.
 
 The contamination is a fixed input.  The error rate, the two concentrations, the reference bias and the outlier weight
 are learned in the M-step.
+
+The likelihoods are computed twice: in torch, which the M-step differentiates, and by a numba kernel, which the E-step
+uses for every site in every MAF state, because it's several times faster and needs no intermediate arrays.
 """
 
+import math
 from dataclasses import dataclass
 
+import numpy as np
 import torch
+from numba import njit
+from numba import prange
 from torch import Tensor
 from torch import nn
 from torch.nn.utils import parametrize
@@ -169,6 +176,27 @@ class EmissionModel(nn.Module):
             torch.log1p(-self.outlier_weight) + germline_nk, torch.log(self.outlier_weight) + outlier_n1
         )
 
+    def compiled_log_likelihoods(self, pileups: Pileups, mafs_k: np.ndarray, dtype=np.float64) -> np.ndarray:
+        """
+        log_likelihoods, without gradients, from a numba kernel, as an array of the given dtype.  The two must agree,
+        which test_emissions checks.
+        """
+        log_likelihoods_nk = np.empty((len(pileups.alt_counts_n), len(mafs_k)), dtype=dtype)
+        _log_likelihoods_kernel(
+            pileups.alt_counts_n.numpy(),
+            pileups.depths_n.numpy(),
+            pileups.allele_frequencies_n.numpy(),
+            np.asarray(mafs_k, dtype=np.float64),
+            float(self.contamination),
+            self.error_rate.item(),
+            self.hom_concentration.item(),
+            self.het_concentration.item(),
+            self.reference_bias.item(),
+            self.outlier_weight.item(),
+            log_likelihoods_nk,
+        )
+        return log_likelihoods_nk
+
     def fit(
         self,
         pileups: Pileups,
@@ -198,3 +226,75 @@ class EmissionModel(nn.Module):
             with torch.no_grad():
                 for parameter, previous in zip(self.parameters(), previous_parameters):
                     parameter.copy_(previous + step_size * (parameter - previous))
+
+
+@njit(inline="always")
+def _alt_fraction(sample_alt_fraction, allele_frequency, contamination, reference_bias, error_rate):
+    """EmissionModel.alt_fractions"""
+    mixed = (1 - contamination) * sample_alt_fraction + contamination * allele_frequency
+    biased = mixed / (mixed + (1 - mixed) * reference_bias)
+    return biased * (1 - error_rate) + (1 - biased) * error_rate
+
+
+@njit(inline="always")
+def _log_beta_binomial_variable_terms(alt_count, depth, mean, concentration):
+    """
+    The terms of the beta binomial log likelihood that depend on its mean.  The rest, the log binomial coefficient,
+    lgamma(concentration) and -lgamma(depth + concentration), depend only on the site and the concentration.
+    """
+    alpha, beta = mean * concentration, (1 - mean) * concentration
+    return (
+        math.lgamma(alt_count + alpha) + math.lgamma(depth - alt_count + beta) - math.lgamma(alpha) - math.lgamma(beta)
+    )
+
+
+@njit(inline="always")
+def _logaddexp(a, b):
+    larger = max(a, b)
+    return larger if larger == -math.inf else larger + math.log1p(math.exp(-abs(a - b)))
+
+
+@njit(parallel=True)
+def _log_likelihoods_kernel(
+    alt_counts_n,
+    depths_n,
+    allele_frequencies_n,
+    mafs_k,
+    contamination,
+    error_rate,
+    hom_concentration,
+    het_concentration,
+    reference_bias,
+    outlier_weight,
+    log_likelihoods_nk,
+):
+    """EmissionModel.log_likelihoods for each site in parallel, computing the terms that don't depend on the MAF once"""
+    log_not_outlier, log_outlier = math.log1p(-outlier_weight), math.log(outlier_weight)
+    for n in prange(len(alt_counts_n)):
+        alt_count, depth, allele_frequency = alt_counts_n[n], depths_n[n], allele_frequencies_n[n]
+        log_choose = math.lgamma(depth + 1) - math.lgamma(alt_count + 1) - math.lgamma(depth - alt_count + 1)
+        hom_constant = log_choose + math.lgamma(hom_concentration) - math.lgamma(depth + hom_concentration)
+        het_constant = log_choose + math.lgamma(het_concentration) - math.lgamma(depth + het_concentration)
+        log_af, log_1m_af = math.log(allele_frequency), math.log1p(-allele_frequency)
+
+        def alt_fraction(sample_alt_fraction):
+            return _alt_fraction(sample_alt_fraction, allele_frequency, contamination, reference_bias, error_rate)
+
+        # the Hardy-Weinberg probabilities (1 - q)^2 of a hom ref, 2q(1 - q) of a het, times 1/2 for each phase, and q^2
+        # of a hom alt
+        hom_ref = 2 * log_1m_af + hom_constant
+        hom_ref += _log_beta_binomial_variable_terms(alt_count, depth, alt_fraction(0.0), hom_concentration)
+        hom_alt = 2 * log_af + hom_constant
+        hom_alt += _log_beta_binomial_variable_terms(alt_count, depth, alt_fraction(1.0), hom_concentration)
+        # uniform over alt counts from 0 to the depth
+        outlier = log_outlier - math.log(depth + 1)
+        for k in range(len(mafs_k)):
+            alt_on_minor = _log_beta_binomial_variable_terms(
+                alt_count, depth, alt_fraction(mafs_k[k]), het_concentration
+            )
+            alt_on_major = _log_beta_binomial_variable_terms(
+                alt_count, depth, alt_fraction(1 - mafs_k[k]), het_concentration
+            )
+            het = log_af + log_1m_af + het_constant + _logaddexp(alt_on_minor, alt_on_major)
+            germline = _logaddexp(_logaddexp(hom_ref, het), hom_alt)
+            log_likelihoods_nk[n, k] = _logaddexp(log_not_outlier + germline, outlier)
