@@ -6,8 +6,8 @@
 # https://cloud.google.com/compute/docs/gpus/install-drivers-gpu
 FROM pytorch/pytorch:2.10.0-cuda13.0-cudnn9-runtime AS base
 
-# build bcftools and download GATK in their own stage, which keeps the build tools and the bcftools source out of the
-# final image
+# build bcftools and download the GATK launcher in their own stage, which keeps the build tools and the bcftools source
+# out of the final image
 FROM base AS tools
 
 # extra utilities for WDL tasks -- command line tools, not python packages
@@ -34,8 +34,7 @@ RUN wget -q https://github.com/samtools/bcftools/releases/download/${bcftoolsVer
     && make \
     && make install
 
-# GATK launcher and jar
-RUN wget -q -O /root/gatk.jar https://storage.googleapis.com/permutect/gatk-builds/mnvs-2.jar
+# GATK launcher
 RUN wget -q -O /bin/gatk https://raw.githubusercontent.com/broadinstitute/gatk/refs/heads/master/gatk \
     && chmod +x /bin/gatk
 
@@ -52,7 +51,6 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 
 COPY --from=tools /usr/local/bin/bcftools /usr/local/bin/bcftools
-COPY --from=tools /root/gatk.jar /root/gatk.jar
 COPY --from=tools /bin/gatk /bin/gatk
 ENV GATK_LOCAL_JAR=/root/gatk.jar
 
@@ -66,6 +64,10 @@ RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml
         > requirements.txt \
     && pip install --break-system-packages --no-cache-dir -r requirements.txt \
     && rm requirements.txt
+
+# the GATK jar.  Unlike a RUN wget, whose cached layer outlives a new upload of the jar, an ADD of a URL checks it on
+# every build.  It comes after the dependencies so that a new jar doesn't reinstall them.
+ADD --chmod=644 https://storage.googleapis.com/permutect/gatk-builds/branch4.jar /root/gatk.jar
 
 COPY permutect/ /app/permutect/
 RUN pip install --break-system-packages --no-cache-dir --no-deps .

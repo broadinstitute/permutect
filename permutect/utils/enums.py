@@ -33,6 +33,7 @@ class Call(enum.IntEnum):
     SEQ_ERROR = 2
     GERMLINE = 3
     NORMAL_ARTIFACT = 4
+    CONTAMINATION = 5
 
 
 class Epoch(enum.IntEnum):

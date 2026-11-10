@@ -12,8 +12,12 @@ from permutect.data.count_binning import COUNT_BIN_SKIP
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.datum import Data
+from permutect.segmentation.emissions import EmissionModel
+from permutect.segmentation.segmentation_model import SampleSegmentation
+from permutect.segmentation.segmentation_model import SegmentationModel
 from permutect.test.architecture.test_posterior_model_priors import make_batch
 from permutect.test.host_reads import permutect_calls
+from permutect.test.segmentation.test_segmentation_model import sample_segmentation
 from permutect.utils.enums import Call
 from permutect.utils.enums import Variation
 
@@ -38,7 +42,7 @@ def test_impossible_calls_use_the_shared_impossible_log_prob(monkeypatch):
     log_priors_bc, _, normal_log_lks_bc, log_posteriors_bc = model.log_posterior_and_ingredients(known_artifact)
     assert log_priors_bc[0, Call.GERMLINE].item() == pytest.approx(impossible, abs=1)  # the priors are normalized
     assert normal_log_lks_bc[0, Call.NORMAL_ARTIFACT].item() == impossible
-    for call in (Call.SOMATIC, Call.SEQ_ERROR, Call.GERMLINE):
+    for call in (Call.SOMATIC, Call.SEQ_ERROR, Call.GERMLINE, Call.CONTAMINATION):
         assert log_posteriors_bc[0, call].item() == impossible
 
     negative_artifact_logit = make_batch([0.01], values | {Data.CACHED_ARTIFACT_LOGIT: -1})
@@ -98,6 +102,30 @@ def test_dataset_without_snvs_has_no_nan_posteriors():
 def test_extreme_allele_fractions_have_no_nan_posteriors(allele_frequency, values):
     model = make_posterior_model(torch.device("cpu"))
     assert_no_nan(model, make_batch([allele_frequency] * 2, PLAUSIBLE_VALUES | values))
+
+
+def test_contamination_explains_alt_fractions_near_the_contamination():
+    # in a tumor contaminated at 5%, 3 alt reads of 100 at a site of population allele frequency 0.1 are close to the 2.5
+    # of a het contaminant, but 30 alt reads are not.  Without contamination, alt reads can't come from a contaminant.
+    contaminated = SegmentationModel(
+        SampleSegmentation(emission_model=EmissionModel(contamination=0.05)), SampleSegmentation(), 0.05, 0.005
+    )
+
+    def contamination_probability(segmentation_model, alt_count: int) -> float:
+        model = PosteriorModel(-10, -10, device="cpu", segmentation_model=segmentation_model)
+        # the artifact logit rules out artifacts, and normal artifacts need alt reads in the normal
+        values = {
+            Data.ORIGINAL_DEPTH: 100,
+            Data.ORIGINAL_ALT_COUNT: alt_count,
+            Data.MAF: 0.5,
+            Data.SEQ_ERROR_LOG_LK: -30,
+            Data.CACHED_ARTIFACT_LOGIT: -5,
+        }
+        return model.posterior_probabilities_bc(make_batch([0.1], values))[0, Call.CONTAMINATION].item()
+
+    assert contamination_probability(contaminated, 3) > 0.99
+    assert contamination_probability(contaminated, 30) < 1e-6
+    assert contamination_probability(None, 3) < 1e-6
 
 
 def test_spectra_use_the_posterior_model_device():
@@ -241,3 +269,15 @@ def test_posterior_passes_read_no_values_for_each_batch(monkeypatch, posterior_p
         return len(calls)
 
     assert num_copies(1) == num_copies(3)
+
+
+def test_learning_leaves_the_segmentation_model_unchanged():
+    # the segmentation model was fit to the pileups of common SNPs, so fitting the spectra to the variants mustn't change it
+    segmentation_model = SegmentationModel(sample_segmentation("tumor"), sample_segmentation("normal"), 0.03, 0.002)
+    model = PosteriorModel(-10, -10, device="cpu", segmentation_model=segmentation_model)
+    before = {name: tensor.clone() for name, tensor in segmentation_model.state_dict().items()}
+    loader = [make_batch([0.01, 0.2, 0.5], PLAUSIBLE_VALUES | {Data.ORIGINAL_ALT_COUNT: alt}) for alt in (2, 15, 29)]
+    model.learn_priors_and_spectra(loader, num_iterations=2, ignored_to_non_ignored_ratio=10, learning_rate=0.1)
+    after = segmentation_model.state_dict()
+    assert all(torch.equal(before[name], after[name]) for name in before)
+    assert not any(parameter.requires_grad for parameter in segmentation_model.parameters())

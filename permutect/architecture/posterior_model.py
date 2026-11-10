@@ -20,6 +20,7 @@ from permutect.misc_utils import StreamingAverage
 from permutect.misc_utils import backpropagate
 from permutect.misc_utils import float_dtype
 from permutect.misc_utils import resolve_device
+from permutect.segmentation.segmentation_model import SegmentationModel
 from permutect.utils.enums import Call
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
@@ -65,16 +66,19 @@ class PosteriorModel(torch.nn.Module):
         artifact_log_prior: float,
         no_germline_mode: bool = False,
         device=None,
-        het_beta: float = None,
+        segmentation_model: SegmentationModel = None,
     ):
+        """
+        :param segmentation_model: from segment_pileups, for germline likelihoods.  Without one, the MAF is 1/2
+        everywhere and the germline likelihoods have default parameters.
+        """
         super(PosteriorModel, self).__init__()
 
         self._device = resolve_device(device)
         self._dtype = float_dtype(self._device)
         self.no_germline_mode = no_germline_mode
-        self.het_beta = het_beta
 
-        self.spectra = PosteriorModelSpectra(device=self._device, het_beta=het_beta)
+        self.spectra = PosteriorModelSpectra(segmentation_model, device=self._device)
         self.priors = PosteriorModelPriors(variant_log_prior, artifact_log_prior, no_germline_mode, self._device)
 
         self.to(device=self._device, dtype=self._dtype)
@@ -128,7 +132,7 @@ class PosteriorModel(torch.nn.Module):
         artifact_logits_b = torch.where(known_artifacts_b, 0, artifact_logits_b)
         log_posteriors_bc[:, Call.ARTIFACT] += artifact_logits_b
         log_posteriors_bc[:, Call.NORMAL_ARTIFACT] += artifact_logits_b
-        for non_artifact_call in (Call.SOMATIC, Call.SEQ_ERROR, Call.GERMLINE):
+        for non_artifact_call in (Call.SOMATIC, Call.SEQ_ERROR, Call.GERMLINE, Call.CONTAMINATION):
             log_posteriors_bc[:, non_artifact_call] = torch.where(
                 known_artifacts_b, constants.IMPOSSIBLE_LOG_PROB, log_posteriors_bc[:, non_artifact_call]
             )
@@ -164,7 +168,9 @@ class PosteriorModel(torch.nn.Module):
         """
         # spectra parameters are learned via batched stochastic gradient descent during the e step of each epoch.
         # the loss is the negative log evidence.  Prior parameters are adjusted in the M steo.
-        optimizer = torch.optim.Adam(self.spectra.parameters(), lr=learning_rate)
+        # the segmentation model's parameters are frozen
+        trainable_parameters = [parameter for parameter in self.spectra.parameters() if parameter.requires_grad]
+        optimizer = torch.optim.Adam(trainable_parameters, lr=learning_rate)
 
         # we begin learning with context-dependent priors turned off
         self.priors.disable_context_dependent_snv_priors()

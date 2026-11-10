@@ -20,9 +20,10 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def make_cached_m2_outputs(working_dir, archive_name: str, with_segments: bool) -> str:
+def make_cached_m2_outputs(working_dir, archive_name: str, with_pileups: bool, with_normal: bool) -> str:
     """
-    An archive of Mutect2 outputs for SEQC2 WES chr20, as made by the ArchiveM2Outputs task, with or without segments
+    An archive of Mutect2 outputs for SEQC2 WES chr20, as made by the ArchiveM2Outputs task, with or without the
+    pileups at common variants, which include the normal's only for a matched-normal run
     """
     m2_outputs = {
         "test_dataset": SEQC2_WES_PLAIN_TEXT_DATA,
@@ -31,8 +32,10 @@ def make_cached_m2_outputs(working_dir, archive_name: str, with_segments: bool) 
         "contigs_table": HG38_CONTIGS_TABLE,
         "mutect_stats": MUTECT2_SEQC2_WES_STATS,
     }
-    if with_segments:
-        m2_outputs.update(maf_segments=SEQC2_WES_TUMOR_SEGMENTS, normal_maf_segments=SEQC2_WES_NORMAL_SEGMENTS)
+    if with_pileups:
+        m2_outputs["tumor_pileups"] = SEQC2_WES_TUMOR_PILEUPS
+        if with_normal:
+            m2_outputs["normal_pileups"] = SEQC2_WES_NORMAL_PILEUPS
 
     archive = os.path.join(working_dir, archive_name)
     file_names_in_archive = task_output_files(PERMUTECT_WDL, "ExtractM2Outputs")
@@ -43,7 +46,7 @@ def make_cached_m2_outputs(working_dir, archive_name: str, with_segments: bool) 
 
 
 def run_permutect_wdl(
-    working_dir, filter_pcr_errors: bool, with_segments: bool, tumor_only: bool, with_normal: bool
+    working_dir, filter_pcr_errors: bool, with_pileups: bool, tumor_only: bool, with_normal: bool
 ) -> dict:
     """
     Run permutect.wdl with Cromwell on SEQC2 WES chr20 data, giving cached Mutect2 outputs so that Mutect2 is skipped.
@@ -72,7 +75,9 @@ def run_permutect_wdl(
         "Permutect.num_workers": 0,
         "Permutect.filter_pcr_errors": filter_pcr_errors,
         # a tumor-only run is also given matched-normal cached outputs, which it must ignore
-        "Permutect.cached_m2_outputs": make_cached_m2_outputs(working_dir, "cached_m2_outputs.tar", with_segments),
+        "Permutect.cached_m2_outputs": make_cached_m2_outputs(
+            working_dir, "cached_m2_outputs.tar", with_pileups, with_normal=True
+        ),
         "Permutect.tumor_only": tumor_only,
         "Permutect.permutect_docker": PERMUTECT_TEST_DOCKER,
         # Terra turns unset optional inputs into empty strings, which the workflow must treat as unset
@@ -80,7 +85,7 @@ def run_permutect_wdl(
         "Permutect.test_dataset_truth_vcf": "",
         "Permutect.test_dataset_truth_vcf_idx": "",
         "Permutect.tumor_only_cached_m2_outputs": (
-            make_cached_m2_outputs(working_dir, "tumor_only_cached_m2_outputs.tar", with_segments)
+            make_cached_m2_outputs(working_dir, "tumor_only_cached_m2_outputs.tar", with_pileups, with_normal=False)
             if tumor_only_mode
             else ""
         ),
@@ -104,7 +109,7 @@ def run_permutect_wdl(
     return metadata
 
 
-def check_cached_m2_outputs(metadata: dict, with_segments: bool, tumor_only_mode: bool):
+def check_cached_m2_outputs(metadata: dict, with_pileups: bool, tumor_only_mode: bool):
     # the cache for this run's mode is unpacked rather than running Mutect2, and both caches are passed through to the
     # outputs as is
     calls = metadata["calls"]
@@ -117,9 +122,15 @@ def check_cached_m2_outputs(metadata: dict, with_segments: bool, tumor_only_mode
     tumor_only_cache = inputs["tumor_only_cached_m2_outputs"] if tumor_only_mode else None
     assert outputs["Permutect.tumor_only_m2_outputs"] == tumor_only_cache
 
+    # with pileups, segment_pileups segments the samples, the normal only in a matched-normal run, and filter_variants
+    # uses the segmentation model
+    assert ("Permutect.SegmentPileups" in calls) == with_pileups
     filtering_inputs = calls["Permutect.PermutectFiltering"][0]["inputs"]
-    for segments in ("maf_segments", "normal_maf_segments"):
-        assert (filtering_inputs[segments] is not None) == with_segments
+    assert (filtering_inputs["segmentation_model"] is not None) == with_pileups
+    for output in ("segmentation_model", "tumor_segments", "tumor_segments_plot", "contamination_table"):
+        assert (outputs["Permutect." + output] is not None) == with_pileups
+    for output in ("normal_segments", "normal_segments_plot"):
+        assert (outputs["Permutect." + output] is not None) == (with_pileups and not tumor_only_mode)
 
 
 def output_vcf_records(metadata: dict, tumor_only_mode: bool) -> list[cyvcf2.Variant]:
@@ -142,31 +153,28 @@ def has_filter(v: cyvcf2.Variant, filter_name: str) -> bool:
 @pytest.fixture(scope="module")
 def metadata_with_pcr_error_filtering(tmp_path_factory):
     working_dir = tmp_path_factory.mktemp("with_pcr_error_filtering")
-    return run_permutect_wdl(
-        working_dir, filter_pcr_errors=True, with_segments=True, tumor_only=False, with_normal=True
-    )
+    return run_permutect_wdl(working_dir, filter_pcr_errors=True, with_pileups=True, tumor_only=False, with_normal=True)
 
 
 @pytest.fixture(scope="module")
 def metadata_without_pcr_error_filtering(tmp_path_factory):
-    # also without segments, which Mutect2 doesn't always make, and with tumor_only overriding the normal
+    # with tumor_only overriding the normal, so that only the tumor is segmented
     working_dir = tmp_path_factory.mktemp("without_pcr_error_filtering")
-    return run_permutect_wdl(
-        working_dir, filter_pcr_errors=False, with_segments=False, tumor_only=True, with_normal=True
-    )
+    return run_permutect_wdl(working_dir, filter_pcr_errors=False, with_pileups=True, tumor_only=True, with_normal=True)
 
 
 @pytest.fixture(scope="module")
 def metadata_without_normal(tmp_path_factory):
-    # tumor-only because the normal is the empty string that Terra gives for unset inputs, although tumor_only is false
+    # tumor-only because the normal is the empty string that Terra gives for unset inputs, although tumor_only is false.
+    # Also without pileups, which Mutect2 makes only with common variants.
     working_dir = tmp_path_factory.mktemp("without_normal")
     return run_permutect_wdl(
-        working_dir, filter_pcr_errors=False, with_segments=False, tumor_only=False, with_normal=False
+        working_dir, filter_pcr_errors=False, with_pileups=False, tumor_only=False, with_normal=False
     )
 
 
 def test_permutect_wdl_with_pcr_error_filtering(metadata_with_pcr_error_filtering):
-    check_cached_m2_outputs(metadata_with_pcr_error_filtering, with_segments=True, tumor_only_mode=False)
+    check_cached_m2_outputs(metadata_with_pcr_error_filtering, with_pileups=True, tumor_only_mode=False)
     assert "Permutect.PrePermutectFiltering" in metadata_with_pcr_error_filtering["calls"]
     # the empty truth VCF counts as no truth VCF
     assert "Permutect.PermutectConcordance" not in metadata_with_pcr_error_filtering["calls"]
@@ -179,7 +187,7 @@ def test_permutect_wdl_with_pcr_error_filtering(metadata_with_pcr_error_filterin
 
 
 def test_permutect_wdl_without_pcr_error_filtering(metadata_without_pcr_error_filtering):
-    check_cached_m2_outputs(metadata_without_pcr_error_filtering, with_segments=False, tumor_only_mode=True)
+    check_cached_m2_outputs(metadata_without_pcr_error_filtering, with_pileups=True, tumor_only_mode=True)
     assert "Permutect.PrePermutectFiltering" not in metadata_without_pcr_error_filtering["calls"]
     records = output_vcf_records(metadata_without_pcr_error_filtering, tumor_only_mode=True)
     assert any(v.INFO.get(POST_PROB_INFO_KEY) is not None for v in records)
@@ -187,6 +195,6 @@ def test_permutect_wdl_without_pcr_error_filtering(metadata_without_pcr_error_fi
 
 
 def test_permutect_wdl_without_normal(metadata_without_normal):
-    check_cached_m2_outputs(metadata_without_normal, with_segments=False, tumor_only_mode=True)
+    check_cached_m2_outputs(metadata_without_normal, with_pileups=False, tumor_only_mode=True)
     records = output_vcf_records(metadata_without_normal, tumor_only_mode=True)
     assert any(v.INFO.get(POST_PROB_INFO_KEY) is not None for v in records)

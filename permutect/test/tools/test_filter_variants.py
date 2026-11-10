@@ -17,6 +17,9 @@ from permutect.data.batch import Batch
 from permutect.data.datum import Data
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.metrics.posterior_result import PosteriorResult
+from permutect.segmentation.segmentation_model import SampleSegmentation
+from permutect.segmentation.segmentation_model import SegmentationModel
+from permutect.segmentation.segmenter import Segment
 from permutect.test.architecture.test_posterior_model_priors import make_batch
 from permutect.test.test_file_names import *
 from permutect.test.test_misc_utils import VCF_HEADER
@@ -25,6 +28,7 @@ from permutect.test.test_misc_utils import vcf_line
 from permutect.test.tools.test_pre_permutect_filtering import run_pre_permutect_filtering
 from permutect.tools import filter_variants
 from permutect.tools import pre_permutect_filtering
+from permutect.tools import segment_pileups
 from permutect.utils.enums import Call
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
@@ -132,18 +136,24 @@ def record_filters(record) -> set:
     return set(record.FILTER.split(";")) if record.FILTER else set()
 
 
-def test_filtering_on_seqc2_wes_chr20():
+def test_filtering_on_seqc2_wes_chr20(tmp_path):
     pre_filtered_vcf = run_pre_permutect_filtering(MUTECT2_SEQC2_WES_VCF, HG38_CHR20_REFERENCE)
     permutect_vcf = tempfile.NamedTemporaryFile()
     tensorboard_dir = tempfile.TemporaryDirectory()
+    segmentation_model = tmp_path / "segmentation_model.pt"
+    segment_pileups.segment_pileups(
+        SEQC2_WES_TUMOR_PILEUPS,
+        tmp_path / "tumor.segments.table",
+        normal_input_table=SEQC2_WES_NORMAL_PILEUPS,
+        segmentation_model=segmentation_model,
+    )
 
     filtering_args = parse_filtering_arguments(
         {
             constants.INPUT_NAME: pre_filtered_vcf.name,
             constants.TEST_DATASET_NAME: SEQC2_WES_PLAIN_TEXT_DATA,
             constants.CONTIGS_TABLE_NAME: HG38_CONTIGS_TABLE,
-            constants.MAF_SEGMENTS_NAME: SEQC2_WES_TUMOR_SEGMENTS,
-            constants.NORMAL_MAF_SEGMENTS_NAME: SEQC2_WES_NORMAL_SEGMENTS,
+            constants.SEGMENTATION_MODEL_NAME: str(segmentation_model),
             constants.OUTPUT_NAME: permutect_vcf.name,
             constants.TENSORBOARD_DIR_NAME: tensorboard_dir.name,
             # normalizing the test dataset in a process of its own
@@ -168,46 +178,60 @@ def test_filtering_on_seqc2_wes_chr20():
             values = v.INFO.get(info_key)
             assert values is None or len(values) == len(Call)
 
-    # variants with trusted non-artifact filters are output unchanged, while variants with trusted artifact filters
-    # keep them and are seen by the posterior model as definite artifacts or normal artifacts
-    input_records = {(v.CHROM, v.POS, v.REF, v.ALT[0]): str(v) for v in cyvcf2.VCF(pre_filtered_vcf.name)}
-    num_non_artifact_filtered, num_artifact_filtered = 0, 0
+    # variants with trusted artifact filters keep them and are seen by the posterior model as definite artifacts or
+    # normal artifacts, while variants that Mutect2 filtered for contamination are scored by the posterior model, which
+    # has its own contamination call
+    mutect2_contamination = {
+        (v.CHROM, v.POS, v.REF, v.ALT[0])
+        for v in cyvcf2.VCF(pre_filtered_vcf.name)
+        if "contamination" in record_filters(v)
+    }
+    num_scored_mutect2_contamination, num_artifact_filtered = 0, 0
     for v in cyvcf2.VCF(permutect_vcf.name):
         filters = record_filters(v)
-        if filters & filter_variants.TRUSTED_NON_ARTIFACT_FILTERS:
-            num_non_artifact_filtered += 1
-            assert str(v) == input_records[(v.CHROM, v.POS, v.REF, v.ALT[0])]
-        elif filters & filter_variants.TRUSTED_ARTIFACT_FILTERS:
+        posterior_probs = v.INFO.get(filter_variants.POST_PROB_INFO_KEY)
+        if (v.CHROM, v.POS, v.REF, v.ALT[0]) in mutect2_contamination and posterior_probs is not None:
+            num_scored_mutect2_contamination += 1
+        if filters & filter_variants.TRUSTED_ARTIFACT_FILTERS:
             num_artifact_filtered += 1
-            posterior_probs = v.INFO.get(filter_variants.POST_PROB_INFO_KEY)
             assert posterior_probs[Call.ARTIFACT] + posterior_probs[Call.NORMAL_ARTIFACT] == pytest.approx(1, abs=0.01)
             assert v.INFO.get(filter_variants.ARTIFACT_LOD_INFO_KEY) is None
-    assert num_non_artifact_filtered > 0 and num_artifact_filtered > 0
+    assert num_scored_mutect2_contamination > 0 and num_artifact_filtered > 0
 
     target_records = [v for v in cyvcf2.VCF(permutect_vcf.name) if v.CHROM == "chr20" and v.POS == 4932703]
     assert len(target_records) == 1
     assert pre_permutect_filtering.HAIRPIN_FILTER in target_records[0].FILTER.split(";")
 
 
-def segment_mafs(segmentation, contig: str, position: int) -> list[float]:
-    return [interval.data for interval in segmentation[contig][position]]
+def contig_index_to_name_map(contigs_table) -> dict[int, str]:
+    result = {}
+    with open(contigs_table) as file:
+        for line in file:
+            contig, index = line.split()
+            result[int(index)] = contig
+    return result
 
 
-def test_get_segmentation_from_model_segments():
-    segmentation = filter_variants.get_segmentation(SEQC2_WES_TUMOR_SEGMENTS)
-    # the segment chr20:187825-2536731 has median minor allele fraction posterior 0.176770
-    for position in (187825, 1000000, 2536731):
-        assert segment_mafs(segmentation, "chr20", position) == [pytest.approx(0.176770)]
-    # before the first chr20 segment, and between it and the next segment, which starts at 2537107
-    assert segment_mafs(segmentation, "chr20", 187824) == []
-    assert segment_mafs(segmentation, "chr20", 2536732) == []
-
-
-def test_get_segmentation_from_calculate_contamination():
-    segmentation = filter_variants.get_segmentation(SEGMENTS_TABLE)
-    for position in (17280822, 51065361):
-        assert segment_mafs(segmentation, "22", position) == [pytest.approx(0.44015695469901417)]
-    assert segment_mafs(segmentation, "22", 51065362) == []
+def test_annotated_mafs_come_from_the_segmentation_model():
+    # chr20 has MAF 0.3 in the tumor, except for a segment at its start, and 0.45 in the normal
+    tumor_segments = [Segment("chr20", 1, 1000000, 0.1, 0.1), Segment("chr20", 1000001, 70000000, 0.3, 0.3)]
+    tumor, normal = (
+        SampleSegmentation("tumor", tumor_segments),
+        SampleSegmentation("normal", [Segment("chr20", 1, 70000000, 0.45, 0.45)]),
+    )
+    dataset = filter_variants.make_annotated_dataset(
+        SEQC2_WES_PLAIN_TEXT_DATA,
+        MUTECT2_SEQC2_WES_VCF,
+        contig_index_to_name_map(HG38_CONTIGS_TABLE),
+        segmentation_model=SegmentationModel(tumor, normal),
+    )
+    data = list(dataset.memory_mapped_data.generate())
+    assert data
+    positions = np.array([datum.get(Data.POSITION) for datum in data])
+    mafs, normal_mafs = (np.array([datum.get(field) for datum in data]) for field in (Data.MAF, Data.NORMAL_MAF))
+    # stored as float16
+    assert np.allclose(mafs, np.where(positions <= 1000000, 0.1, 0.3), atol=1e-3)
+    assert np.allclose(normal_mafs, 0.45, atol=1e-3)
 
 
 def save_dropout_model(path):
@@ -296,13 +320,8 @@ def test_posterior_data_artifact_logits_are_deterministic(tmp_path):
     save_dropout_model(model_path)
     model = load_model(model_path, device=torch.device("cpu"))
 
-    contig_index_to_name_map = {}
-    with open(HG38_CONTIGS_TABLE) as file:
-        for line in file:
-            contig, index = line.split()
-            contig_index_to_name_map[int(index)] = contig
     dataset = filter_variants.make_annotated_dataset(
-        SEQC2_WES_PLAIN_TEXT_DATA, MUTECT2_SEQC2_WES_VCF, contig_index_to_name_map
+        SEQC2_WES_PLAIN_TEXT_DATA, MUTECT2_SEQC2_WES_VCF, contig_index_to_name_map(HG38_CONTIGS_TABLE)
     )
 
     def artifact_logits():

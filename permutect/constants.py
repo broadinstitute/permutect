@@ -52,12 +52,23 @@ CONTIGS_TABLE_NAME = "contigs_table"
 REFERENCE_NAME = "reference"
 GENOMIC_SPAN_NAME = "genomic_span"
 STEM_LOOP_MAX_ENERGY_NAME = "stem_loop_max_energy"
-MAF_SEGMENTS_NAME = "maf_segments"
-NORMAL_MAF_SEGMENTS_NAME = "normal_maf_segments"
+# also an output of segment_pileups
+SEGMENTATION_MODEL_NAME = "segmentation_model"
 GERMLINE_MODE_NAME = "germline_mode"
 NO_GERMLINE_MODE_NAME = "no_germline_mode"
 RECALL_WEIGHT_NAME = "recall_weight"
-HET_BETA_NAME = "het_beta"
+
+# arguments for segment_pileups
+NORMAL_INPUT_NAME = "normal_input"
+NORMAL_OUTPUT_NAME = "normal_output"
+CONTAMINATION_TABLE_NAME = "contamination_table"
+NUM_CONTAMINATION_ITERATIONS_NAME = "num_contamination_iterations"
+NUM_MAF_STATES_NAME = "num_maf_states"
+MAX_BREAKPOINT_RATE_NAME = "max_breakpoint_rate"
+MAF_PRIOR_CONCENTRATION_NAME = "maf_prior_concentration"
+MAX_EM_ITERATIONS_NAME = "max_em_iterations"
+PLOT_NAME = "plot"
+NORMAL_PLOT_NAME = "normal_plot"
 
 # numerical constants shared by the models
 IMPOSSIBLE_LOG_PROB = -9999  # rules out a call, while staying finite to avoid the NaNs that -inf can give

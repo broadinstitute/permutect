@@ -2,7 +2,7 @@ version 1.0
 
 # run Mutect2 without filtering to get plain text training data, then run preprocess_dataset.
 
-import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/54/plain-WDL/descriptor" as m2
+import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/59/plain-WDL/descriptor" as m2
 
 workflow MakeTrainingDataset {
     input {
@@ -19,9 +19,15 @@ workflow MakeTrainingDataset {
         String? cached_plain_text_dataset
 
         File? germline_resource
-        File? germline_resource_idx
         File? blacklist_vcf
+        File? permutect_training_dataset_truth_vcf
+
+        # Indices of the VCFs above, usually unnecessary on both local and cloud backends.  Each VCF's index is assumed to
+        # be the VCF's path plus .tbi for a bgzipped VCF (.vcf.gz or .vcf.bgz) or .idx for a plain .vcf.  Specify an
+        # index only to override that, for example for a non-standard extension.
+        File? germline_resource_idx
         File? blacklist_vcf_idx
+        File? permutect_training_dataset_truth_vcf_idx
 
         # extra arguments
         String? m2_extra_args
@@ -30,8 +36,6 @@ workflow MakeTrainingDataset {
         File? dragstr_model
         Boolean make_bamout = false
         Boolean compress_vcfs = false
-        File? permutect_training_dataset_truth_vcf
-        File? permutect_training_dataset_truth_vcf_idx
 
 
         # runtime

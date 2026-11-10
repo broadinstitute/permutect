@@ -15,6 +15,7 @@ import pytest
 from permutect import constants
 from permutect.test.test_file_names import test_dir
 from permutect.tools import edit_dataset
+from permutect.tools import segment_pileups
 
 SCRIPTS_DIR = os.path.abspath(os.path.join(test_dir, "..", "..", "scripts"))
 COMPARE_WDL = os.path.join(SCRIPTS_DIR, "compare_permutect_results.wdl")
@@ -178,7 +179,7 @@ def task_command(wdl_path: str, task_name: str) -> str:
 
 def task_output_files(wdl_path: str, task_name: str) -> dict:
     """
-    The file names of a task's file outputs, eg File? maf_segments = "maf_segments.seg", by output name
+    The file names of a task's file outputs, eg File? tumor_pileups = "tumor-pileups.table", by output name
     """
     with open(wdl_path) as file:
         wdl = file.read()
@@ -378,8 +379,7 @@ def test_permutect_filtering_stops_when_filter_variants_fails(tmp_path, filter_v
         "num_cpus": 2,
         "num_spectrum_iterations": None,
         "spectrum_learning_rate": None,
-        "maf_segments": None,
-        "normal_maf_segments": None,
+        "segmentation_model": None,
         "permutect_filtering_extra_args": None,
     }
     command = fill_placeholders(task_command(PERMUTECT_WDL, "PermutectFiltering"), inputs)
@@ -389,8 +389,8 @@ def test_permutect_filtering_stops_when_filter_variants_fails(tmp_path, filter_v
     assert calls == expected_calls
 
 
-@pytest.mark.parametrize("with_segments", [True, False])
-def test_archive_and_extract_m2_outputs(tmp_path, with_segments):
+@pytest.mark.parametrize("with_pileups", [True, False])
+def test_archive_and_extract_m2_outputs(tmp_path, with_pileups):
     # Mutect2 outputs with distinct contents, named as Mutect2 names them
     m2_dir, archive_dir, extract_dir = tmp_path / "mutect2", tmp_path / "archive", tmp_path / "extract"
     for directory in (m2_dir, archive_dir, extract_dir):
@@ -401,12 +401,12 @@ def test_archive_and_extract_m2_outputs(tmp_path, with_segments):
         "mutect2_vcf_idx": "merged.vcf.idx",
         "contigs_table": "contigs.table",
         "mutect_stats": "merged.stats",
-        "maf_segments": "tumor.modelFinal.seg",
-        "normal_maf_segments": "normal.modelFinal.seg",
+        "tumor_pileups": "tumor-pileups.tsv",
+        "normal_pileups": "normal-pileups.tsv",
     }
     m2_outputs = {}
     for name, file_name in m2_file_names.items():
-        if with_segments or not name.endswith("maf_segments"):
+        if with_pileups or not name.endswith("pileups"):
             (m2_dir / file_name).write_text(f"contents of {name}\n")
             m2_outputs[name] = str(m2_dir / file_name)
         else:
@@ -437,3 +437,32 @@ def test_archive_and_extract_m2_outputs(tmp_path, with_segments):
 
     # GATK finds the VCF index by its name
     assert extracted_file_names["mutect2_vcf_idx"] == extracted_file_names["mutect2_vcf"] + ".idx"
+
+
+@pytest.mark.parametrize("with_normal", [True, False])
+def test_segment_pileups_command(tmp_path, with_normal):
+    # the arguments that the task gives segment_pileups, which writes each of the task's outputs
+    inputs = {"tumor_pileups": "tumor.tsv", "normal_pileups": "normal.tsv" if with_normal else None}
+    inputs["segment_pileups_extra_args"] = "--num_contamination_iterations 3"
+    command = fill_placeholders(task_command(PERMUTECT_WDL, "SegmentPileups"), inputs)
+    fake_segment_pileups = '#!/bin/bash\nprintf "%s\\n" "$@" > arguments.txt\n'
+    result = run_bash(command, tmp_path, {"segment_pileups": fake_segment_pileups})
+    assert result.returncode == 0, result.stderr.decode()
+
+    arguments = segment_pileups.parse_arguments((tmp_path / "arguments.txt").read_text().split())
+    assert getattr(arguments, constants.INPUT_NAME) == "tumor.tsv"
+    assert getattr(arguments, constants.NORMAL_INPUT_NAME) == inputs["normal_pileups"]
+    assert getattr(arguments, constants.NUM_CONTAMINATION_ITERATIONS_NAME) == 3
+    output_arguments = {
+        "segmentation_model": constants.SEGMENTATION_MODEL_NAME,
+        "tumor_segments": constants.OUTPUT_NAME,
+        "tumor_segments_plot": constants.PLOT_NAME,
+        "normal_segments": constants.NORMAL_OUTPUT_NAME,
+        "normal_segments_plot": constants.NORMAL_PLOT_NAME,
+        "contamination_table": constants.CONTAMINATION_TABLE_NAME,
+    }
+    output_files = task_output_files(PERMUTECT_WDL, "SegmentPileups")
+    assert output_files.keys() == output_arguments.keys()
+    for output, argument in output_arguments.items():
+        expected = None if output.startswith("normal") and not with_normal else output_files[output]
+        assert getattr(arguments, argument) == expected

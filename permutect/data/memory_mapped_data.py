@@ -294,15 +294,14 @@ class MemoryMappedData:
     Add log allele frequency (AF), minor allele frequency (MAF), and normal minor allele frequency (normal MAF) to the
     float array of the output MemoryMappedData using information in a VCF and a segmentation.
     
-    Additionally, skip data that have a given set of filters in the VCF, and mark data that have a given set of
-    artifact filters in the VCF as known artifacts with an infinite cached artifact logit.
+    Additionally, mark data that have a given set of artifact filters in the VCF as known artifacts with an infinite
+    cached artifact logit.
     """
 
     def generate_vcf_annotated_data(
         self,
         input_vcf,
         contig_index_to_name_map,
-        filters_to_exclude: Set[str],
         artifact_filters: Set[str],
         segmentation=None,
         normal_segmentation=None,
@@ -312,7 +311,6 @@ class MemoryMappedData:
         normal_segmentation = defaultdict(IntervalTree) if normal_segmentation is None else normal_segmentation
 
         log_allele_frequencies = {}
-        encodings_to_exclude = set()
         artifact_encodings = set()
 
         print("recording filters and allele frequencies from input VCF")
@@ -321,8 +319,6 @@ class MemoryMappedData:
             encoding = encode_variant(v)
             # POPAF is -log10(AF); we convert to natural log without exponentiating to avoid underflow
             log_allele_frequencies[encoding] = -math.log(10) * get_first_numeric_element(v, "POPAF")
-            if overlapping_filters(v, filters_to_exclude):
-                encodings_to_exclude.add(encoding)
             if overlapping_filters(v, artifact_filters):
                 artifact_encodings.add(encoding)
 
@@ -331,7 +327,7 @@ class MemoryMappedData:
             position = datum.get(Data.POSITION)
             encoding = encode_datum(datum, contig_index_to_name_map)
 
-            if encoding in log_allele_frequencies and encoding not in encodings_to_exclude:
+            if encoding in log_allele_frequencies:
                 # NOTE: we copy the float array because it needs to be modified
                 new_datum = Datum(
                     int_array=datum.int_array,
@@ -359,7 +355,6 @@ class MemoryMappedData:
         self,
         input_vcf,
         contig_index_to_name_map,
-        filters_to_exclude: Set[str],
         artifact_filters: Set[str],
         segmentation=None,
         normal_segmentation=None,
@@ -367,7 +362,6 @@ class MemoryMappedData:
         generator = self.generate_vcf_annotated_data(
             input_vcf=input_vcf,
             contig_index_to_name_map=contig_index_to_name_map,
-            filters_to_exclude=filters_to_exclude,
             artifact_filters=artifact_filters,
             segmentation=segmentation,
             normal_segmentation=normal_segmentation,
