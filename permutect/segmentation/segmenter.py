@@ -45,8 +45,9 @@ STEP_SIZE_GROWTH = 1.5
 MAX_STEP_SIZE = 10.0
 # sites per chunk when computing emissions, to bound the memory of intermediate tensors
 CHUNK_SIZE = 100_000
-# the posterior of each segment's MAF is computed on this many MAFs evenly spaced from 0 to 1/2
-NUM_POSTERIOR_MAFS = 501
+# the posterior of each segment's MAF is computed on this many MAFs evenly spaced from 0 to 1/2, ie every 0.005, which
+# is finer than the MAFs of segments can be told apart and keeps this affordable for a genome's millions of sites
+NUM_POSTERIOR_MAFS = 101
 # each segment's MAF has an interval of the narrowest MAFs with this much of its posterior, ie a highest density interval
 MAF_INTERVAL_MASS = 0.8
 
@@ -83,14 +84,19 @@ class Segment:
     maf_high: float = math.nan
 
 
-def log_emissions(emission_model: EmissionModel, pileups: Pileups, mafs_k: np.ndarray) -> np.ndarray:
+def log_emissions(emission_model: EmissionModel, pileups: Pileups, mafs_k: np.ndarray, dtype=np.float32) -> np.ndarray:
+    """
+    The log emission probability of each site in each MAF state, computed in chunks of sites, which bounds the memory
+    of the emission model's intermediate tensors, into an array of the given dtype.  float32, the default, halves the
+    memory of one of the HMM's two largest arrays without changing its posteriors or Viterbi path appreciably.
+    """
     num_sites = len(pileups.alt_counts_n)
+    log_emissions_nk = np.empty((num_sites, len(mafs_k)), dtype=dtype)
     with torch.no_grad():
-        chunks = [
-            emission_model.log_likelihoods(pileups.subset(slice(start, start + CHUNK_SIZE)), torch.from_numpy(mafs_k))
-            for start in range(0, num_sites, CHUNK_SIZE)
-        ]
-    return torch.cat(chunks).numpy()
+        for start in range(0, num_sites, CHUNK_SIZE):
+            chunk = slice(start, start + CHUNK_SIZE)
+            log_emissions_nk[chunk] = emission_model.log_likelihoods(pileups.subset(chunk), torch.from_numpy(mafs_k))
+    return log_emissions_nk
 
 
 def segment(
@@ -123,7 +129,10 @@ def segment(
         active_k = np.flatnonzero(prior_k)
         log_emissions_nk = log_emissions(emission_model, pileups, mafs_k[active_k])
         jump_probs_n = jump_probabilities(distances_n, jump_rate)
-        posteriors = forward_backward(log_emissions_nk, jump_probs_n, prior_k[active_k], lengths_c)
+        # the emissions overwrite the log emissions, to save memory
+        posteriors = forward_backward(
+            log_emissions_nk, jump_probs_n, prior_k[active_k], lengths_c, overwrite_log_emissions=True
+        )
         print(
             f"EM iteration {iteration}: log likelihood {posteriors.log_likelihood:.2f}, {len(active_k)} MAF states, "
             f"jump rate {jump_rate:.3g} per base, step size {step_size:.3g}"
@@ -154,6 +163,8 @@ def segment(
         fitting_posteriors_nk = torch.from_numpy(posteriors.state_posteriors_nk[fitting_sites])
         fitting_mafs_k = torch.from_numpy(mafs_k[active_k])
         emission_model.fit(fitting_pileups, fitting_posteriors_nk, fitting_mafs_k, EMISSION_FIT_ITERATIONS, step_size)
+        # release this iteration's site-by-state arrays before the next E-step allocates its own
+        log_emissions_nk = posteriors = None
 
     model = emission_model
     print(
@@ -161,18 +172,27 @@ def segment(
         f"het concentration {model.het_concentration.item():.3g}, reference bias {model.reference_bias.item():.3g}, "
         f"outlier weight {model.outlier_weight.item():.3g}"
     )
-    states_n = active_k[viterbi(log_emissions_nk, jump_probs_n, prior_k[active_k], lengths_c)]
+    # EM stops right after an E-step, so these are the posteriors of the final parameters
+    posterior_mafs_n = posteriors.state_posteriors_nk @ mafs_k[active_k]
+    log_likelihood = posteriors.log_likelihood
+    # forward_backward overwrote the log emissions with the emissions, so Viterbi recomputes them, after the old arrays
+    # are released.  The recomputed ones are released when Viterbi returns.
+    log_emissions_nk = posteriors = None
+    active_states_n = viterbi(
+        log_emissions(emission_model, pileups, mafs_k[active_k]), jump_probs_n, prior_k[active_k], lengths_c
+    )
+    states_n = active_k[active_states_n]
     run_starts_r = find_runs(states_n, lengths_c)
     return Segmentation(
         mafs_k=mafs_k,
         states_n=states_n,
-        posterior_mafs_n=posteriors.state_posteriors_nk @ mafs_k[active_k],
+        posterior_mafs_n=posterior_mafs_n,
         run_starts_r=run_starts_r,
         run_mafs_r3=run_mafs(emission_model, pileups, run_starts_r),
         prior_k=prior_k,
         jump_rate=jump_rate,
         emission_model=emission_model,
-        log_likelihood=posteriors.log_likelihood,
+        log_likelihood=log_likelihood,
     )
 
 
@@ -202,7 +222,8 @@ def run_mafs(emission_model: EmissionModel, pileups: Pileups, run_starts_r: np.n
     log_likelihoods_rk = np.zeros((len(run_starts_r), NUM_POSTERIOR_MAFS))
     for start in range(0, num_sites, CHUNK_SIZE):
         sites = slice(start, start + CHUNK_SIZE)
-        log_emissions_nk = log_emissions(emission_model, pileups.subset(sites), mafs_k)
+        # float64, because a run's log likelihoods sum over many sites
+        log_emissions_nk = log_emissions(emission_model, pileups.subset(sites), mafs_k, dtype=np.float64)
         # the chunk's sites in each run, which are consecutive and in different runs from the other blocks'
         block_starts = np.flatnonzero(np.diff(runs_n[sites], prepend=-1))
         log_likelihoods_rk[runs_n[sites][block_starts]] += np.add.reduceat(log_emissions_nk, block_starts, axis=0)

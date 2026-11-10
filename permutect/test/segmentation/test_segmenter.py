@@ -2,11 +2,13 @@ import dataclasses
 
 import numpy as np
 import pytest
+import torch
 
 from permutect.segmentation import segmenter
 from permutect.segmentation.emissions import EmissionModel
 from permutect.segmentation.segmenter import Segment
 from permutect.segmentation.segmenter import find_runs
+from permutect.segmentation.segmenter import log_emissions
 from permutect.segmentation.segmenter import make_segments
 from permutect.segmentation.segmenter import run_mafs
 from permutect.segmentation.segmenter import segment
@@ -100,6 +102,18 @@ def test_run_mafs_in_chunks(monkeypatch):
     # chunks of 700 sites split runs
     monkeypatch.setattr(segmenter, "CHUNK_SIZE", 700)
     assert np.allclose(run_mafs(RUN_MODEL, RUN_PILEUPS, run_starts_r), expected_r3)
+
+
+def test_log_emissions_are_float32_and_computed_in_chunks(monkeypatch):
+    mafs_k = np.linspace(0, 0.5, 11)
+    with torch.no_grad():
+        expected_nk = RUN_MODEL.log_likelihoods(RUN_PILEUPS, torch.from_numpy(mafs_k)).numpy()
+    # chunks of 700 sites
+    monkeypatch.setattr(segmenter, "CHUNK_SIZE", 700)
+    log_emissions_nk = log_emissions(RUN_MODEL, RUN_PILEUPS, mafs_k)
+    assert log_emissions_nk.dtype == np.float32
+    assert np.allclose(log_emissions_nk, expected_nk, rtol=1e-6, atol=0)
+    assert np.allclose(log_emissions(RUN_MODEL, RUN_PILEUPS, mafs_k, dtype=np.float64), expected_nk, rtol=1e-12, atol=0)
 
 
 def test_make_segments():

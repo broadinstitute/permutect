@@ -78,25 +78,44 @@ def jump_probabilities(distances_n: np.ndarray, jump_rate: float) -> np.ndarray:
 
 
 def forward_backward(
-    log_emissions_nk: np.ndarray, jump_probs_n: np.ndarray, prior_k: np.ndarray, lengths_c
+    log_emissions_nk: np.ndarray,
+    jump_probs_n: np.ndarray,
+    prior_k: np.ndarray,
+    lengths_c,
+    overwrite_log_emissions: bool = False,
 ) -> Posteriors:
     """
     The E-step: posteriors of the states and jumps given the data.  The jump probabilities of the first site of each
     chain are ignored, because its state is drawn from the prior.
+
+    Memory: a whole genome has millions of sites, so this keeps only two site-by-state arrays.  One holds the emissions,
+    with the dtype of the log emissions, and overwrites them if overwrite_log_emissions.  The other holds the forward
+    probabilities, which the backward pass overwrites with the state posteriors as it goes.  The backward probabilities
+    and the posteriors of jumps are needed for one site of each chain at a time, so they are never stored for every site.
+
+    Precision: only the emissions may be float32, which is safe because they are relative to each site's largest, and
+    the emission model's outliers keep them from being tiny.  Everything else is float64, including the forward
+    probabilities.  Before EM prunes a state that the data don't support, its prior can be far smaller than the smallest
+    float32, so where such a state fits the sites ahead much better than the current mixture, its forward probability is
+    tiny and its backward probability huge, and their product, its posterior, needn't be small.  In float32 the forward
+    probability would underflow to 0 and the backward one overflow, giving NaNs.
     """
     steps = _ChainSteps(lengths_c)
     assert log_emissions_nk.shape == (steps.num_sites, len(prior_k)) and jump_probs_n.shape == (steps.num_sites,)
+    prior_k = prior_k.astype(np.float64)
 
     # emissions relative to each site's largest, so that they don't underflow; the log likelihood adds back the shifts
     max_log_emissions_n = np.max(log_emissions_nk, axis=1)
-    emissions_nk = np.exp(log_emissions_nk - max_log_emissions_n[:, None])
-    jump_n = jump_probs_n.copy()
+    emissions_nk = log_emissions_nk if overwrite_log_emissions else log_emissions_nk.copy()
+    emissions_nk -= max_log_emissions_n[:, None]
+    np.exp(emissions_nk, out=emissions_nk)
+    jump_n = jump_probs_n.astype(np.float64)
     jump_n[steps.starts_c] = 1.0
     stay_n = 1 - jump_n
 
     # alpha_nk = P(state k at site n | data up to site n) and normalizers_n = P(data at site n | data before site n),
     # both within the chain and with the emissions shifted
-    alpha_nk = np.empty_like(emissions_nk)
+    alpha_nk = np.empty(emissions_nk.shape)
     normalizers_n = np.empty(steps.num_sites)
     for t in range(steps.num_steps):
         n = steps.sites(t)
@@ -105,22 +124,36 @@ def forward_backward(
         normalizers_n[n] = np.sum(unnormalized_nk, axis=1)
         alpha_nk[n] = unnormalized_nk / normalizers_n[n, None]
 
-    # beta_nk = P(data after site n | state k at site n) / P(data after site n | data up to site n), within the chain
-    beta_nk = np.ones_like(emissions_nk)
-    for t in range(steps.num_steps - 1, 0, -1):
+    # beta = P(data after site n | state k at site n) / P(data after site n | data up to site n), within the chain, for
+    # the current site of each chain, in the sorted order of _ChainSteps.  At the last site of a chain it is 1.
+    beta_ck = np.ones((len(steps.sorted_starts_c), len(prior_k)))
+    # the state posteriors alpha * beta overwrite alpha site by site, after which alpha isn't needed
+    posteriors_nk = alpha_nk
+    jump_posteriors_n = np.empty(steps.num_sites)
+    expected_draws_k = np.zeros(len(prior_k))
+    for t in range(steps.num_steps - 1, -1, -1):
         n = steps.sites(t)
-        emitted_nk = emissions_nk[n] * beta_nk[n]
-        after_jump_n = emitted_nk @ prior_k
-        beta_nk[n - 1] = (stay_n[n, None] * emitted_nk + (jump_n[n] * after_jump_n)[:, None]) / normalizers_n[n, None]
+        beta_nk = beta_ck[: len(n)]
+        emitted_nk = emissions_nk[n] * beta_nk
 
-    # P(jump at site n that lands in state k | data), summing over the state at site n - 1, whose alpha sums to 1.  At
-    # the first site of each chain, where jump_n = 1, this is the state posterior.
-    draws_nk = jump_n[:, None] * prior_k * emissions_nk * beta_nk / normalizers_n[:, None]
+        # P(jump at site n that lands in state k | data), summing over the state at site n - 1, whose alpha sums to 1.
+        # At the first site of each chain, where jump_n = 1, this is the state posterior.
+        draws_nk = (jump_n[n] / normalizers_n[n])[:, None] * prior_k * emitted_nk
+        jump_posteriors_n[n] = np.sum(draws_nk, axis=1)
+        expected_draws_k += np.sum(draws_nk, axis=0)
+        posteriors_nk[n] = alpha_nk[n] * beta_nk
+
+        if t > 0:
+            # beta at site n - 1 of these chains, and 1 at the last sites of the chains that end at step t - 1
+            after_jump_n = emitted_nk @ prior_k
+            beta_nk[:] = (stay_n[n, None] * emitted_nk + (jump_n[n] * after_jump_n)[:, None]) / normalizers_n[n, None]
+            beta_ck[len(n) : steps.num_chains_t[t - 1]] = 1
+
     return Posteriors(
-        state_posteriors_nk=alpha_nk * beta_nk,
-        jump_posteriors_n=np.sum(draws_nk, axis=1),
-        expected_draws_k=np.sum(draws_nk, axis=0),
-        log_likelihood=float(np.sum(np.log(normalizers_n)) + np.sum(max_log_emissions_n)),
+        state_posteriors_nk=posteriors_nk,
+        jump_posteriors_n=jump_posteriors_n,
+        expected_draws_k=expected_draws_k,
+        log_likelihood=float(np.sum(np.log(normalizers_n)) + np.sum(max_log_emissions_n, dtype=np.float64)),
     )
 
 
