@@ -22,6 +22,11 @@ from permutect.utils.math_utils import log1mexp
 # the floating-point fields of a Segment, after its contig, start and end
 SEGMENT_MAF_FIELDS = ("maf", "secondary_maf", "maf_low", "maf_high")
 
+# Below this MAF, a normal is taken to have only one distinct haplotype: its other haplotype is identical, in a run of
+# homozygosity, or missing, in a hemizygous deletion.  The segment_pileups HMM gives such regions MAFs of 0 or nearly 0,
+# and a normal's other regions MAFs near 1/2.
+HOMOZYGOUS_NORMAL_MAF = 0.05
+
 
 class SampleSegmentation(nn.Module):
     """
@@ -65,22 +70,6 @@ class SampleSegmentation(nn.Module):
         pileups = Pileups(alt_counts, depths, allele_frequencies)
         return self.emission_model.log_likelihoods(pileups, mafs[:, None]).squeeze(1)
 
-    def germline_log_likelihoods(
-        self, alt_counts: Tensor, depths: Tensor, log_allele_frequencies: Tensor, mafs: Tensor
-    ) -> Tensor:
-        """
-        The log likelihood of each site's alt count given that the sample carries the alt allele: the segmentation's het
-        and hom alt genotypes, whose Hardy-Weinberg probabilities 2q(1 - q) and q^2 are divided by the probability q(2 - q)
-        of carrying the alt allele, without hom refs and outliers.  The allele frequencies are logs so that tiny ones
-        don't underflow.
-        """
-        allele_frequencies = torch.exp(log_allele_frequencies)
-        _, het, hom_alt = self.emission_model.genotype_log_likelihoods(alt_counts, depths, allele_frequencies, mafs)
-        # the het term is the sum over both phases, each of probability q(1 - q), so the het weight is (1 - q) / (2 - q)
-        log_weighted_het = log1mexp(log_allele_frequencies) + het
-        log_weighted_hom_alt = log_allele_frequencies + hom_alt
-        return torch.logaddexp(log_weighted_het, log_weighted_hom_alt) - torch.log(2 - allele_frequencies)
-
     def contamination_log_likelihoods(
         self, alt_counts: Tensor, depths: Tensor, log_allele_frequencies: Tensor
     ) -> Tensor:
@@ -88,8 +77,8 @@ class SampleSegmentation(nn.Module):
         The log likelihood of each site's alt count given that the sample is hom ref and its alt reads come from a
         contaminant who carries the alt allele: a het or hom alt contaminant, whose Hardy-Weinberg probabilities
         2q(1 - q) and q^2 are divided by the probability q(2 - q) of carrying the alt allele, as in
-        germline_log_likelihoods.  This is the single-contaminant likelihood of GATK's contamination filter divided by
-        q(2 - q), with reference bias.  Without contamination, alt reads are impossible.
+        SegmentationModel.germline_log_likelihoods.  This is the single-contaminant likelihood of GATK's contamination
+        filter divided by q(2 - q), with reference bias.  Without contamination, alt reads are impossible.
         """
         allele_frequencies = torch.exp(log_allele_frequencies)
         het, hom_alt = self.emission_model.contaminant_log_likelihoods(alt_counts, depths)
@@ -153,6 +142,91 @@ class SegmentationModel(nn.Module):
         self.contamination = contamination
         self.contamination_error = contamination_error
         freeze(self.parameters())
+
+    def germline_log_likelihoods(
+        self,
+        tumor_alt_counts: Tensor,
+        tumor_depths: Tensor,
+        normal_alt_counts: Tensor,
+        normal_depths: Tensor,
+        log_allele_frequencies: Tensor,
+        tumor_mafs: Tensor,
+        normal_mafs: Tensor,
+    ) -> Tensor:
+        """
+        The joint log likelihood of the tumor's and the normal's alt counts at each site given that the person carries
+        the alt allele in the germline.  Each sample's counts get its own segmentation's emission model at its own MAF.
+        Without a normal, its depths are 0 and its MAFs 1/2, and this is the likelihood of the tumor's counts alone.  The
+        population allele frequencies q are logs so that tiny ones don't underflow.  The inputs broadcast together.
+
+        Genotypes: a carrier of the alt allele is a het, with Hardy-Weinberg probability 2q(1 - q), or a hom alt, with
+        probability q^2.  The posterior model's germline prior is the probability q(2 - q) of being a carrier, so here
+        these are divided by it, giving 2(1 - q) / (2 - q) for a het and q / (2 - q) for a hom alt.  Hom refs aren't
+        carriers, and the emission model's outliers are left out.
+
+        Sharing the genotype: the tumor and the normal have the same germline genotype, so the likelihood isn't the
+        product of the tumor's and the normal's likelihoods, each summed over genotypes.  Instead each genotype's term
+        multiplies the two samples' likelihoods of that genotype.
+
+        Sharing the haplotype: a het's alt allele is on one of the person's two haplotypes, each with probability 1/2,
+        and it's the same haplotype in the tumor and the normal.  Each sample's segmentation gives its minor haplotype's
+        fraction of its alleles, the MAF, but not which haplotype that is.  We assume that the tumor's minor haplotype is
+        the normal's, so that the het term is
+
+            (1 - q) / (2 - q) * [ T(MAF_T) N(MAF_N) + T(1 - MAF_T) N(1 - MAF_N) ]
+
+        where T(f) and N(f) are the tumor's and the normal's likelihoods of their alt counts if a fraction f of their
+        alleles carry the alt allele: the alt allele is on the minor haplotype of both samples or on the major haplotype
+        of both.  This assumption costs nothing where the normal is balanced, MAF_N = 1/2, because its two terms are
+        equal.  Where the normal has only one distinct haplotype, MAF_N = 0, it's exact, because the tumor descends from
+        the same germline: its only haplotype is the normal's.  It's wrong only where an imbalanced normal's minor
+        haplotype is the tumor's major one, which takes both a germline copy number change and a tumor one.
+
+        Summing each sample's likelihood over the phases separately would let the alt allele be on the normal's missing
+        haplotype, which explains a normal without alt reads, and on the tumor's only haplotype, which explains a tumor
+        all of whose reads are alt.  Then a clonal somatic variant in a run of homozygosity of the normal, which the
+        tumor shares, would look germline.
+
+        One distinct haplotype: where the normal's MAF is below HOMOZYGOUS_NORMAL_MAF, the person's other haplotype is
+        identical or missing, so no allele is on the minor haplotype alone, and the first het term is left out.  Its
+        only use would be to explain alt reads in a tumor whose MAF, wrongly, isn't 0 there, as when the tumor's
+        segmentation smooths over a short run of homozygosity.  The weights then sum to 1 / (2 - q) rather than 1, so
+        that, with the germline prior q(2 - q), the probability of carrying the alt allele, on the one distinct
+        haplotype, is q.
+        """
+        allele_frequencies = torch.exp(log_allele_frequencies)
+
+        # each sample's log likelihoods of its counts with the alt allele on its minor haplotype, on its major haplotype,
+        # and on both, from its own emission model.  Their hom ref terms are unused.
+        _, tumor_alt_on_minor, tumor_alt_on_major, tumor_hom_alt = (
+            self.tumor.emission_model.phased_genotype_log_likelihoods(
+                tumor_alt_counts, tumor_depths, allele_frequencies, tumor_mafs
+            )
+        )
+        _, normal_alt_on_minor, normal_alt_on_major, normal_hom_alt = (
+            self.normal.emission_model.phased_genotype_log_likelihoods(
+                normal_alt_counts, normal_depths, allele_frequencies, normal_mafs
+            )
+        )
+
+        # the log probabilities, given that the person is a carrier, of a het with the alt allele on a given haplotype,
+        # q(1 - q) / q(2 - q) = (1 - q) / (2 - q), and of a hom alt, q^2 / q(2 - q) = q / (2 - q).  The factors of q are
+        # cancelled so that q = 0 doesn't give -inf - (-inf) = NaN.
+        log_two_minus_q = torch.log(2 - allele_frequencies)
+        log_het_haplotype_weight = log1mexp(log_allele_frequencies) - log_two_minus_q
+        log_hom_alt_weight = log_allele_frequencies - log_two_minus_q
+
+        # the genotype and the alt allele's haplotype are shared by the tumor and the normal
+        alt_on_minor = log_het_haplotype_weight + tumor_alt_on_minor + normal_alt_on_minor
+        alt_on_major = log_het_haplotype_weight + tumor_alt_on_major + normal_alt_on_major
+        hom_alt = log_hom_alt_weight + tumor_hom_alt + normal_hom_alt
+
+        # a normal with one distinct haplotype has no alt allele on its minor haplotype alone.  IMPOSSIBLE_LOG_PROB rather
+        # than -inf avoids NaNs.
+        normal_has_one_haplotype = normal_mafs < HOMOZYGOUS_NORMAL_MAF
+        alt_on_minor = torch.where(normal_has_one_haplotype, constants.IMPOSSIBLE_LOG_PROB, alt_on_minor)
+
+        return torch.logsumexp(torch.stack(torch.broadcast_tensors(alt_on_minor, alt_on_major, hom_alt)), dim=0)
 
     def save(self, path):
         state = {"tumor": self.tumor.state(), "normal": self.normal.state()}

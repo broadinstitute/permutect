@@ -84,6 +84,25 @@ class EmissionModel(nn.Module):
             return biased
         return biased * (1 - self.error_rate) + (1 - biased) * self.error_rate
 
+    def phased_genotype_log_likelihoods(
+        self, alt_counts: Tensor, depths: Tensor, allele_frequencies: Tensor, mafs: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+        """
+        log P(alt count | depth, allele frequency, genotype) for hom ref, for each phase of a het, and for hom alt.  A
+        het's phases have the alt allele on the minor haplotype, whose fraction of the sample's alleles is the MAF, or on
+        the major haplotype, of fraction 1 - MAF.  The inputs broadcast together.
+        """
+
+        def log_beta_binomial(sample_alt_fractions, concentration: Tensor) -> Tensor:
+            means = self.alt_fractions(sample_alt_fractions, allele_frequencies)
+            return beta_binomial_log_lk(depths, alt_counts, means * concentration, (1 - means) * concentration)
+
+        hom_ref = log_beta_binomial(0.0, self.hom_concentration)
+        alt_on_minor_haplotype = log_beta_binomial(mafs, self.het_concentration)
+        alt_on_major_haplotype = log_beta_binomial(1 - mafs, self.het_concentration)
+        hom_alt = log_beta_binomial(1.0, self.hom_concentration)
+        return hom_ref, alt_on_minor_haplotype, alt_on_major_haplotype, hom_alt
+
     def genotype_log_likelihoods(
         self, alt_counts: Tensor, depths: Tensor, allele_frequencies: Tensor, mafs: Tensor
     ) -> tuple[Tensor, Tensor, Tensor]:
@@ -92,17 +111,10 @@ class EmissionModel(nn.Module):
         over the het's two phases, ie with the alt allele as the minor allele, of fraction MAF, and as the major allele.
         The inputs broadcast together.
         """
-
-        def log_beta_binomial(sample_alt_fractions, concentration: Tensor) -> Tensor:
-            means = self.alt_fractions(sample_alt_fractions, allele_frequencies)
-            return beta_binomial_log_lk(depths, alt_counts, means * concentration, (1 - means) * concentration)
-
-        hom_ref = log_beta_binomial(0.0, self.hom_concentration)
-        het = torch.logaddexp(
-            log_beta_binomial(mafs, self.het_concentration), log_beta_binomial(1 - mafs, self.het_concentration)
+        hom_ref, alt_on_minor, alt_on_major, hom_alt = self.phased_genotype_log_likelihoods(
+            alt_counts, depths, allele_frequencies, mafs
         )
-        hom_alt = log_beta_binomial(1.0, self.hom_concentration)
-        return hom_ref, het, hom_alt
+        return hom_ref, torch.logaddexp(alt_on_minor, alt_on_major), hom_alt
 
     def contaminant_log_likelihoods(self, alt_counts: Tensor, depths: Tensor) -> tuple[Tensor, Tensor]:
         """

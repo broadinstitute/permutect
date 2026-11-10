@@ -64,8 +64,10 @@ class PosteriorModelSpectra(nn.Module):
         spectra_log_lks_bc[:, Call.ARTIFACT] = self.artifact_spectra.forward(var_types_b, depths_b, alt_counts_b)
         spectra_log_lks_bc[:, Call.NORMAL_ARTIFACT] = na_tumor_log_lks_b
         spectra_log_lks_bc[:, Call.SEQ_ERROR] = batch.get(Data.SEQ_ERROR_LOG_LK)
-        spectra_log_lks_bc[:, Call.GERMLINE] = self.segmentation_model.tumor.germline_log_likelihoods(
-            alt_counts_b, depths_b, log_afs_b, mafs_b
+        # the tumor and the normal share a germline genotype, so their germline likelihood is a joint one, which goes
+        # here, and the normal's germline column below stays 0
+        spectra_log_lks_bc[:, Call.GERMLINE] = self.segmentation_model.germline_log_likelihoods(
+            alt_counts_b, depths_b, normal_alt_counts_b, normal_depths_b, log_afs_b, mafs_b, batch.get(Data.NORMAL_MAF)
         )
         spectra_log_lks_bc[:, Call.CONTAMINATION] = self.segmentation_model.tumor.contamination_log_likelihoods(
             alt_counts_b, depths_b, log_afs_b
@@ -80,9 +82,6 @@ class PosteriorModelSpectra(nn.Module):
         normal_log_lks_bc[:, Call.CONTAMINATION] = normal_seq_error_log_lks
         normal_log_lks_bc[:, Call.NORMAL_ARTIFACT] = torch.where(
             normal_alt_counts_b < 1, constants.IMPOSSIBLE_LOG_PROB, na_normal_log_lks_b
-        )
-        normal_log_lks_bc[:, Call.GERMLINE] = self.segmentation_model.normal.germline_log_likelihoods(
-            normal_alt_counts_b, normal_depths_b, log_afs_b, batch.get(Data.NORMAL_MAF)
         )
 
         return spectra_log_lks_bc, normal_log_lks_bc

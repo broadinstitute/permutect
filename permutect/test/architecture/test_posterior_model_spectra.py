@@ -11,7 +11,7 @@ from permutect.utils.enums import Call
 
 
 def test_germline_log_likelihoods_come_from_the_segmentation_model():
-    # the tumor's and the normal's, each with its own parameters
+    # one likelihood of the tumor's and the normal's counts jointly, with each sample's own parameters
     segmentation_model = SegmentationModel(sample_segmentation("tumor"), sample_segmentation("normal"), 0.03, 0.002)
     with torch.no_grad():
         segmentation_model.normal.emission_model.parametrizations.het_concentration.original.fill_(math.log(20.0))
@@ -31,15 +31,16 @@ def test_germline_log_likelihoods_come_from_the_segmentation_model():
     log_afs_b = batch.get(Data.LOG_ALLELE_FREQUENCY)
     tumor_counts = (batch.get(Data.ORIGINAL_ALT_COUNT), batch.get(Data.ORIGINAL_DEPTH))
     normal_counts = (batch.get(Data.ORIGINAL_NORMAL_ALT_COUNT), batch.get(Data.ORIGINAL_NORMAL_DEPTH))
-    tumor_b = segmentation_model.tumor.germline_log_likelihoods(*tumor_counts, log_afs_b, batch.get(Data.MAF))
-    normal_b = segmentation_model.normal.germline_log_likelihoods(*normal_counts, log_afs_b, batch.get(Data.NORMAL_MAF))
-    assert torch.allclose(spectra_log_lks_bc[:, Call.GERMLINE], tumor_b)
-    assert torch.allclose(normal_log_lks_bc[:, Call.GERMLINE], normal_b)
-    # the normal's own parameters, not the tumor's
-    tumor_model_on_normal_b = segmentation_model.tumor.germline_log_likelihoods(
-        *normal_counts, log_afs_b, batch.get(Data.NORMAL_MAF)
+    mafs = (batch.get(Data.MAF), batch.get(Data.NORMAL_MAF))
+    joint_b = segmentation_model.germline_log_likelihoods(*tumor_counts, *normal_counts, log_afs_b, *mafs)
+    assert torch.allclose(spectra_log_lks_bc[:, Call.GERMLINE], joint_b)
+    # the joint likelihood includes the normal, whose own germline column is 0
+    assert torch.all(normal_log_lks_bc[:, Call.GERMLINE] == 0)
+    # the normal's counts get the normal's own parameters, not the tumor's
+    tumor_parameters_for_both = SegmentationModel(segmentation_model.tumor, segmentation_model.tumor, 0.03, 0.002)
+    assert not torch.allclose(
+        joint_b, tumor_parameters_for_both.germline_log_likelihoods(*tumor_counts, *normal_counts, log_afs_b, *mafs)
     )
-    assert not torch.allclose(normal_b, tumor_model_on_normal_b)
 
 
 def test_contamination_log_likelihoods_come_from_the_tumor_segmentation():
