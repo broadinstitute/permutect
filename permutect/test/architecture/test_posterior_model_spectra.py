@@ -8,6 +8,7 @@ from permutect.segmentation.germline_model import GermlineModel
 from permutect.test.architecture.test_posterior_model_priors import make_batch
 from permutect.test.segmentation.test_germline_model import sample_segmentation
 from permutect.utils.enums import Call
+from permutect.utils.enums import Variation
 
 
 def test_germline_log_likelihoods_come_from_the_germline_model():
@@ -41,6 +42,44 @@ def test_germline_log_likelihoods_come_from_the_germline_model():
     assert not torch.allclose(
         joint_b, tumor_parameters_for_both.germline_log_likelihoods(*tumor_counts, *normal_counts, log_afs_b, *mafs)
     )
+
+
+def test_indels_use_the_indel_parameters_for_their_repeat_lengths():
+    germline_model = GermlineModel(sample_segmentation("tumor"), sample_segmentation("normal"), 0.03, 0.002)
+    model = PosteriorModel(-10, -10, device="cpu", germline_model=germline_model)
+    # a germline deletion in a 16-base homopolymer, in LOH in the tumor, whose alt fraction falls short of 1
+    values = {
+        Data.VARIANT_TYPE: Variation.DELETION,
+        Data.ORIGINAL_DEPTH: 40,
+        Data.ORIGINAL_ALT_COUNT: 31,
+        Data.ORIGINAL_NORMAL_DEPTH: 30,
+        Data.ORIGINAL_NORMAL_ALT_COUNT: 13,
+        Data.MAF: 0.0,
+        Data.NORMAL_MAF: 0.5,
+        Data.REPEAT_UNIT_LENGTH: 1,
+        Data.REPEAT_LENGTH: 16,
+    }
+    batch = make_batch([0.3], values)
+    spectra_log_lks_bc, _ = model.spectra.spectra_log_likelihoods_bc(batch)
+
+    counts_and_mafs = (
+        batch.get(Data.ORIGINAL_ALT_COUNT),
+        batch.get(Data.ORIGINAL_DEPTH),
+        batch.get(Data.ORIGINAL_NORMAL_ALT_COUNT),
+        batch.get(Data.ORIGINAL_NORMAL_DEPTH),
+        batch.get(Data.LOG_ALLELE_FREQUENCY),
+        batch.get(Data.MAF),
+        batch.get(Data.NORMAL_MAF),
+    )
+    as_indel = germline_model.germline_log_likelihoods(
+        *counts_and_mafs,
+        indels=torch.tensor([True]),
+        repeat_unit_lengths=batch.get(Data.REPEAT_UNIT_LENGTH),
+        repeat_lengths=batch.get(Data.REPEAT_LENGTH),
+    )
+    assert torch.allclose(spectra_log_lks_bc[:, Call.GERMLINE], as_indel)
+    # which is far likelier than with the SNV parameters
+    assert spectra_log_lks_bc[0, Call.GERMLINE] > germline_model.germline_log_likelihoods(*counts_and_mafs)[0] + 5
 
 
 def test_contamination_log_likelihoods_come_from_the_tumor_segmentation():

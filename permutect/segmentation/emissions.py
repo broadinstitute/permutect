@@ -85,22 +85,37 @@ class EmissionModel(nn.Module):
         return biased * (1 - self.error_rate) + (1 - biased) * self.error_rate
 
     def phased_genotype_log_likelihoods(
-        self, alt_counts: Tensor, depths: Tensor, allele_frequencies: Tensor, mafs: Tensor
+        self,
+        alt_counts: Tensor,
+        depths: Tensor,
+        allele_frequencies: Tensor,
+        mafs: Tensor,
+        alt_fraction_factors: Tensor = None,
+        hom_concentrations: Tensor = None,
+        het_concentrations: Tensor = None,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """
         log P(alt count | depth, allele frequency, genotype) for hom ref, for each phase of a het, and for hom alt.  A
         het's phases have the alt allele on the minor haplotype, whose fraction of the sample's alleles is the MAF, or on
         the major haplotype, of fraction 1 - MAF.  The inputs broadcast together.
+
+        The optional factors multiply each expected alt fraction, and the optional concentrations replace the model's,
+        site by site, eg for indels, whose alt fractions behave differently from those of the SNPs that the model was
+        fit to.
         """
+        hom_concentrations = self.hom_concentration if hom_concentrations is None else hom_concentrations
+        het_concentrations = self.het_concentration if het_concentrations is None else het_concentrations
 
         def log_beta_binomial(sample_alt_fractions, concentration: Tensor) -> Tensor:
             means = self.alt_fractions(sample_alt_fractions, allele_frequencies)
+            if alt_fraction_factors is not None:
+                means = means * alt_fraction_factors
             return beta_binomial_log_lk(depths, alt_counts, means * concentration, (1 - means) * concentration)
 
-        hom_ref = log_beta_binomial(0.0, self.hom_concentration)
-        alt_on_minor_haplotype = log_beta_binomial(mafs, self.het_concentration)
-        alt_on_major_haplotype = log_beta_binomial(1 - mafs, self.het_concentration)
-        hom_alt = log_beta_binomial(1.0, self.hom_concentration)
+        hom_ref = log_beta_binomial(0.0, hom_concentrations)
+        alt_on_minor_haplotype = log_beta_binomial(mafs, het_concentrations)
+        alt_on_major_haplotype = log_beta_binomial(1 - mafs, het_concentrations)
+        hom_alt = log_beta_binomial(1.0, hom_concentrations)
         return hom_ref, alt_on_minor_haplotype, alt_on_major_haplotype, hom_alt
 
     def genotype_log_likelihoods(

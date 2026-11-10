@@ -1,4 +1,5 @@
 import math
+from functools import partial
 
 import numpy as np
 import pytest
@@ -10,6 +11,7 @@ from permutect.segmentation.emissions import Pileups
 from permutect.segmentation.germline_model import HOMOZYGOUS_NORMAL_MAF
 from permutect.segmentation.germline_model import GermlineModel
 from permutect.segmentation.germline_model import SampleSegmentation
+from permutect.segmentation.indel_parameters import IndelParameters
 from permutect.segmentation.segmenter import Segment
 
 # learned parameters unlike the defaults, with the outlier weight at its cap
@@ -332,3 +334,69 @@ def test_parameters_are_frozen():
     model = GermlineModel(sample_segmentation("tumor"))
     parameters = list(model.parameters())
     assert parameters and all(not parameter.requires_grad for parameter in parameters)
+
+
+def indel_parameters(shortfall_scale: float, log_concentration: float) -> IndelParameters:
+    """a constant shortfall and concentration in every repeat class and at every STR length"""
+    return IndelParameters([shortfall_scale] * 4, [100.0] * 4, [0.0] * 4, [[0]] * 4, [[log_concentration]] * 4)
+
+
+def test_indels_have_their_own_alt_fractions_and_concentrations():
+    # with the emission model's het and hom concentrations equal, an indel parameter with that concentration and no
+    # shortfall gives the same likelihoods as for an SNV.  In float64, since float32's rounding errors would obscure that.
+    emission = EmissionModel(error_rate=0.002, hom_concentration=60.0, het_concentration=60.0)
+    tensor = partial(torch.tensor, dtype=torch.float64)
+    log_afs, mafs = torch.log(tensor([0.1, 0.3, 0.2])), tensor([0.5, 0.0, 0.3])
+    alt_counts, depths = tensor([12.0, 35.0, 7.0]), tensor([30.0, 40.0, 25.0])
+    zeros, halves = tensor([0.0] * 3), tensor([0.5] * 3)
+    indels = torch.tensor([True, True, False])
+    repeat_unit_lengths, repeat_lengths = tensor([0.0, 1.0, 0.0]), tensor([0.0, 15.0, 0.0])
+
+    def germline(parameters: IndelParameters, with_indels: bool = True) -> torch.Tensor:
+        model = GermlineModel(SampleSegmentation(emission_model=emission), indel_parameters=parameters).double()
+        indel_arguments = dict(indels=indels, repeat_unit_lengths=repeat_unit_lengths, repeat_lengths=repeat_lengths)
+        return model.germline_log_likelihoods(
+            alt_counts, depths, zeros, zeros, log_afs, mafs, halves, **(indel_arguments if with_indels else {})
+        )
+
+    as_snvs = germline(indel_parameters(0.0, math.log(60.0)), with_indels=False)
+    assert torch.allclose(germline(indel_parameters(0.0, math.log(60.0))), as_snvs)
+    # a shortfall and a lower concentration change the indels' likelihoods and not the SNV's
+    adjusted = germline(indel_parameters(0.3, math.log(10.0)))
+    assert not torch.isclose(adjusted[0], as_snvs[0]) and not torch.isclose(adjusted[1], as_snvs[1])
+    assert torch.isclose(adjusted[2], as_snvs[2])
+    # in LOH, MAF 0, a germline indel whose tumor AF falls short of 1 is far likelier with the shortfall and dispersion
+    assert adjusted[1] > as_snvs[1] + 5
+
+
+def test_indel_parameters_apply_to_the_tumor_alone():
+    # the normal's indels keep the normal's emission model, so with no tumor reads the indel parameters change nothing
+    model = germline_model()
+    log_afs, mafs = torch.log(torch.tensor([0.2, 0.05])), torch.tensor([0.5, 0.3])
+    normal_alt_counts, normal_depths = torch.tensor([9.0, 3.0]), torch.tensor([20.0, 30.0])
+    no_tumor_reads = torch.zeros(2)
+    indel_arguments = dict(
+        indels=torch.tensor([True, True]),
+        repeat_unit_lengths=torch.tensor([1.0, 0.0]),
+        repeat_lengths=torch.tensor([18.0, 0.0]),
+    )
+    with_indel_parameters = model.germline_log_likelihoods(
+        no_tumor_reads, no_tumor_reads, normal_alt_counts, normal_depths, log_afs, mafs, mafs, **indel_arguments
+    )
+    without = model.germline_log_likelihoods(
+        no_tumor_reads, no_tumor_reads, normal_alt_counts, normal_depths, log_afs, mafs, mafs
+    )
+    assert torch.allclose(with_indel_parameters, without)
+
+
+def test_save_and_load_the_indel_parameters(tmp_path):
+    model = GermlineModel(sample_segmentation("tumor"), indel_parameters=indel_parameters(0.2, math.log(15.0)))
+    path = tmp_path / "germline_model.pt"
+    model.save(path)
+    assert GermlineModel.load(path).indel_parameters.state() == model.indel_parameters.state()
+
+    # a model saved before indels had their own parameters loads with the defaults
+    state = torch.load(path, weights_only=True)
+    del state["indel_parameters"]
+    torch.save(state, path)
+    assert GermlineModel.load(path).indel_parameters.state() == IndelParameters.default().state()

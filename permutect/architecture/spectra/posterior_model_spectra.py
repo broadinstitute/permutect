@@ -11,6 +11,10 @@ from permutect.misc_utils import float_dtype
 from permutect.misc_utils import resolve_device
 from permutect.segmentation.germline_model import GermlineModel
 from permutect.utils.enums import Call
+from permutect.utils.enums import Variation
+
+# the variant types whose germline likelihoods use the germline model's indel parameters
+INDEL_VARIATIONS = (Variation.INSERTION, Variation.DELETION, Variation.BIG_INSERTION, Variation.BIG_DELETION)
 
 
 class PosteriorModelSpectra(nn.Module):
@@ -65,9 +69,23 @@ class PosteriorModelSpectra(nn.Module):
         spectra_log_lks_bc[:, Call.NORMAL_ARTIFACT] = na_tumor_log_lks_b
         spectra_log_lks_bc[:, Call.SEQ_ERROR] = batch.get(Data.SEQ_ERROR_LOG_LK)
         # the tumor and the normal share a germline genotype, so their germline likelihood is a joint one, which goes
-        # here, and the normal's germline column below stays 0
+        # here, and the normal's germline column below stays 0.  Indels have their own parameters, given their STRs'
+        # repeat unit lengths and lengths, which are 0 outside STRs and NaN for data that filter_variants hasn't annotated.
+        indels_b = torch.isin(var_types_b, torch.tensor(INDEL_VARIATIONS, device=var_types_b.device))
+        repeat_unit_lengths_b, repeat_lengths_b = (
+            torch.nan_to_num(batch.get(field), nan=0.0) for field in (Data.REPEAT_UNIT_LENGTH, Data.REPEAT_LENGTH)
+        )
         spectra_log_lks_bc[:, Call.GERMLINE] = self.germline_model.germline_log_likelihoods(
-            alt_counts_b, depths_b, normal_alt_counts_b, normal_depths_b, log_afs_b, mafs_b, batch.get(Data.NORMAL_MAF)
+            alt_counts_b,
+            depths_b,
+            normal_alt_counts_b,
+            normal_depths_b,
+            log_afs_b,
+            mafs_b,
+            batch.get(Data.NORMAL_MAF),
+            indels=indels_b,
+            repeat_unit_lengths=repeat_unit_lengths_b,
+            repeat_lengths=repeat_lengths_b,
         )
         spectra_log_lks_bc[:, Call.CONTAMINATION] = self.germline_model.tumor.contamination_log_likelihoods(
             alt_counts_b, depths_b, log_afs_b
