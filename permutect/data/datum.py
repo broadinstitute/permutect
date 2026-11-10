@@ -76,8 +76,9 @@ class Data(enum.Enum):
     # after this, at the end of the int16 array comes the sub-array containing the ref sequence haplotype
 
     # float array elements
-    # log allele frequency, maf, normal maf, and cached artifact logit are not used until the posterior model.  They are
-    # NaN until filter_variants sets them from the VCF, the segmentations and the artifact model.
+    # log allele frequency, maf, normal maf, cached artifact logit and the repeat lengths are not used until the
+    # posterior model.  They are NaN until filter_variants sets them from the VCF, the germline model and the artifact
+    # model.
     # allele frequency is stored as its natural log because population allele frequencies can be too small for float16
     SEQ_ERROR_LOG_LK = (FLOAT_DTYPE, 0)
     NORMAL_SEQ_ERROR_LOG_LK = (FLOAT_DTYPE, 1)
@@ -85,6 +86,10 @@ class Data(enum.Enum):
     MAF = (FLOAT_DTYPE, 3)
     NORMAL_MAF = (FLOAT_DTYPE, 4)
     CACHED_ARTIFACT_LOGIT = (FLOAT_DTYPE, 5)  # +inf marks a known artifact, eg from a trusted upstream filter
+    # the lengths in bases of the repeat unit of the short tandem repeat (STR) that the variant is in and of the STR in
+    # the reference, from Mutect2's RU and RPA annotations, or 0 outside an STR.  float16 holds them exactly.
+    REPEAT_UNIT_LENGTH = (FLOAT_DTYPE, 6)
+    REPEAT_LENGTH = (FLOAT_DTYPE, 7)
     # after this, at the end of the float16 array comes the sub-array containing the INFO vector
 
     def __init__(self, dtype: np.dtype, idx: int):
@@ -94,8 +99,13 @@ class Data(enum.Enum):
 
 Data.NUM_SCALAR_INT_ELEMENTS = 16  # in Python 3.11+ can use enum.nonmember
 Data.HAPLOTYPES_START_IDX = 16  # in Python 3.11+ can use enum.nonmember
-Data.NUM_SCALAR_FLOAT_ELEMENTS = 6  # in Python 3.11+ can use enum.nonmember
-Data.INFO_START_IDX = 6  # in Python 3.11+ can use enum.nonmember
+Data.NUM_SCALAR_FLOAT_ELEMENTS = 8  # in Python 3.11+ can use enum.nonmember
+Data.INFO_START_IDX = 8  # in Python 3.11+ can use enum.nonmember
+
+# The version of the layout of the int and float arrays, which saved data record, so that data saved with another
+# layout fail to load rather than being misread.  Version 2 added REPEAT_UNIT_LENGTH and REPEAT_LENGTH, which moved the
+# INFO vector.
+DATA_LAYOUT_VERSION = 2
 
 
 def get_data_field(int_array, float_array, data_field: Data):
@@ -210,6 +220,8 @@ class Datum:
         result.set(Data.MAF, np.nan)
         result.set(Data.NORMAL_MAF, np.nan)
         result.set(Data.CACHED_ARTIFACT_LOGIT, np.nan)
+        result.set(Data.REPEAT_UNIT_LENGTH, np.nan)
+        result.set(Data.REPEAT_LENGTH, np.nan)
 
         result.float_array[Data.INFO_START_IDX :] = info_array
         return result

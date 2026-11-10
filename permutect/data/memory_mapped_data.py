@@ -22,6 +22,7 @@ from intervaltree import IntervalTree
 from tqdm import tqdm
 
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
+from permutect.data.datum import DATA_LAYOUT_VERSION
 from permutect.data.datum import FLOAT_DTYPE
 from permutect.data.datum import INTEGER_DTYPE
 from permutect.data.datum import Data
@@ -32,6 +33,7 @@ from permutect.misc_utils import encode_datum
 from permutect.misc_utils import encode_variant
 from permutect.misc_utils import get_first_numeric_element
 from permutect.misc_utils import overlapping_filters
+from permutect.misc_utils import str_repeat_lengths
 
 # numpy.save appends .npy if the extension doesn't already include it.  We preempt this behavior.
 SUFFIX_FOR_INT_MMAP = ".int_mmap.npy"
@@ -291,9 +293,10 @@ class MemoryMappedData:
         return self._restrict(reads_datum_source, estimated_proportion=labeled_proportion)
 
     """
-    Add log allele frequency (AF), minor allele frequency (MAF), and normal minor allele frequency (normal MAF) to the
-    float array of the output MemoryMappedData using information in a VCF and a segmentation.
-    
+    Add log allele frequency (AF), minor allele frequency (MAF), normal minor allele frequency (normal MAF), and the
+    lengths of the repeat unit and of the reference STR to the float array of the output MemoryMappedData using
+    information in a VCF and a segmentation.
+
     Additionally, mark data that have a given set of artifact filters in the VCF as known artifacts with an infinite
     cached artifact logit.
     """
@@ -311,14 +314,16 @@ class MemoryMappedData:
         normal_segmentation = defaultdict(IntervalTree) if normal_segmentation is None else normal_segmentation
 
         log_allele_frequencies = {}
+        repeat_lengths = {}
         artifact_encodings = set()
 
-        print("recording filters and allele frequencies from input VCF")
+        print("recording filters, allele frequencies and repeat lengths from input VCF")
         pbar = tqdm(enumerate(cyvcf2.VCF(input_vcf)), mininterval=60)
         for n, v in pbar:
             encoding = encode_variant(v)
             # POPAF is -log10(AF); we convert to natural log without exponentiating to avoid underflow
             log_allele_frequencies[encoding] = -math.log(10) * get_first_numeric_element(v, "POPAF")
+            repeat_lengths[encoding] = str_repeat_lengths(v)
             if overlapping_filters(v, artifact_filters):
                 artifact_encodings.add(encoding)
 
@@ -347,6 +352,9 @@ class MemoryMappedData:
                 new_datum.set(Data.LOG_ALLELE_FREQUENCY, log_allele_frequency)
                 new_datum.set(Data.MAF, maf)
                 new_datum.set(Data.NORMAL_MAF, normal_maf)
+                repeat_unit_length, repeat_length = repeat_lengths[encoding]
+                new_datum.set(Data.REPEAT_UNIT_LENGTH, repeat_unit_length)
+                new_datum.set(Data.REPEAT_LENGTH, repeat_length)
                 if encoding in artifact_encodings:
                     new_datum.set(Data.CACHED_ARTIFACT_LOGIT, np.inf)
                 yield new_datum
@@ -381,7 +389,7 @@ class MemoryMappedData:
             4) it's convenient to package things as a single tarfile
         Each array is written straight into the tarfile as a .npy file, without a temporary copy.
         """
-        # num_data, data dimension; num_reads, reads dimension
+        # num_data, data dimension; num_reads, reads dimension; the layout of the data arrays
         metadata = np.array(
             [
                 self.num_data,
@@ -389,6 +397,7 @@ class MemoryMappedData:
                 self.float_mmap.shape[-1],
                 self.num_reads,
                 0 if self.reads_mmap is None else self.reads_mmap.shape[-1],
+                DATA_LAYOUT_VERSION,
             ],
             dtype=np.uint32,
         )
@@ -429,6 +438,13 @@ class MemoryMappedData:
             open_array = lambda suffix: np.lib.format.open_memmap(files[suffix], mode="r")
 
         num_data, int_array_dim, float_array_dim, num_reads, reads_dim = loaded_metadata[:5]
+        # data saved before the layout was recorded have the first layout
+        layout_version = int(loaded_metadata[5]) if len(loaded_metadata) > 5 else 1
+        if layout_version != DATA_LAYOUT_VERSION:
+            raise ValueError(
+                f"{data_tarfile} has data in layout version {layout_version}, not {DATA_LAYOUT_VERSION}, and would be "
+                "misread.  Regenerate it from the plain text data with preprocess_dataset."
+            )
         assert (SUFFIX_FOR_READS_MMAP in files) == (num_reads != 0)
         # files saved before only the data were saved may have unused capacity after the data, which __init__ leaves out
         int_mmap = open_array(SUFFIX_FOR_INT_MMAP)

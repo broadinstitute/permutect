@@ -29,6 +29,7 @@ from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.datum import NUMBER_OF_BYTES_IN_PACKED_READ
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
+from permutect.data.memory_mapped_data import SUFFIX_FOR_METADATA
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.memory_mapped_data import StackedData
 from permutect.data.reads_dataset import ReadsDataset
@@ -364,6 +365,52 @@ def test_vcf_annotation_without_a_segmentation(tmp_path):
     segmentation = defaultdict(IntervalTree)
     segmentation["chr1"][90:150] = 0.25
     assert annotated_mafs(tmp_path, segmentation=segmentation) == [(0.25, 0.5), (0.5, 0.5)]
+
+
+def test_vcf_annotation_records_repeat_lengths(tmp_path):
+    # the repeat unit's and the STR's lengths come from Mutect2's RU and RPA, whose first count is the reference's, and
+    # are 0 outside STRs
+    repeat_header_lines = (
+        '##INFO=<ID=RU,Number=1,Type=String,Description="Tandem repeat unit">\n'
+        '##INFO=<ID=RPA,Number=R,Type=Integer,Description="Repeats per allele">\n'
+    )
+    vcf = tmp_path / "variants.vcf"
+    vcf.write_text(
+        VCF_HEADER.replace("#CHROM", repeat_header_lines + "#CHROM")
+        + vcf_line("C", "T", pos=100, info="POPAF=3")
+        + "\n"
+        + vcf_line("CAG", "C", pos=200, info="POPAF=5;RU=AG;RPA=6,5")
+        + "\n"
+    )
+    data = [make_datum_with_alleles(0, 100, "C", "T"), make_datum_with_alleles(0, 200, "CAG", "C")]
+    memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=2, estimated_num_reads=6)
+    annotated = memory_mapped_data.make_vcf_annotate_memory_mapped_data(str(vcf), {0: "chr1"}, artifact_filters=set())
+    repeat_lengths = [
+        (float(d.get(Data.REPEAT_UNIT_LENGTH)), float(d.get(Data.REPEAT_LENGTH))) for d in annotated.generate()
+    ]
+    assert repeat_lengths == [(0.0, 0.0), (2.0, 12.0)]
+
+
+def test_data_saved_in_an_older_layout_fail_to_load(tmp_path):
+    data = [make_datum(index, num_reads) for index, num_reads in enumerate([2, 1, 3])]
+    path = tmp_path / "data.tar"
+    MemoryMappedData.from_generator(data, estimated_num_data=3, estimated_num_reads=6).save_to_tarfile(path)
+    assert_same_data(MemoryMappedData.load_from_tarfile(path), data)
+
+    # the same data with the metadata of data saved before the layout was recorded, which had five entries
+    old_path = tmp_path / "old.tar"
+    with tarfile.open(path) as tar, tarfile.open(old_path, "w") as old_tar:
+        for member in tar.getmembers():
+            contents = tar.extractfile(member).read()
+            if member.name.endswith(SUFFIX_FOR_METADATA):
+                metadata = torch.load(io.BytesIO(contents), weights_only=False)
+                old_metadata = io.BytesIO()
+                torch.save(metadata[:5], old_metadata)
+                contents = old_metadata.getvalue()
+            member.size = len(contents)
+            old_tar.addfile(member, io.BytesIO(contents))
+    with pytest.raises(ValueError, match="layout version 1"):
+        MemoryMappedData.load_from_tarfile(old_path)
 
 
 def test_vcf_annotation_keys_follow_misc_utils(tmp_path, monkeypatch):
