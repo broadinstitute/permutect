@@ -54,7 +54,7 @@ GENOMIC_SPAN_NAME = "genomic_span"
 STEM_LOOP_MAX_ENERGY_NAME = "stem_loop_max_energy"
 NO_HAIRPIN_FILTER_NAME = "no_hairpin_filter"
 # also an output of segment_pileups
-SEGMENTATION_MODEL_NAME = "segmentation_model"
+GERMLINE_MODEL_NAME = "germline_model"
 GERMLINE_MODE_NAME = "germline_mode"
 NO_GERMLINE_MODE_NAME = "no_germline_mode"
 RECALL_WEIGHT_NAME = "recall_weight"

@@ -124,11 +124,11 @@ def check_cached_m2_outputs(metadata: dict, with_pileups: bool, tumor_only_mode:
     assert outputs["Permutect.tumor_only_m2_outputs"] == tumor_only_cache
 
     # with pileups, segment_pileups segments the samples, the normal only in a matched-normal run, and filter_variants
-    # uses the segmentation model
+    # uses the germline model
     assert ("Permutect.SegmentPileups" in calls) == with_pileups
     filtering_inputs = calls["Permutect.PermutectFiltering"][0]["inputs"]
-    assert (filtering_inputs["segmentation_model"] is not None) == with_pileups
-    for output in ("segmentation_model", "tumor_segments", "tumor_segments_plot", "contamination_table"):
+    assert (filtering_inputs["germline_model"] is not None) == with_pileups
+    for output in ("germline_model", "tumor_segments", "tumor_segments_plot", "contamination_table"):
         assert (outputs["Permutect." + output] is not None) == with_pileups
     for output in ("normal_segments", "normal_segments_plot"):
         assert (outputs["Permutect." + output] is not None) == (with_pileups and not tumor_only_mode)

@@ -7,9 +7,9 @@ import torch
 from permutect import constants
 from permutect.segmentation.emissions import EmissionModel
 from permutect.segmentation.emissions import Pileups
-from permutect.segmentation.segmentation_model import HOMOZYGOUS_NORMAL_MAF
-from permutect.segmentation.segmentation_model import SampleSegmentation
-from permutect.segmentation.segmentation_model import SegmentationModel
+from permutect.segmentation.germline_model import HOMOZYGOUS_NORMAL_MAF
+from permutect.segmentation.germline_model import GermlineModel
+from permutect.segmentation.germline_model import SampleSegmentation
 from permutect.segmentation.segmenter import Segment
 
 # learned parameters unlike the defaults, with the outlier weight at its cap
@@ -44,15 +44,15 @@ def all_alt_counts(depth: int, num_sites: int) -> tuple[torch.Tensor, torch.Tens
     return alt_counts_nk, torch.full_like(alt_counts_nk, float(depth))
 
 
-def segmentation_model() -> SegmentationModel:
+def germline_model() -> GermlineModel:
     # the tumor's and the normal's emission models have different parameters
-    model = SegmentationModel(sample_segmentation("tumor"), sample_segmentation("normal"), 0.03, 0.002)
+    model = GermlineModel(sample_segmentation("tumor"), sample_segmentation("normal"), 0.03, 0.002)
     with torch.no_grad():
         model.normal.emission_model.parametrizations.het_concentration.original.fill_(math.log(20.0))
     return model
 
 
-def tumor_only_germline_log_likelihoods(model: SegmentationModel, alt_counts, depths, log_afs, mafs) -> torch.Tensor:
+def tumor_only_germline_log_likelihoods(model: GermlineModel, alt_counts, depths, log_afs, mafs) -> torch.Tensor:
     # without a normal, whose depths are 0 and MAFs 1/2
     zeros = torch.zeros_like(alt_counts)
     return model.germline_log_likelihoods(alt_counts, depths, zeros, zeros, log_afs, mafs, torch.full_like(mafs, 0.5))
@@ -62,7 +62,7 @@ def test_germline_log_likelihoods_are_normalized():
     # the joint distribution of the tumor's and normal's alt counts given that the person carries the alt allele sums
     # to 1, except where the normal has one distinct haplotype, so that no alt allele is on its minor haplotype alone,
     # and it sums to 1 / (2 - q)
-    model = segmentation_model()
+    model = germline_model()
     allele_frequencies_n = torch.tensor([1e-6, 0.01, 0.3, 0.5, 0.9, 1.0, 0.2, 0.01], dtype=torch.float64)
     tumor_mafs_n = torch.tensor([0.5, 0.4, 0.2, 0.0, 0.5, 0.3, 0.0, 0.3], dtype=torch.float64)
     normal_mafs_n = torch.tensor([0.5, 0.45, 0.2, 0.5, 0.3, 0.5, 0.0, 0.01], dtype=torch.float64)
@@ -92,7 +92,7 @@ def test_tumor_and_normal_share_the_haplotype_of_a_het():
     # in an imbalanced normal and tumor, MAF 0.25, a het's alt allele on the minor haplotype gives an alt fraction of
     # 0.25 in both samples, and on the major haplotype 0.75 in both, but never 0.25 in one and 0.75 in the other.
     # Summing each sample's likelihood over the phases separately would make all four equally likely.
-    model = SegmentationModel()
+    model = GermlineModel()
     log_afs, mafs = torch.log(torch.tensor([1e-4])), torch.tensor([0.25])
 
     def germline(tumor_alt_count: float, normal_alt_count: float) -> float:
@@ -110,7 +110,7 @@ def test_a_somatic_variant_in_shared_loss_of_heterozygosity_is_not_germline():
     # SEQC2's tumor and normal share runs of homozygosity, MAF 0, where a clonal somatic variant has every tumor read
     # alt and no normal read alt.  The alt allele can't be on the normal's missing haplotype and the tumor's only one,
     # so this is far less likely than a germline hom alt, every read of both samples alt.
-    model = segmentation_model()
+    model = germline_model()
     log_afs, mafs = torch.log(torch.tensor([1e-6])), torch.tensor([0.0])
 
     def germline(tumor_alt_count: float, normal_alt_count: float) -> float:
@@ -129,7 +129,7 @@ def test_without_a_normal_haplotype_no_alt_allele_is_on_the_minor_haplotype_alon
     # run of homozygosity, can't explain a tumor alt fraction of 0.33 with a normal without alt reads.  That holds for a
     # normal MAF slightly above 0 too, at which the normal's lack of alt reads would be likely if the alt allele could be
     # on its minor haplotype.
-    model = segmentation_model()
+    model = germline_model()
     log_afs, tumor_mafs = torch.log(torch.tensor([1e-6])), torch.tensor([0.33])
     tumor_alt, tumor_depth = torch.tensor([46.0]), torch.tensor([136.0])
     normal_alt, normal_depth = torch.tensor([0.0]), torch.tensor([165.0])
@@ -170,7 +170,7 @@ def test_emission_log_likelihoods_are_the_segmentation_emissions():
 
 def test_without_a_normal_germline_log_likelihoods_are_the_carrier_part_of_the_tumors_emissions():
     # the emission is a mixture of hom refs, carriers and outliers, with weights (1 - w)(1 - q)^2, (1 - w) q (2 - q) and w
-    model = segmentation_model()
+    model = germline_model()
     emission_model = model.tumor.emission_model
     alt_counts_n = torch.tensor([0.0, 5.0, 20.0, 39.0], dtype=torch.float64)
     depths_n = torch.full_like(alt_counts_n, 40.0)
@@ -186,7 +186,7 @@ def test_without_a_normal_germline_log_likelihoods_are_the_carrier_part_of_the_t
 
 
 def test_germline_log_likelihoods_of_no_reads_are_zero():
-    model = SegmentationModel()
+    model = GermlineModel()
     log_afs = torch.log(torch.tensor([1e-12, 1e-6, 0.01, 0.3, 0.9, 1.0]))
     zeros, mafs = torch.zeros_like(log_afs), torch.full_like(log_afs, 0.4)
     result = model.germline_log_likelihoods(zeros, zeros, zeros, zeros, log_afs, mafs, mafs)
@@ -197,7 +197,7 @@ def test_germline_log_likelihoods_of_no_reads_are_zero():
 def test_tiny_allele_frequencies():
     # allele frequencies that underflow to 0 in float32, but whose logs are fine, give the het likelihood, since a
     # carrier of a very rare allele is almost surely het
-    model = SegmentationModel()
+    model = GermlineModel()
     log_afs = torch.tensor([-50.0, -120.0, -300.0])
     alt_counts, depths, mafs = torch.full((3,), 20.0), torch.full((3,), 40.0), torch.full((3,), 0.5)
     result = tumor_only_germline_log_likelihoods(model, alt_counts, depths, log_afs, mafs)
@@ -209,7 +209,7 @@ def test_tiny_allele_frequencies():
 
 def test_maf_of_zero_or_one():
     # eg the tumor's copy-neutral loss of heterozygosity, where a het's reads are almost all ref or all alt
-    model = SegmentationModel()
+    model = GermlineModel()
     log_afs = torch.log(torch.full((4,), 1e-3))
     mafs = torch.tensor([0.0, 1.0, 0.0, 1.0])
     alt_counts, depths = torch.tensor([0.0, 30.0, 15.0, 15.0]), torch.full((4,), 30.0)
@@ -286,10 +286,10 @@ def test_maf_intervals():
 
 
 def test_save_and_load(tmp_path):
-    model = SegmentationModel(sample_segmentation("tumor"), sample_segmentation("normal"), 0.03, 0.002)
-    path = tmp_path / "segmentation_model.pt"
+    model = GermlineModel(sample_segmentation("tumor"), sample_segmentation("normal"), 0.03, 0.002)
+    path = tmp_path / "germline_model.pt"
     model.save(path)
-    loaded = SegmentationModel.load(path)
+    loaded = GermlineModel.load(path)
 
     assert (loaded.contamination, loaded.contamination_error) == (0.03, 0.002)
     for original, copy in ((model.tumor, loaded.tumor), (model.normal, loaded.normal)):
@@ -320,15 +320,15 @@ def test_save_and_load(tmp_path):
 
 def test_default_model(tmp_path):
     # without segments, every MAF is 1/2, and the emission models have their default parameters
-    model = SegmentationModel()
+    model = GermlineModel()
     assert all(len(intervals) == 0 for intervals in (model.tumor.maf_intervals(), model.normal.maf_intervals()))
     path = tmp_path / "default.pt"
     model.save(path)
-    loaded = SegmentationModel.load(path)
+    loaded = GermlineModel.load(path)
     assert loaded.tumor.segments == [] and math.isnan(loaded.tumor.jump_rate)
 
 
 def test_parameters_are_frozen():
-    model = SegmentationModel(sample_segmentation("tumor"))
+    model = GermlineModel(sample_segmentation("tumor"))
     parameters = list(model.parameters())
     assert parameters and all(not parameter.requires_grad for parameter in parameters)

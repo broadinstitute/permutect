@@ -244,7 +244,7 @@ workflow Permutect {
             artifact_model = artifact_model,
             test_dataset = select_first([Mutect2.permutect_test_dataset, ExtractM2Outputs.test_dataset]),
             contigs_table = select_first([Mutect2.permutect_contigs_table, ExtractM2Outputs.contigs_table]),
-            segmentation_model = SegmentPileups.segmentation_model,
+            germline_model = SegmentPileups.germline_model,
             mutect_stats = select_first([Mutect2.mutect_stats, ExtractM2Outputs.mutect_stats]),
             batch_size = batch_size,
             num_workers = num_workers,
@@ -330,7 +330,7 @@ workflow Permutect {
         File? m2_concordance_summary = M2Concordance.summary
 
         # segment_pileups' outputs, if there were common variants
-        File? segmentation_model = SegmentPileups.segmentation_model
+        File? germline_model = SegmentPileups.germline_model
         File? tumor_segments = SegmentPileups.tumor_segments
         File? tumor_segments_plot = SegmentPileups.tumor_segments_plot
         File? normal_segments = SegmentPileups.normal_segments
@@ -346,7 +346,7 @@ workflow Permutect {
         File contigs_table
         File mutect2_vcf
         File mutect2_vcf_idx
-        File? segmentation_model
+        File? germline_model
         File mutect_stats
         Int? num_spectrum_iterations
         Float? spectrum_learning_rate
@@ -381,7 +381,7 @@ workflow Permutect {
             --batch_size ~{batch_size} --num_workers ~{num_workers} --num_processes ~{num_cpus} \
             ~{" --num_spectrum_iterations " + num_spectrum_iterations} \
             ~{" --spectrum_learning_rate " + spectrum_learning_rate} \
-            ~{" --segmentation_model " + segmentation_model} \
+            ~{" --germline_model " + germline_model} \
             --genomic_span $genomic_span ~{permutect_filtering_extra_args}
 
         tar cvf tensorboard.tar tensorboard/
@@ -647,7 +647,7 @@ task SegmentPileups {
         fi
 
         segment_pileups --input ~{tumor_pileups} --output tumor.segments.table --plot tumor.segments.png \
-            $normal_args --contamination_table contamination.table --segmentation_model segmentation-model.pt \
+            $normal_args --contamination_table contamination.table --germline_model germline-model.pt \
             ~{segment_pileups_extra_args}
     >>>
 
@@ -662,7 +662,7 @@ task SegmentPileups {
     }
 
     output {
-        File segmentation_model = "segmentation-model.pt"
+        File germline_model = "germline-model.pt"
         File tumor_segments = "tumor.segments.table"
         File tumor_segments_plot = "tumor.segments.png"
         File? normal_segments = "normal.segments.table"

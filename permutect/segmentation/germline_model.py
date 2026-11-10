@@ -77,7 +77,7 @@ class SampleSegmentation(nn.Module):
         The log likelihood of each site's alt count given that the sample is hom ref and its alt reads come from a
         contaminant who carries the alt allele: a het or hom alt contaminant, whose Hardy-Weinberg probabilities
         2q(1 - q) and q^2 are divided by the probability q(2 - q) of carrying the alt allele, as in
-        SegmentationModel.germline_log_likelihoods.  This is the single-contaminant likelihood of GATK's contamination
+        GermlineModel.germline_log_likelihoods.  This is the single-contaminant likelihood of GATK's contamination
         filter divided by q(2 - q), with reference bias.  Without contamination, alt reads are impossible.
         """
         allele_frequencies = torch.exp(log_allele_frequencies)
@@ -123,7 +123,7 @@ class SampleSegmentation(nn.Module):
         return cls(state["sample"], segments, emission_model, *args)
 
 
-class SegmentationModel(nn.Module):
+class GermlineModel(nn.Module):
     """
     The segmentation of a sample and of its matched normal, if any, and the sample's contamination and its error.  Its
     parameters are frozen, since they were fit to the pileups, not to the variants.
@@ -234,7 +234,7 @@ class SegmentationModel(nn.Module):
         torch.save(state, path)
 
     @classmethod
-    def load(cls, path) -> "SegmentationModel":
+    def load(cls, path) -> "GermlineModel":
         state = torch.load(path, map_location="cpu", weights_only=True)
         tumor, normal = (SampleSegmentation.from_state(state[sample]) for sample in ("tumor", "normal"))
         return cls(tumor, normal, state["contamination"], state["contamination_error"])

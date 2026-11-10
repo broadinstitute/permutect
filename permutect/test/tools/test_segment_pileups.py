@@ -7,8 +7,8 @@ import pytest
 
 from permutect import constants
 from permutect.segmentation.contamination import CONTAMINATION_TABLE_COLUMNS
+from permutect.segmentation.germline_model import GermlineModel
 from permutect.segmentation.pileup_summaries import SAMPLE_HEADER
-from permutect.segmentation.segmentation_model import SegmentationModel
 from permutect.test.segmentation.simulation import SimulatedSample
 from permutect.test.segmentation.simulation import simulate_matched_normal
 from permutect.test.segmentation.simulation import simulate_sample
@@ -45,17 +45,17 @@ class Outputs:
     normal_lines: list[str] | None
     contamination: float
     error: float
-    segmentation_model: SegmentationModel
+    germline_model: GermlineModel
 
 
 def run_segment_pileups(directory, tumor_table, normal_table=None) -> Outputs:
-    """run segment_pileups with every output, and check that it writes the plots and a consistent segmentation model"""
+    """run segment_pileups with every output, and check that it writes the plots and a consistent germline model"""
     arguments = {
         constants.INPUT_NAME: tumor_table,
         constants.OUTPUT_NAME: directory / "tumor.segments.table",
         constants.CONTAMINATION_TABLE_NAME: directory / "contamination.table",
         constants.PLOT_NAME: directory / "tumor.png",
-        constants.SEGMENTATION_MODEL_NAME: directory / "segmentation_model.pt",
+        constants.GERMLINE_MODEL_NAME: directory / "germline_model.pt",
     }
     if normal_table is not None:
         arguments[constants.NORMAL_INPUT_NAME] = normal_table
@@ -73,8 +73,8 @@ def run_segment_pileups(directory, tumor_table, normal_table=None) -> Outputs:
     lines = arguments[constants.OUTPUT_NAME].read_text().splitlines()
     normal_lines = None if normal_table is None else arguments[constants.NORMAL_OUTPUT_NAME].read_text().splitlines()
 
-    # the segmentation model has the segments of the tables, and the contamination of the table
-    model = SegmentationModel.load(arguments[constants.SEGMENTATION_MODEL_NAME])
+    # the germline model has the segments of the tables, and the contamination of the table
+    model = GermlineModel.load(arguments[constants.GERMLINE_MODEL_NAME])
     assert (model.contamination, model.contamination_error) == (contamination, error)
     assert model.tumor.emission_model.contamination == contamination
     for segmentation, expected_lines in ((model.tumor, lines), (model.normal, normal_lines)):
@@ -95,9 +95,9 @@ def segments(lines: list[str]) -> list[list[str]]:
     return [row for row in (line.split() for line in lines[2:]) if row[5] != "NaN"]
 
 
-def check_true_mafs(segmentation_model: SegmentationModel, sample: SimulatedSample):
-    """filter_variants gets the true MAFs in the middle of the true segments from the segmentation model"""
-    segmentation = segmentation_model.tumor.maf_intervals()
+def check_true_mafs(germline_model: GermlineModel, sample: SimulatedSample):
+    """filter_variants gets the true MAFs in the middle of the true segments from the germline model"""
+    segmentation = germline_model.tumor.maf_intervals()
     contigs_n = np.repeat(sample.contigs_c, sample.lengths_c)
     for true_start, true_end in runs(sample.true_mafs_n, sample.lengths_c):
         middle = (true_start + true_end) // 2
@@ -151,7 +151,7 @@ def test_segment_pileups(tmp_path):
                 assert ends[index] in positions and secondary_mafs[index] == mafs[index]
                 assert float(lows[index]) <= float(mafs[index]) <= float(highs[index])
 
-    check_true_mafs(outputs.segmentation_model, sample)
+    check_true_mafs(outputs.germline_model, sample)
     assert outputs.contamination < 0.005
 
 
@@ -200,7 +200,7 @@ def test_contaminated_tumor(tmp_path, contaminations, normal_contaminations):
 
     assert outputs.contamination == pytest.approx(sum(contaminations), abs=0.01)
     assert 0 < outputs.error < 0.01
-    check_true_mafs(outputs.segmentation_model, tumor)
+    check_true_mafs(outputs.germline_model, tumor)
     if normal_contaminations is not None:
         check_normal_segments(outputs.normal_lines, tumor.contigs_c)
 
@@ -218,7 +218,7 @@ def test_tumor_and_normal_with_different_sites(tmp_path):
     outputs = run_segment_pileups(tmp_path, tumor_table, normal_table)
 
     assert outputs.contamination == pytest.approx(0.05, abs=0.01)
-    check_true_mafs(outputs.segmentation_model, tumor)
+    check_true_mafs(outputs.germline_model, tumor)
     check_normal_segments(outputs.normal_lines, tumor.contigs_c)
 
 
