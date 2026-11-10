@@ -10,6 +10,7 @@ from permutect.test.test_file_names import *
 from permutect.test.wdl.test_wdl_scripts import task_output_files
 from permutect.tools.filter_variants import POST_PROB_INFO_KEY
 from permutect.tools.pre_permutect_filtering import HAIRPIN_FILTER
+from permutect.tools.pre_permutect_filtering import MULTIALLELIC_INDEL_FILTER
 
 PERMUTECT_TEST_DOCKER = os.environ.get("PERMUTECT_TEST_DOCKER", "permutect:wdl-test")
 CROMWELL_JAR = os.environ.get("CROMWELL_JAR")
@@ -188,10 +189,12 @@ def test_permutect_wdl_with_pcr_error_filtering(metadata_with_pcr_error_filterin
 
 def test_permutect_wdl_without_pcr_error_filtering(metadata_without_pcr_error_filtering):
     check_cached_m2_outputs(metadata_without_pcr_error_filtering, with_pileups=True, tumor_only_mode=True)
-    assert "Permutect.PrePermutectFiltering" not in metadata_without_pcr_error_filtering["calls"]
+    # pre_permutect_filtering runs regardless, for its multiallelic indel filter, but without its hairpin filter
+    assert "Permutect.PrePermutectFiltering" in metadata_without_pcr_error_filtering["calls"]
     records = output_vcf_records(metadata_without_pcr_error_filtering, tumor_only_mode=True)
     assert any(v.INFO.get(POST_PROB_INFO_KEY) is not None for v in records)
     assert not any(has_filter(v, HAIRPIN_FILTER) for v in records)
+    assert any(has_filter(v, MULTIALLELIC_INDEL_FILTER) for v in records)
 
 
 def test_permutect_wdl_without_normal(metadata_without_normal):

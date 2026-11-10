@@ -38,6 +38,7 @@ from permutect.parameters import add_training_params_to_parser
 from permutect.parameters import parse_training_params
 from permutect.segmentation.segmentation_model import SegmentationModel
 from permutect.tools.pre_permutect_filtering import HAIRPIN_FILTER
+from permutect.tools.pre_permutect_filtering import MULTIALLELIC_INDEL_FILTER
 from permutect.training.model_training import train_artifact_model
 from permutect.utils.allele_utils import find_variant_type
 from permutect.utils.enums import Call
@@ -47,11 +48,12 @@ from permutect.utils.enums import Variation
 from permutect.utils.math_utils import LOGIT_EPS
 from permutect.utils.math_utils import prob_to_logit
 
-# Trusted filters in the input VCF come from Mutect2, except for hairpin, which comes from pre_permutect_filtering.
-# Variants with these artifact filters keep them, and the posterior model sees them as definite artifacts (or normal
-# artifacts) regardless of the artifact model, so that they inform the artifact spectra and priors.  Other filters in the
-# input VCF, such as Mutect2's contamination filter, are replaced by the posterior model's calls.
-TRUSTED_ARTIFACT_FILTERS = {"slippage", HAIRPIN_FILTER}
+# Trusted filters in the input VCF come from Mutect2, except for hairpin and multiallelic_indel, which come from
+# pre_permutect_filtering.  Variants with these artifact filters keep them, and the posterior model sees them as definite
+# artifacts (or normal artifacts) regardless of the artifact model, so that they inform the artifact spectra and priors.
+# Other filters in the input VCF, such as Mutect2's contamination and multiallelic filters, are replaced by the posterior
+# model's calls.
+TRUSTED_ARTIFACT_FILTERS = {"slippage", HAIRPIN_FILTER, MULTIALLELIC_INDEL_FILTER}
 
 POST_PROB_INFO_KEY = "POST"
 ARTIFACT_LOD_INFO_KEY = "ARTLOD"

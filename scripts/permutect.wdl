@@ -40,7 +40,9 @@ workflow Permutect {
         String? realignment_extra_args
         Boolean skip_m2_filtering = true
         Boolean run_orientation_bias_mixture_model_filter = false
-        Boolean filter_pcr_errors = false   # run pre_permutect_filtering, which applies the hairpin filter
+        # apply pre_permutect_filtering's hairpin filter.  pre_permutect_filtering runs regardless, for its multiallelic
+        # indel filter.
+        Boolean filter_pcr_errors = false
         String? m2_extra_args
         String? split_intervals_extra_args
         Int batch_size
@@ -207,14 +209,13 @@ workflow Permutect {
             gatk_docker = permutect_docker
     }
 
-    if (filter_pcr_errors) {
-        call PrePermutectFiltering {
-            input:
-                input_vcf = SplitMultiallelics.output_vcf,
-                ref_fasta = ref_fasta,
-                ref_fai = ref_fai,
-                permutect_docker = permutect_docker
-        }
+    call PrePermutectFiltering {
+        input:
+            input_vcf = SplitMultiallelics.output_vcf,
+            ref_fasta = ref_fasta,
+            ref_fai = ref_fai,
+            hairpin_filter = filter_pcr_errors,
+            permutect_docker = permutect_docker
     }
 
     # Mutect2's pileups at the common variants if Mutect2 ran, otherwise the cached pileups.  Unlike select_first, this
@@ -238,8 +239,8 @@ workflow Permutect {
 
     call PermutectFiltering {
         input:
-            mutect2_vcf = select_first([PrePermutectFiltering.output_vcf, SplitMultiallelics.output_vcf]),
-            mutect2_vcf_idx = select_first([PrePermutectFiltering.output_vcf_idx, SplitMultiallelics.output_vcf_idx]),
+            mutect2_vcf = PrePermutectFiltering.output_vcf,
+            mutect2_vcf_idx = PrePermutectFiltering.output_vcf_idx,
             artifact_model = artifact_model,
             test_dataset = select_first([Mutect2.permutect_test_dataset, ExtractM2Outputs.test_dataset]),
             contigs_table = select_first([Mutect2.permutect_contigs_table, ExtractM2Outputs.contigs_table]),
@@ -419,6 +420,7 @@ task PrePermutectFiltering {
         File input_vcf
         File ref_fasta
         File ref_fai
+        Boolean hairpin_filter
         String permutect_docker
         Int? preemptible
         Int max_retries = 0
@@ -434,7 +436,8 @@ task PrePermutectFiltering {
     command <<<
         set -e
 
-        pre_permutect_filtering --input ~{input_vcf} --reference ~{ref_fasta} --output pre-filtered.vcf
+        pre_permutect_filtering --input ~{input_vcf} --reference ~{ref_fasta} --output pre-filtered.vcf \
+            ~{if hairpin_filter then "" else "--no_hairpin_filter"}
 
         gatk --java-options "-Xmx~{command_mem}m" IndexFeatureFile -I pre-filtered.vcf
     >>>

@@ -52,6 +52,7 @@ CONTIGS_TABLE_NAME = "contigs_table"
 REFERENCE_NAME = "reference"
 GENOMIC_SPAN_NAME = "genomic_span"
 STEM_LOOP_MAX_ENERGY_NAME = "stem_loop_max_energy"
+NO_HAIRPIN_FILTER_NAME = "no_hairpin_filter"
 # also an output of segment_pileups
 SEGMENTATION_MODEL_NAME = "segmentation_model"
 GERMLINE_MODE_NAME = "germline_mode"
