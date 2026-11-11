@@ -43,7 +43,7 @@ CONVERGENCE_THRESHOLD = 1e-6
 # the over-relaxation step size grows by this factor after each iteration that raises the log likelihood, up to the max
 STEP_SIZE_GROWTH = 1.5
 MAX_STEP_SIZE = 10.0
-# sites per chunk when computing emissions, to bound the memory of intermediate tensors
+# sites per chunk when computing the posteriors of segments' MAFs, to bound the memory of their emissions
 CHUNK_SIZE = 100_000
 # the posterior of each segment's MAF is computed on this many MAFs evenly spaced from 0 to 1/2, ie every 0.005, which
 # is finer than the MAFs of segments can be told apart and keeps this affordable for a genome's millions of sites
@@ -86,17 +86,11 @@ class Segment:
 
 def log_emissions(emission_model: EmissionModel, pileups: Pileups, mafs_k: np.ndarray, dtype=np.float32) -> np.ndarray:
     """
-    The log emission probability of each site in each MAF state, computed in chunks of sites, which bounds the memory
-    of the emission model's intermediate tensors, into an array of the given dtype.  float32, the default, halves the
-    memory of one of the HMM's two largest arrays without changing its posteriors or Viterbi path appreciably.
+    The log emission probability of each site in each MAF state, from the emission model's compiled kernel, as an array
+    of the given dtype.  float32, the default, halves the memory of one of the HMM's two largest arrays without changing
+    its posteriors or Viterbi path appreciably.
     """
-    num_sites = len(pileups.alt_counts_n)
-    log_emissions_nk = np.empty((num_sites, len(mafs_k)), dtype=dtype)
-    with torch.no_grad():
-        for start in range(0, num_sites, CHUNK_SIZE):
-            chunk = slice(start, start + CHUNK_SIZE)
-            log_emissions_nk[chunk] = emission_model.log_likelihoods(pileups.subset(chunk), torch.from_numpy(mafs_k))
-    return log_emissions_nk
+    return emission_model.compiled_log_likelihoods(pileups, mafs_k, dtype)
 
 
 def segment(

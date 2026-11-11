@@ -9,8 +9,8 @@ jump_n = 1 - exp(-lambda * distance_n).  A jump redraws the state from a prior p
 back on the same state; without a jump the state stays the same.  The first site of each chain is drawn from pi.
 
 The transition matrix (1 - jump_n) I + jump_n 1 pi^T is diagonal plus rank one, so the recursions never build it and
-cost O(K) per site rather than O(K^2).  Chains are independent, so each recursion steps through all of them at once:
-step t handles the t-th site of every chain with more than t sites.
+cost O(K) per site rather than O(K^2).  They step through each chain one site at a time, which in Python would cost far
+more per site than the arithmetic, so numba compiles them, and since chains are independent, it runs them in parallel.
 
 Arrays are indexed by site n, over the concatenated sites of all chains, by chain c, and by state k.
 """
@@ -19,6 +19,8 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
+from numba import njit
+from numba import prange
 
 # lower bound of the fitted jump rate, in jumps per base, so that jumps never become impossible
 MIN_JUMP_RATE = 1e-12
@@ -35,27 +37,11 @@ class Posteriors:
     log_likelihood: float
 
 
-class _ChainSteps:
-    """
-    The sites of each step of a recursion over chains.  Sorting the chains by decreasing length makes the chains with
-    more than t sites a prefix of the sorted order, so their t-th sites are sorted_starts_c[:num_chains_t[t]] + t.
-    """
-
-    def __init__(self, lengths_c):
-        lengths_c = np.asarray(lengths_c, dtype=np.int64)
-        assert lengths_c.ndim == 1 and len(lengths_c) > 0 and np.all(lengths_c > 0)
-        self.num_sites = int(np.sum(lengths_c))
-        self.starts_c = np.cumsum(lengths_c) - lengths_c
-        order_c = np.argsort(-lengths_c, kind="stable")
-        self.sorted_starts_c = self.starts_c[order_c]
-        self.sorted_lengths_c = lengths_c[order_c]
-        self.num_steps = int(self.sorted_lengths_c[0])
-        # the number of chains with more than t sites
-        self.num_chains_t = np.searchsorted(-self.sorted_lengths_c, -np.arange(self.num_steps), side="left")
-
-    def sites(self, t: int) -> np.ndarray:
-        """the t-th site of each chain with more than t sites, in sorted chain order"""
-        return self.sorted_starts_c[: self.num_chains_t[t]] + t
+def _chain_starts(lengths_c) -> tuple[np.ndarray, np.ndarray]:
+    """the first site of each chain, and the lengths of the chains as int64"""
+    lengths_c = np.asarray(lengths_c, dtype=np.int64)
+    assert lengths_c.ndim == 1 and len(lengths_c) > 0 and np.all(lengths_c > 0)
+    return np.cumsum(lengths_c) - lengths_c, lengths_c
 
 
 def site_distances(positions_n: np.ndarray, lengths_c) -> np.ndarray:
@@ -100,61 +86,97 @@ def forward_backward(
     tiny and its backward probability huge, and their product, its posterior, needn't be small.  In float32 the forward
     probability would underflow to 0 and the backward one overflow, giving NaNs.
     """
-    steps = _ChainSteps(lengths_c)
-    assert log_emissions_nk.shape == (steps.num_sites, len(prior_k)) and jump_probs_n.shape == (steps.num_sites,)
-    prior_k = prior_k.astype(np.float64)
-
-    # emissions relative to each site's largest, so that they don't underflow; the log likelihood adds back the shifts
-    max_log_emissions_n = np.max(log_emissions_nk, axis=1)
+    starts_c, lengths_c = _chain_starts(lengths_c)
+    num_sites, num_states = log_emissions_nk.shape
+    assert num_sites == np.sum(lengths_c) and num_states == len(prior_k) and jump_probs_n.shape == (num_sites,)
     emissions_nk = log_emissions_nk if overwrite_log_emissions else log_emissions_nk.copy()
-    emissions_nk -= max_log_emissions_n[:, None]
-    np.exp(emissions_nk, out=emissions_nk)
     jump_n = jump_probs_n.astype(np.float64)
-    jump_n[steps.starts_c] = 1.0
-    stay_n = 1 - jump_n
-
-    # alpha_nk = P(state k at site n | data up to site n) and normalizers_n = P(data at site n | data before site n),
-    # both within the chain and with the emissions shifted
-    alpha_nk = np.empty(emissions_nk.shape)
-    normalizers_n = np.empty(steps.num_sites)
-    for t in range(steps.num_steps):
-        n = steps.sites(t)
-        predicted_nk = prior_k if t == 0 else stay_n[n, None] * alpha_nk[n - 1] + jump_n[n, None] * prior_k
-        unnormalized_nk = emissions_nk[n] * predicted_nk
-        normalizers_n[n] = np.sum(unnormalized_nk, axis=1)
-        alpha_nk[n] = unnormalized_nk / normalizers_n[n, None]
-
-    # beta = P(data after site n | state k at site n) / P(data after site n | data up to site n), within the chain, for
-    # the current site of each chain, in the sorted order of _ChainSteps.  At the last site of a chain it is 1.
-    beta_ck = np.ones((len(steps.sorted_starts_c), len(prior_k)))
-    # the state posteriors alpha * beta overwrite alpha site by site, after which alpha isn't needed
-    posteriors_nk = alpha_nk
-    jump_posteriors_n = np.empty(steps.num_sites)
-    expected_draws_k = np.zeros(len(prior_k))
-    for t in range(steps.num_steps - 1, -1, -1):
-        n = steps.sites(t)
-        beta_nk = beta_ck[: len(n)]
-        emitted_nk = emissions_nk[n] * beta_nk
-
-        # P(jump at site n that lands in state k | data), summing over the state at site n - 1, whose alpha sums to 1.
-        # At the first site of each chain, where jump_n = 1, this is the state posterior.
-        draws_nk = (jump_n[n] / normalizers_n[n])[:, None] * prior_k * emitted_nk
-        jump_posteriors_n[n] = np.sum(draws_nk, axis=1)
-        expected_draws_k += np.sum(draws_nk, axis=0)
-        posteriors_nk[n] = alpha_nk[n] * beta_nk
-
-        if t > 0:
-            # beta at site n - 1 of these chains, and 1 at the last sites of the chains that end at step t - 1
-            after_jump_n = emitted_nk @ prior_k
-            beta_nk[:] = (stay_n[n, None] * emitted_nk + (jump_n[n] * after_jump_n)[:, None]) / normalizers_n[n, None]
-            beta_ck[len(n) : steps.num_chains_t[t - 1]] = 1
-
+    jump_n[starts_c] = 1.0
+    max_log_emissions_n, normalizers_n, jump_posteriors_n = (np.empty(num_sites) for _ in range(3))
+    posteriors_nk = np.empty((num_sites, num_states))
+    draws_ck = np.zeros((len(starts_c), num_states))
+    _forward_backward_kernel(
+        emissions_nk,
+        jump_n,
+        prior_k.astype(np.float64),
+        starts_c,
+        lengths_c,
+        max_log_emissions_n,
+        normalizers_n,
+        posteriors_nk,
+        jump_posteriors_n,
+        draws_ck,
+    )
     return Posteriors(
         state_posteriors_nk=posteriors_nk,
         jump_posteriors_n=jump_posteriors_n,
-        expected_draws_k=expected_draws_k,
-        log_likelihood=float(np.sum(np.log(normalizers_n)) + np.sum(max_log_emissions_n, dtype=np.float64)),
+        expected_draws_k=np.sum(draws_ck, axis=0),
+        log_likelihood=float(np.sum(np.log(normalizers_n)) + np.sum(max_log_emissions_n)),
     )
+
+
+@njit(parallel=True)
+def _forward_backward_kernel(
+    emissions_nk,
+    jump_n,
+    prior_k,
+    starts_c,
+    lengths_c,
+    max_log_emissions_n,
+    normalizers_n,
+    posteriors_nk,
+    jump_posteriors_n,
+    draws_ck,
+):
+    """
+    forward_backward for each chain in parallel.  The log emissions in emissions_nk become the emissions relative to each
+    site's largest, so that they don't underflow, and the log likelihood adds back the shifts, max_log_emissions_n.  Each
+    chain's expected draws are summed separately, since chains run in parallel.
+    """
+    num_states = len(prior_k)
+    for c in prange(len(starts_c)):
+        start, end = starts_c[c], starts_c[c] + lengths_c[c]
+
+        # alpha_nk = P(state k at site n | data up to site n) and normalizers_n = P(data at site n | data before site n),
+        # both within the chain and with the emissions shifted.  posteriors_nk holds alpha until the backward pass.
+        for n in range(start, end):
+            largest = emissions_nk[n, 0]
+            for k in range(1, num_states):
+                largest = max(largest, emissions_nk[n, k])
+            max_log_emissions_n[n] = largest
+            normalizer = 0.0
+            for k in range(num_states):
+                emissions_nk[n, k] = math.exp(emissions_nk[n, k] - largest)
+                stay = 0.0 if n == start else (1 - jump_n[n]) * posteriors_nk[n - 1, k]
+                posteriors_nk[n, k] = emissions_nk[n, k] * (stay + jump_n[n] * prior_k[k])
+                normalizer += posteriors_nk[n, k]
+            normalizers_n[n] = normalizer
+            for k in range(num_states):
+                posteriors_nk[n, k] /= normalizer
+
+        # beta_k = P(data after site n | state k at site n) / P(data after site n | data up to site n), within the chain,
+        # at the current site, which is 1 at the chain's last site.  The state posteriors alpha * beta overwrite alpha
+        # site by site, after which alpha isn't needed.
+        beta_k = np.ones(num_states)
+        emitted_k = np.empty(num_states)
+        for n in range(end - 1, start - 1, -1):
+            # P(jump at site n that lands in state k | data), summing over the state at site n - 1, whose alpha sums to 1.
+            # At the first site of the chain, where jump_n = 1, this is the state posterior.
+            draw_scale = jump_n[n] / normalizers_n[n]
+            jump_posterior, after_jump = 0.0, 0.0
+            for k in range(num_states):
+                emitted_k[k] = emissions_nk[n, k] * beta_k[k]
+                draws = draw_scale * prior_k[k] * emitted_k[k]
+                jump_posterior += draws
+                draws_ck[c, k] += draws
+                posteriors_nk[n, k] *= beta_k[k]
+                after_jump += prior_k[k] * emitted_k[k]
+            jump_posteriors_n[n] = jump_posterior
+
+            # beta at site n - 1
+            if n > start:
+                for k in range(num_states):
+                    beta_k[k] = ((1 - jump_n[n]) * emitted_k[k] + jump_n[n] * after_jump) / normalizers_n[n]
 
 
 def viterbi(log_emissions_nk: np.ndarray, jump_probs_n: np.ndarray, prior_k: np.ndarray, lengths_c) -> np.ndarray:
@@ -162,42 +184,56 @@ def viterbi(log_emissions_nk: np.ndarray, jump_probs_n: np.ndarray, prior_k: np.
     The most likely path of states, ie the state of each site.  The jump probabilities of the first site of each chain
     are ignored, because its state is drawn from the prior.
     """
-    steps = _ChainSteps(lengths_c)
-    num_states = len(prior_k)
-    assert log_emissions_nk.shape == (steps.num_sites, num_states) and jump_probs_n.shape == (steps.num_sites,)
+    starts_c, lengths_c = _chain_starts(lengths_c)
+    num_sites, num_states = log_emissions_nk.shape
+    assert num_sites == np.sum(lengths_c) and num_states == len(prior_k) and jump_probs_n.shape == (num_sites,)
     with np.errstate(divide="ignore"):
-        log_prior_k = np.log(prior_k)
-        log_jump_n = np.log(jump_probs_n)
-
-    # log probability of the most likely path to each state at the current site of each chain, in sorted chain order
-    best_ck = np.empty((len(steps.sorted_starts_c), num_states))
-    # whether the most likely path to state k at site n stays in k rather than jumping, and the state at site n - 1 of
-    # the most likely path that jumps
-    stayed_nk = np.zeros((steps.num_sites, num_states), dtype=bool)
-    jumped_from_n = np.zeros(steps.num_sites, dtype=np.int64)
-    for t in range(steps.num_steps):
-        n = steps.sites(t)
-        if t == 0:
-            best_ck[: len(n)] = log_prior_k + log_emissions_nk[n]
-            continue
-        previous_ck = best_ck[: len(n)]
-        # a path that stays in k may also jump back to it
-        with np.errstate(divide="ignore"):
-            stay_scores_ck = previous_ck + np.log((1 - jump_probs_n[n, None]) + jump_probs_n[n, None] * prior_k)
-        jumped_from_c = np.argmax(previous_ck, axis=1)
-        jump_scores_ck = (previous_ck[np.arange(len(n)), jumped_from_c] + log_jump_n[n])[:, None] + log_prior_k
-        stayed_nk[n] = stay_scores_ck >= jump_scores_ck
-        jumped_from_n[n] = jumped_from_c
-        best_ck[: len(n)] = np.where(stayed_nk[n], stay_scores_ck, jump_scores_ck) + log_emissions_nk[n]
-
-    # trace back from the most likely final state of each chain
-    states_n = np.empty(steps.num_sites, dtype=np.int64)
-    states_n[steps.sorted_starts_c + steps.sorted_lengths_c - 1] = np.argmax(best_ck, axis=1)
-    for t in range(steps.num_steps - 1, 0, -1):
-        n = steps.sites(t)
-        states_c = states_n[n]
-        states_n[n - 1] = np.where(stayed_nk[n, states_c], states_c, jumped_from_n[n])
+        log_prior_k = np.log(prior_k.astype(np.float64))
+        log_jump_n = np.log(jump_probs_n.astype(np.float64))
+    states_n = np.empty(num_sites, dtype=np.int64)
+    _viterbi_kernel(
+        log_emissions_nk,
+        jump_probs_n.astype(np.float64),
+        log_jump_n,
+        prior_k.astype(np.float64),
+        log_prior_k,
+        starts_c,
+        lengths_c,
+        states_n,
+    )
     return states_n
+
+
+@njit(parallel=True)
+def _viterbi_kernel(log_emissions_nk, jump_n, log_jump_n, prior_k, log_prior_k, starts_c, lengths_c, states_n):
+    """viterbi for each chain in parallel"""
+    num_states = len(prior_k)
+    for c in prange(len(starts_c)):
+        start, length = starts_c[c], lengths_c[c]
+        # log probability of the most likely path to each state at the current site
+        best_k = log_prior_k + log_emissions_nk[start]
+        next_best_k = np.empty(num_states)
+        # whether the most likely path to state k at the chain's site i stays in k rather than jumping, and the state at
+        # site i - 1 of the most likely path that jumps
+        stayed_ik = np.zeros((length, num_states), dtype=np.bool_)
+        jumped_from_i = np.zeros(length, dtype=np.int64)
+        for i in range(1, length):
+            n = start + i
+            jumped_from = np.argmax(best_k)
+            jumped_from_i[i] = jumped_from
+            for k in range(num_states):
+                # a path that stays in k may also jump back to it
+                stay_score = best_k[k] + math.log((1 - jump_n[n]) + jump_n[n] * prior_k[k])
+                jump_score = best_k[jumped_from] + log_jump_n[n] + log_prior_k[k]
+                stayed_ik[i, k] = stay_score >= jump_score
+                next_best_k[k] = (stay_score if stayed_ik[i, k] else jump_score) + log_emissions_nk[n, k]
+            best_k[:] = next_best_k
+
+        # trace back from the most likely final state
+        states_n[start + length - 1] = np.argmax(best_k)
+        for i in range(length - 1, 0, -1):
+            state = states_n[start + i]
+            states_n[start + i - 1] = state if stayed_ik[i, state] else jumped_from_i[i]
 
 
 def fit_jump_rate(jump_posteriors_n: np.ndarray, distances_n: np.ndarray, max_jump_rate: float) -> float:
