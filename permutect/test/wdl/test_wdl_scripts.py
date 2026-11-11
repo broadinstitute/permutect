@@ -379,7 +379,7 @@ def test_permutect_filtering_stops_when_filter_variants_fails(tmp_path, filter_v
         "num_cpus": 2,
         "num_spectrum_iterations": None,
         "spectrum_learning_rate": None,
-        "segmentation_model": None,
+        "germline_model": None,
         "permutect_filtering_extra_args": None,
     }
     command = fill_placeholders(task_command(PERMUTECT_WDL, "PermutectFiltering"), inputs)
@@ -454,7 +454,7 @@ def test_segment_pileups_command(tmp_path, with_normal):
     assert getattr(arguments, constants.NORMAL_INPUT_NAME) == inputs["normal_pileups"]
     assert getattr(arguments, constants.NUM_CONTAMINATION_ITERATIONS_NAME) == 3
     output_arguments = {
-        "segmentation_model": constants.SEGMENTATION_MODEL_NAME,
+        "germline_model": constants.GERMLINE_MODEL_NAME,
         "tumor_segments": constants.OUTPUT_NAME,
         "tumor_segments_plot": constants.PLOT_NAME,
         "normal_segments": constants.NORMAL_OUTPUT_NAME,

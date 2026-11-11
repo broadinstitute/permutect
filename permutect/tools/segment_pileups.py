@@ -10,12 +10,12 @@ from permutect.segmentation.contamination import calculate_contamination
 from permutect.segmentation.contamination import write_contamination_table
 from permutect.segmentation.emissions import EmissionModel
 from permutect.segmentation.emissions import Pileups
+from permutect.segmentation.germline_model import GermlineModel
+from permutect.segmentation.germline_model import SampleSegmentation
 from permutect.segmentation.pileup_summaries import SAMPLE_HEADER
 from permutect.segmentation.pileup_summaries import PileupSummaries
 from permutect.segmentation.pileup_summaries import read_pileup_summaries
 from permutect.segmentation.plotting import plot_segmentation
-from permutect.segmentation.segmentation_model import SampleSegmentation
-from permutect.segmentation.segmentation_model import SegmentationModel
 from permutect.segmentation.segmenter import Segment
 from permutect.segmentation.segmenter import make_segments
 from permutect.segmentation.segmenter import segment
@@ -61,8 +61,8 @@ def parse_arguments(argv=None):
     )
     parser.add_argument("--" + constants.NORMAL_PLOT_NAME, help="path to an optional output plot of the normal")
     parser.add_argument(
-        "--" + constants.SEGMENTATION_MODEL_NAME,
-        help="path to an optional output SegmentationModel for filter_variants: the segments of the sample and of the "
+        "--" + constants.GERMLINE_MODEL_NAME,
+        help="path to an optional output GermlineModel for filter_variants: the segments of the sample and of the "
         "normal, the parameters of the hidden Markov models that found them, and the contamination",
     )
     parser.add_argument(
@@ -108,7 +108,7 @@ def main_without_parsing(args):
         contamination_table=getattr(args, constants.CONTAMINATION_TABLE_NAME),
         plot=getattr(args, constants.PLOT_NAME),
         normal_plot=getattr(args, constants.NORMAL_PLOT_NAME),
-        segmentation_model=getattr(args, constants.SEGMENTATION_MODEL_NAME),
+        germline_model=getattr(args, constants.GERMLINE_MODEL_NAME),
         num_contamination_iterations=getattr(args, constants.NUM_CONTAMINATION_ITERATIONS_NAME),
         num_maf_states=getattr(args, constants.NUM_MAF_STATES_NAME),
         max_breakpoint_rate=getattr(args, constants.MAX_BREAKPOINT_RATE_NAME),
@@ -188,7 +188,7 @@ def segment_pileups(
     contamination_table=None,
     plot=None,
     normal_plot=None,
-    segmentation_model=None,
+    germline_model=None,
     num_contamination_iterations: int = 2,
     num_maf_states: int = 51,
     max_breakpoint_rate: float = 1e-7,
@@ -233,10 +233,10 @@ def segment_pileups(
     if normal_plot is not None:
         args = (normal_sites.contigs_c, normal_sites.lengths_c, normal_sites.positions_n, normal_sites.pileups)
         plot_segmentation(normal_plot, normal_pileup_summaries.sample, *args, normal_segments)
-    if segmentation_model is not None:
+    if germline_model is not None:
         # the sample's emission model has the final contamination, not the one that its segmentation assumed
         tumor_segmentation.emission_model.contamination = contamination
-        SegmentationModel(tumor_segmentation, normal_segmentation, contamination, error).save(segmentation_model)
+        GermlineModel(tumor_segmentation, normal_segmentation, contamination, error).save(germline_model)
 
 
 def main():

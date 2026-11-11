@@ -20,7 +20,7 @@ from permutect.misc_utils import StreamingAverage
 from permutect.misc_utils import backpropagate
 from permutect.misc_utils import float_dtype
 from permutect.misc_utils import resolve_device
-from permutect.segmentation.segmentation_model import SegmentationModel
+from permutect.segmentation.germline_model import GermlineModel
 from permutect.utils.enums import Call
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
@@ -66,10 +66,10 @@ class PosteriorModel(torch.nn.Module):
         artifact_log_prior: float,
         no_germline_mode: bool = False,
         device=None,
-        segmentation_model: SegmentationModel = None,
+        germline_model: GermlineModel = None,
     ):
         """
-        :param segmentation_model: from segment_pileups, for germline likelihoods.  Without one, the MAF is 1/2
+        :param germline_model: from segment_pileups, for germline likelihoods.  Without one, the MAF is 1/2
         everywhere and the germline likelihoods have default parameters.
         """
         super(PosteriorModel, self).__init__()
@@ -78,7 +78,7 @@ class PosteriorModel(torch.nn.Module):
         self._dtype = float_dtype(self._device)
         self.no_germline_mode = no_germline_mode
 
-        self.spectra = PosteriorModelSpectra(segmentation_model, device=self._device)
+        self.spectra = PosteriorModelSpectra(germline_model, device=self._device)
         self.priors = PosteriorModelPriors(variant_log_prior, artifact_log_prior, no_germline_mode, self._device)
 
         self.to(device=self._device, dtype=self._dtype)
@@ -168,7 +168,7 @@ class PosteriorModel(torch.nn.Module):
         """
         # spectra parameters are learned via batched stochastic gradient descent during the e step of each epoch.
         # the loss is the negative log evidence.  Prior parameters are adjusted in the M steo.
-        # the segmentation model's parameters are frozen
+        # the germline model's parameters are frozen
         trainable_parameters = [parameter for parameter in self.spectra.parameters() if parameter.requires_grad]
         optimizer = torch.optim.Adam(trainable_parameters, lr=learning_rate)
 

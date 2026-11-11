@@ -17,8 +17,8 @@ from permutect.data.batch import Batch
 from permutect.data.datum import Data
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.metrics.posterior_result import PosteriorResult
-from permutect.segmentation.segmentation_model import SampleSegmentation
-from permutect.segmentation.segmentation_model import SegmentationModel
+from permutect.segmentation.germline_model import GermlineModel
+from permutect.segmentation.germline_model import SampleSegmentation
 from permutect.segmentation.segmenter import Segment
 from permutect.test.architecture.test_posterior_model_priors import make_batch
 from permutect.test.test_file_names import *
@@ -140,12 +140,12 @@ def test_filtering_on_seqc2_wes_chr20(tmp_path):
     pre_filtered_vcf = run_pre_permutect_filtering(MUTECT2_SEQC2_WES_VCF, HG38_CHR20_REFERENCE)
     permutect_vcf = tempfile.NamedTemporaryFile()
     tensorboard_dir = tempfile.TemporaryDirectory()
-    segmentation_model = tmp_path / "segmentation_model.pt"
+    germline_model = tmp_path / "germline_model.pt"
     segment_pileups.segment_pileups(
         SEQC2_WES_TUMOR_PILEUPS,
         tmp_path / "tumor.segments.table",
         normal_input_table=SEQC2_WES_NORMAL_PILEUPS,
-        segmentation_model=segmentation_model,
+        germline_model=germline_model,
     )
 
     filtering_args = parse_filtering_arguments(
@@ -153,7 +153,7 @@ def test_filtering_on_seqc2_wes_chr20(tmp_path):
             constants.INPUT_NAME: pre_filtered_vcf.name,
             constants.TEST_DATASET_NAME: SEQC2_WES_PLAIN_TEXT_DATA,
             constants.CONTIGS_TABLE_NAME: HG38_CONTIGS_TABLE,
-            constants.SEGMENTATION_MODEL_NAME: str(segmentation_model),
+            constants.GERMLINE_MODEL_NAME: str(germline_model),
             constants.OUTPUT_NAME: permutect_vcf.name,
             constants.TENSORBOARD_DIR_NAME: tensorboard_dir.name,
             # normalizing the test dataset in a process of its own
@@ -212,7 +212,7 @@ def contig_index_to_name_map(contigs_table) -> dict[int, str]:
     return result
 
 
-def test_annotated_mafs_come_from_the_segmentation_model():
+def test_annotated_mafs_come_from_the_germline_model():
     # chr20 has MAF 0.3 in the tumor, except for a segment at its start, and 0.45 in the normal
     tumor_segments = [Segment("chr20", 1, 1000000, 0.1, 0.1), Segment("chr20", 1000001, 70000000, 0.3, 0.3)]
     tumor, normal = (
@@ -223,7 +223,7 @@ def test_annotated_mafs_come_from_the_segmentation_model():
         SEQC2_WES_PLAIN_TEXT_DATA,
         MUTECT2_SEQC2_WES_VCF,
         contig_index_to_name_map(HG38_CONTIGS_TABLE),
-        segmentation_model=SegmentationModel(tumor, normal),
+        germline_model=GermlineModel(tumor, normal),
     )
     data = list(dataset.memory_mapped_data.generate())
     assert data

@@ -1,7 +1,8 @@
 """
-What segment_pileups learns about a sample and, optionally, its matched normal: each one's minor allele fraction (MAF)
-segments and the parameters of the hidden Markov model that found them, and the sample's contamination.  filter_variants
-uses it for the MAF at each variant and for the likelihoods of germline variants and of contamination.
+What permutect knows about the germline of a sample and, optionally, its matched normal: what segment_pileups learns,
+each one's minor allele fraction (MAF) segments and the parameters of the hidden Markov model that found them, and the
+sample's contamination; and the parameters of indels' germline likelihoods.  filter_variants uses it for the MAF at
+each variant and for the likelihoods of germline variants and of contamination.
 """
 
 import math
@@ -16,6 +17,7 @@ from permutect import constants
 from permutect.misc_utils import freeze
 from permutect.segmentation.emissions import EmissionModel
 from permutect.segmentation.emissions import Pileups
+from permutect.segmentation.indel_parameters import IndelParameters
 from permutect.segmentation.segmenter import Segment
 from permutect.utils.math_utils import log1mexp
 
@@ -77,7 +79,7 @@ class SampleSegmentation(nn.Module):
         The log likelihood of each site's alt count given that the sample is hom ref and its alt reads come from a
         contaminant who carries the alt allele: a het or hom alt contaminant, whose Hardy-Weinberg probabilities
         2q(1 - q) and q^2 are divided by the probability q(2 - q) of carrying the alt allele, as in
-        SegmentationModel.germline_log_likelihoods.  This is the single-contaminant likelihood of GATK's contamination
+        GermlineModel.germline_log_likelihoods.  This is the single-contaminant likelihood of GATK's contamination
         filter divided by q(2 - q), with reference bias.  Without contamination, alt reads are impossible.
         """
         allele_frequencies = torch.exp(log_allele_frequencies)
@@ -123,10 +125,11 @@ class SampleSegmentation(nn.Module):
         return cls(state["sample"], segments, emission_model, *args)
 
 
-class SegmentationModel(nn.Module):
+class GermlineModel(nn.Module):
     """
-    The segmentation of a sample and of its matched normal, if any, and the sample's contamination and its error.  Its
-    parameters are frozen, since they were fit to the pileups, not to the variants.
+    The segmentation of a sample and of its matched normal, if any, the sample's contamination and its error, and the
+    parameters of indels' germline likelihoods, by default IndelParameters.default().  Its parameters are frozen, since
+    they were fit to the pileups and to known germline indels, not to the variants being filtered.
     """
 
     def __init__(
@@ -135,12 +138,14 @@ class SegmentationModel(nn.Module):
         normal: SampleSegmentation = None,
         contamination: float = 0.0,
         contamination_error: float = 1.0,
+        indel_parameters: IndelParameters = None,
     ):
         super().__init__()
         self.tumor = SampleSegmentation() if tumor is None else tumor
         self.normal = SampleSegmentation() if normal is None else normal
         self.contamination = contamination
         self.contamination_error = contamination_error
+        self.indel_parameters = IndelParameters.default() if indel_parameters is None else indel_parameters
         freeze(self.parameters())
 
     def germline_log_likelihoods(
@@ -152,12 +157,20 @@ class SegmentationModel(nn.Module):
         log_allele_frequencies: Tensor,
         tumor_mafs: Tensor,
         normal_mafs: Tensor,
+        indels: Tensor = None,
+        repeat_unit_lengths: Tensor = None,
+        repeat_lengths: Tensor = None,
     ) -> Tensor:
         """
         The joint log likelihood of the tumor's and the normal's alt counts at each site given that the person carries
         the alt allele in the germline.  Each sample's counts get its own segmentation's emission model at its own MAF.
         Without a normal, its depths are 0 and its MAFs 1/2, and this is the likelihood of the tumor's counts alone.  The
         population allele frequencies q are logs so that tiny ones don't underflow.  The inputs broadcast together.
+
+        Indels: if indels, a boolean for each site, is given, with the lengths of the repeat units and STRs (0 outside
+        STRs), the tumor's indels get the indel parameters' alt fraction factors and concentrations in place of the
+        emission model's concentrations.  The normal's indels don't, since the indel parameters were fit to tumors; a
+        normal's should be fit to normals.
 
         Genotypes: a carrier of the alt allele is a het, with Hardy-Weinberg probability 2q(1 - q), or a hom alt, with
         probability q^2.  The posterior model's germline prior is the probability q(2 - q) of being a carrier, so here
@@ -195,12 +208,17 @@ class SegmentationModel(nn.Module):
         haplotype, is q.
         """
         allele_frequencies = torch.exp(log_allele_frequencies)
+        tumor_indel_adjustments = (
+            {}
+            if indels is None
+            else self.indel_adjustments(self.tumor.emission_model, indels, repeat_unit_lengths, repeat_lengths)
+        )
 
         # each sample's log likelihoods of its counts with the alt allele on its minor haplotype, on its major haplotype,
         # and on both, from its own emission model.  Their hom ref terms are unused.
         _, tumor_alt_on_minor, tumor_alt_on_major, tumor_hom_alt = (
             self.tumor.emission_model.phased_genotype_log_likelihoods(
-                tumor_alt_counts, tumor_depths, allele_frequencies, tumor_mafs
+                tumor_alt_counts, tumor_depths, allele_frequencies, tumor_mafs, **tumor_indel_adjustments
             )
         )
         _, normal_alt_on_minor, normal_alt_on_major, normal_hom_alt = (
@@ -228,13 +246,32 @@ class SegmentationModel(nn.Module):
 
         return torch.logsumexp(torch.stack(torch.broadcast_tensors(alt_on_minor, alt_on_major, hom_alt)), dim=0)
 
+    def indel_adjustments(
+        self, emission_model: EmissionModel, indels: Tensor, repeat_unit_lengths: Tensor, repeat_lengths: Tensor
+    ) -> dict:
+        """
+        The arguments of EmissionModel.phased_genotype_log_likelihoods that adjust it for indels: the indel parameters'
+        alt fraction factors and concentrations at indels, and the emission model's own concentrations elsewhere
+        """
+        factors = self.indel_parameters.alt_fraction_factors(repeat_unit_lengths, repeat_lengths)
+        concentrations = self.indel_parameters.concentrations(repeat_unit_lengths, repeat_lengths)
+        return {
+            "alt_fraction_factors": torch.where(indels, factors, torch.ones_like(factors)),
+            "hom_concentrations": torch.where(indels, concentrations, emission_model.hom_concentration),
+            "het_concentrations": torch.where(indels, concentrations, emission_model.het_concentration),
+        }
+
     def save(self, path):
         state = {"tumor": self.tumor.state(), "normal": self.normal.state()}
         state.update(contamination=float(self.contamination), contamination_error=float(self.contamination_error))
+        state["indel_parameters"] = self.indel_parameters.state()
         torch.save(state, path)
 
     @classmethod
-    def load(cls, path) -> "SegmentationModel":
+    def load(cls, path) -> "GermlineModel":
         state = torch.load(path, map_location="cpu", weights_only=True)
         tumor, normal = (SampleSegmentation.from_state(state[sample]) for sample in ("tumor", "normal"))
-        return cls(tumor, normal, state["contamination"], state["contamination_error"])
+        # models saved before indels had their own parameters get the defaults
+        indel_state = state.get("indel_parameters")
+        indel_parameters = None if indel_state is None else IndelParameters.from_state(indel_state)
+        return cls(tumor, normal, state["contamination"], state["contamination_error"], indel_parameters)

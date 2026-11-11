@@ -13,11 +13,11 @@ from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.datum import Data
 from permutect.segmentation.emissions import EmissionModel
-from permutect.segmentation.segmentation_model import SampleSegmentation
-from permutect.segmentation.segmentation_model import SegmentationModel
+from permutect.segmentation.germline_model import GermlineModel
+from permutect.segmentation.germline_model import SampleSegmentation
 from permutect.test.architecture.test_posterior_model_priors import make_batch
 from permutect.test.host_reads import permutect_calls
-from permutect.test.segmentation.test_segmentation_model import sample_segmentation
+from permutect.test.segmentation.test_germline_model import sample_segmentation
 from permutect.utils.enums import Call
 from permutect.utils.enums import Variation
 
@@ -107,12 +107,12 @@ def test_extreme_allele_fractions_have_no_nan_posteriors(allele_frequency, value
 def test_contamination_explains_alt_fractions_near_the_contamination():
     # in a tumor contaminated at 5%, 3 alt reads of 100 at a site of population allele frequency 0.1 are close to the 2.5
     # of a het contaminant, but 30 alt reads are not.  Without contamination, alt reads can't come from a contaminant.
-    contaminated = SegmentationModel(
+    contaminated = GermlineModel(
         SampleSegmentation(emission_model=EmissionModel(contamination=0.05)), SampleSegmentation(), 0.05, 0.005
     )
 
-    def contamination_probability(segmentation_model, alt_count: int) -> float:
-        model = PosteriorModel(-10, -10, device="cpu", segmentation_model=segmentation_model)
+    def contamination_probability(germline_model, alt_count: int) -> float:
+        model = PosteriorModel(-10, -10, device="cpu", germline_model=germline_model)
         # the artifact logit rules out artifacts, and normal artifacts need alt reads in the normal
         values = {
             Data.ORIGINAL_DEPTH: 100,
@@ -271,13 +271,13 @@ def test_posterior_passes_read_no_values_for_each_batch(monkeypatch, posterior_p
     assert num_copies(1) == num_copies(3)
 
 
-def test_learning_leaves_the_segmentation_model_unchanged():
-    # the segmentation model was fit to the pileups of common SNPs, so fitting the spectra to the variants mustn't change it
-    segmentation_model = SegmentationModel(sample_segmentation("tumor"), sample_segmentation("normal"), 0.03, 0.002)
-    model = PosteriorModel(-10, -10, device="cpu", segmentation_model=segmentation_model)
-    before = {name: tensor.clone() for name, tensor in segmentation_model.state_dict().items()}
+def test_learning_leaves_the_germline_model_unchanged():
+    # the germline model was fit to the pileups of common SNPs, so fitting the spectra to the variants mustn't change it
+    germline_model = GermlineModel(sample_segmentation("tumor"), sample_segmentation("normal"), 0.03, 0.002)
+    model = PosteriorModel(-10, -10, device="cpu", germline_model=germline_model)
+    before = {name: tensor.clone() for name, tensor in germline_model.state_dict().items()}
     loader = [make_batch([0.01, 0.2, 0.5], PLAUSIBLE_VALUES | {Data.ORIGINAL_ALT_COUNT: alt}) for alt in (2, 15, 29)]
     model.learn_priors_and_spectra(loader, num_iterations=2, ignored_to_non_ignored_ratio=10, learning_rate=0.1)
-    after = segmentation_model.state_dict()
+    after = germline_model.state_dict()
     assert all(torch.equal(before[name], after[name]) for name in before)
-    assert not any(parameter.requires_grad for parameter in segmentation_model.parameters())
+    assert not any(parameter.requires_grad for parameter in germline_model.parameters())

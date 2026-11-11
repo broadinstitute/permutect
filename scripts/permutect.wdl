@@ -40,7 +40,9 @@ workflow Permutect {
         String? realignment_extra_args
         Boolean skip_m2_filtering = true
         Boolean run_orientation_bias_mixture_model_filter = false
-        Boolean filter_pcr_errors = false   # run pre_permutect_filtering, which applies the hairpin filter
+        # apply pre_permutect_filtering's hairpin filter.  pre_permutect_filtering runs regardless, for its multiallelic
+        # indel filter.
+        Boolean filter_pcr_errors = false
         String? m2_extra_args
         String? split_intervals_extra_args
         Int batch_size
@@ -207,14 +209,13 @@ workflow Permutect {
             gatk_docker = permutect_docker
     }
 
-    if (filter_pcr_errors) {
-        call PrePermutectFiltering {
-            input:
-                input_vcf = SplitMultiallelics.output_vcf,
-                ref_fasta = ref_fasta,
-                ref_fai = ref_fai,
-                permutect_docker = permutect_docker
-        }
+    call PrePermutectFiltering {
+        input:
+            input_vcf = SplitMultiallelics.output_vcf,
+            ref_fasta = ref_fasta,
+            ref_fai = ref_fai,
+            hairpin_filter = filter_pcr_errors,
+            permutect_docker = permutect_docker
     }
 
     # Mutect2's pileups at the common variants if Mutect2 ran, otherwise the cached pileups.  Unlike select_first, this
@@ -238,12 +239,12 @@ workflow Permutect {
 
     call PermutectFiltering {
         input:
-            mutect2_vcf = select_first([PrePermutectFiltering.output_vcf, SplitMultiallelics.output_vcf]),
-            mutect2_vcf_idx = select_first([PrePermutectFiltering.output_vcf_idx, SplitMultiallelics.output_vcf_idx]),
+            mutect2_vcf = PrePermutectFiltering.output_vcf,
+            mutect2_vcf_idx = PrePermutectFiltering.output_vcf_idx,
             artifact_model = artifact_model,
             test_dataset = select_first([Mutect2.permutect_test_dataset, ExtractM2Outputs.test_dataset]),
             contigs_table = select_first([Mutect2.permutect_contigs_table, ExtractM2Outputs.contigs_table]),
-            segmentation_model = SegmentPileups.segmentation_model,
+            germline_model = SegmentPileups.germline_model,
             mutect_stats = select_first([Mutect2.mutect_stats, ExtractM2Outputs.mutect_stats]),
             batch_size = batch_size,
             num_workers = num_workers,
@@ -329,7 +330,7 @@ workflow Permutect {
         File? m2_concordance_summary = M2Concordance.summary
 
         # segment_pileups' outputs, if there were common variants
-        File? segmentation_model = SegmentPileups.segmentation_model
+        File? germline_model = SegmentPileups.germline_model
         File? tumor_segments = SegmentPileups.tumor_segments
         File? tumor_segments_plot = SegmentPileups.tumor_segments_plot
         File? normal_segments = SegmentPileups.normal_segments
@@ -345,7 +346,7 @@ workflow Permutect {
         File contigs_table
         File mutect2_vcf
         File mutect2_vcf_idx
-        File? segmentation_model
+        File? germline_model
         File mutect_stats
         Int? num_spectrum_iterations
         Float? spectrum_learning_rate
@@ -380,7 +381,7 @@ workflow Permutect {
             --batch_size ~{batch_size} --num_workers ~{num_workers} --num_processes ~{num_cpus} \
             ~{" --num_spectrum_iterations " + num_spectrum_iterations} \
             ~{" --spectrum_learning_rate " + spectrum_learning_rate} \
-            ~{" --segmentation_model " + segmentation_model} \
+            ~{" --germline_model " + germline_model} \
             --genomic_span $genomic_span ~{permutect_filtering_extra_args}
 
         tar cvf tensorboard.tar tensorboard/
@@ -419,6 +420,7 @@ task PrePermutectFiltering {
         File input_vcf
         File ref_fasta
         File ref_fai
+        Boolean hairpin_filter
         String permutect_docker
         Int? preemptible
         Int max_retries = 0
@@ -434,7 +436,8 @@ task PrePermutectFiltering {
     command <<<
         set -e
 
-        pre_permutect_filtering --input ~{input_vcf} --reference ~{ref_fasta} --output pre-filtered.vcf
+        pre_permutect_filtering --input ~{input_vcf} --reference ~{ref_fasta} --output pre-filtered.vcf \
+            ~{if hairpin_filter then "" else "--no_hairpin_filter"}
 
         gatk --java-options "-Xmx~{command_mem}m" IndexFeatureFile -I pre-filtered.vcf
     >>>
@@ -644,7 +647,7 @@ task SegmentPileups {
         fi
 
         segment_pileups --input ~{tumor_pileups} --output tumor.segments.table --plot tumor.segments.png \
-            $normal_args --contamination_table contamination.table --segmentation_model segmentation-model.pt \
+            $normal_args --contamination_table contamination.table --germline_model germline-model.pt \
             ~{segment_pileups_extra_args}
     >>>
 
@@ -659,7 +662,7 @@ task SegmentPileups {
     }
 
     output {
-        File segmentation_model = "segmentation-model.pt"
+        File germline_model = "germline-model.pt"
         File tumor_segments = "tumor.segments.table"
         File tumor_segments_plot = "tumor.segments.png"
         File? normal_segments = "normal.segments.table"

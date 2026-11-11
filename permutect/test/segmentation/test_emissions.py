@@ -138,3 +138,26 @@ def test_fit_step_size():
     # a step size of 2 doubles the change in the unconstrained parameters
     for start, once, twice in zip(initial.parameters(), plain.parameters(), overrelaxed.parameters()):
         assert torch.allclose(twice, start + 2 * (once - start))
+
+
+def test_phased_genotype_log_likelihoods_with_site_adjustments():
+    # without adjustments, or with factors of 1 and the model's own concentrations, the likelihoods are the model's
+    model = EmissionModel(error_rate=0.002, hom_concentration=150.0, het_concentration=80.0)
+    alt_counts, depths = torch.tensor([3.0, 20.0, 37.0]), torch.tensor([40.0, 40.0, 40.0])
+    allele_frequencies, mafs = torch.tensor([0.1, 0.3, 0.5]), torch.tensor([0.5, 0.2, 0.0])
+    unadjusted = model.phased_genotype_log_likelihoods(alt_counts, depths, allele_frequencies, mafs)
+    ones = torch.ones(3)
+    same = model.phased_genotype_log_likelihoods(
+        alt_counts, depths, allele_frequencies, mafs, ones, ones * 150.0, ones * 80.0
+    )
+    assert all(torch.allclose(a, b) for a, b in zip(unadjusted, same))
+
+    # a factor below 1 lowers the expected alt fraction of a hom alt, which then explains fewer alt reads, and a lower
+    # concentration widens the distribution of its alt count
+    shortfall = model.phased_genotype_log_likelihoods(alt_counts, depths, allele_frequencies, mafs, ones * 0.9)
+    dispersed = model.phased_genotype_log_likelihoods(
+        alt_counts, depths, allele_frequencies, mafs, hom_concentrations=ones * 10.0, het_concentrations=ones * 10.0
+    )
+    hom_alt = 3
+    assert shortfall[hom_alt][2] > unadjusted[hom_alt][2]
+    assert dispersed[hom_alt][1] > unadjusted[hom_alt][1] + 10

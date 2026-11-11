@@ -36,8 +36,9 @@ from permutect.parameters import TrainingParameters
 from permutect.parameters import add_num_processes_to_parser
 from permutect.parameters import add_training_params_to_parser
 from permutect.parameters import parse_training_params
-from permutect.segmentation.segmentation_model import SegmentationModel
+from permutect.segmentation.germline_model import GermlineModel
 from permutect.tools.pre_permutect_filtering import HAIRPIN_FILTER
+from permutect.tools.pre_permutect_filtering import MULTIALLELIC_INDEL_FILTER
 from permutect.training.model_training import train_artifact_model
 from permutect.utils.allele_utils import find_variant_type
 from permutect.utils.enums import Call
@@ -47,11 +48,12 @@ from permutect.utils.enums import Variation
 from permutect.utils.math_utils import LOGIT_EPS
 from permutect.utils.math_utils import prob_to_logit
 
-# Trusted filters in the input VCF come from Mutect2, except for hairpin, which comes from pre_permutect_filtering.
-# Variants with these artifact filters keep them, and the posterior model sees them as definite artifacts (or normal
-# artifacts) regardless of the artifact model, so that they inform the artifact spectra and priors.  Other filters in the
-# input VCF, such as Mutect2's contamination filter, are replaced by the posterior model's calls.
-TRUSTED_ARTIFACT_FILTERS = {"slippage", HAIRPIN_FILTER}
+# Trusted filters in the input VCF come from Mutect2, except for hairpin and multiallelic_indel, which come from
+# pre_permutect_filtering.  Variants with these artifact filters keep them, and the posterior model sees them as definite
+# artifacts (or normal artifacts) regardless of the artifact model, so that they inform the artifact spectra and priors.
+# Other filters in the input VCF, such as Mutect2's contamination and multiallelic filters, are replaced by the posterior
+# model's calls.
+TRUSTED_ARTIFACT_FILTERS = {"slippage", HAIRPIN_FILTER, MULTIALLELIC_INDEL_FILTER}
 
 POST_PROB_INFO_KEY = "POST"
 ARTIFACT_LOD_INFO_KEY = "ARTLOD"
@@ -119,8 +121,8 @@ def parse_arguments(argv=None):
         "Necessary for learning priors since otherwise rates of artifacts and variants would be overinflated.",
     )
     parser.add_argument(
-        "--" + constants.SEGMENTATION_MODEL_NAME,
-        help="SegmentationModel from segment_pileups, which gives the minor allele fractions of the tumor and normal at "
+        "--" + constants.GERMLINE_MODEL_NAME,
+        help="GermlineModel from segment_pileups, which gives the minor allele fractions of the tumor and normal at "
         "each variant and the likelihoods of germline variants.  Without it, the minor allele fractions are 1/2 and the "
         "germline likelihoods have default parameters.",
     )
@@ -148,12 +150,12 @@ def parse_arguments(argv=None):
     return parser.parse_args(argv)
 
 
-def load_segmentation_model(path) -> SegmentationModel:
-    """the SegmentationModel saved by segment_pileups, or one without segments and with default parameters"""
+def load_germline_model(path) -> GermlineModel:
+    """the GermlineModel saved by segment_pileups, or one without segments and with default parameters"""
     if path is None:
-        return SegmentationModel()
-    print("reading segmentation model")
-    return SegmentationModel.load(path)
+        return GermlineModel()
+    print("reading germline model")
+    return GermlineModel.load(path)
 
 
 def main_without_parsing(args):
@@ -176,7 +178,7 @@ def main_without_parsing(args):
         germline_mode=getattr(args, constants.GERMLINE_MODE_NAME),
         recall_weight=getattr(args, constants.RECALL_WEIGHT_NAME),
         no_germline_mode=getattr(args, constants.NO_GERMLINE_MODE_NAME),
-        segmentation_model=load_segmentation_model(getattr(args, constants.SEGMENTATION_MODEL_NAME)),
+        germline_model=load_germline_model(getattr(args, constants.GERMLINE_MODEL_NAME)),
         num_processes=getattr(args, constants.NUM_PROCESSES_NAME),
     )
 
@@ -197,7 +199,7 @@ def make_filtered_vcf(
     germline_mode: bool = False,
     recall_weight: float = 1.0,
     no_germline_mode: bool = False,
-    segmentation_model: SegmentationModel = None,
+    germline_model: GermlineModel = None,
     num_processes: int = 1,
 ):
     """
@@ -218,7 +220,7 @@ def make_filtered_vcf(
         dataset_file=test_dataset_file,
         input_vcf=input_vcf,
         contig_index_to_name_map=contig_index_to_name_map,
-        segmentation_model=segmentation_model,
+        germline_model=germline_model,
         num_processes=num_processes,
     )
 
@@ -242,7 +244,7 @@ def make_filtered_vcf(
         initial_log_artifact_prior,
         no_germline_mode=no_germline_mode,
         device=device,
-        segmentation_model=segmentation_model,
+        germline_model=germline_model,
     )
     posterior_data_loader = make_posterior_data_loader(
         annotated_dataset=annotated_dataset,
@@ -352,22 +354,22 @@ def make_annotated_dataset(
     dataset_file,
     input_vcf,
     contig_index_to_name_map,
-    segmentation_model: SegmentationModel = None,
+    germline_model: GermlineModel = None,
     num_processes: int = 1,
 ):
     normalizing_timer = Timer("Normalizing data. . .")
     normalized_mmap_data = plain_text_data.make_normalized_mmap_data([dataset_file], num_processes=num_processes)
     normalizing_timer.report("Time to normalize test data:")
 
-    segmentation_model = SegmentationModel() if segmentation_model is None else segmentation_model
+    germline_model = GermlineModel() if germline_model is None else germline_model
     report_memory_usage("Creating ReadsDataset with AF and MAF.")
     annotation_timer = Timer("Annotating data with AF and MAF from VCF. . .")
     annotated_mmap_data = normalized_mmap_data.make_vcf_annotate_memory_mapped_data(
         input_vcf,
         contig_index_to_name_map,
         artifact_filters=TRUSTED_ARTIFACT_FILTERS,
-        segmentation=segmentation_model.tumor.maf_intervals(),
-        normal_segmentation=segmentation_model.normal.maf_intervals(),
+        segmentation=germline_model.tumor.maf_intervals(),
+        normal_segmentation=germline_model.normal.maf_intervals(),
     )
     annotated_dataset = ReadsDataset(memory_mapped_data=annotated_mmap_data)
     annotation_timer.report("Time to annotate data with AF and MAF:")
