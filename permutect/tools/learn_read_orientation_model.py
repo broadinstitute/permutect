@@ -1,11 +1,10 @@
 import argparse
-import os
+import io
 import tarfile
-import tempfile
+import time
 from urllib.parse import quote_plus
 
 from permutect import constants
-from permutect.read_orientation.picard_histogram_reader import CONTEXTS
 from permutect.read_orientation.picard_histogram_reader import read_f1r2_counts
 from permutect.read_orientation.read_orientation_model import STATES
 from permutect.read_orientation.read_orientation_model import ContextPrior
@@ -14,9 +13,7 @@ from permutect.read_orientation.read_orientation_model import reverse_complement
 
 # GATK's artifact prior tables, which FilterMutectCalls reads with --orientation-bias-artifact-priors
 GATK_PRIORS_EXTENSION = ".orientation_priors"
-GATK_PRIORS_COLUMNS = (
-    ["context", "rev_comp"] + [state.lower() for state in STATES] + ["num_examples", "num_alt_examples"]
-)
+GATK_PRIORS_COLUMNS = ("context", "rev_comp", *map(str.lower, STATES), "num_examples", "num_alt_examples")
 GATK_SAMPLE_METADATA = "#<METADATA>SAMPLE="
 
 
@@ -78,27 +75,22 @@ def write_gatk_priors(output_tar_gz, priors_by_sample: dict[str, dict[str, Conte
     Write a tar.gz of GATK's prior tables, one per sample, named by the sample URL-encoded as Java's URLEncoder does,
     which leaves letters, digits and .-*_ as they are and turns spaces into +
     """
-    with tempfile.TemporaryDirectory() as directory, tarfile.open(output_tar_gz, mode="w:gz") as tar:
+    with tarfile.open(output_tar_gz, mode="w:gz") as tar:
         for sample, priors in priors_by_sample.items():
-            file_name = quote_plus(sample, safe="*").replace("~", "%7E") + GATK_PRIORS_EXTENSION
-            path = os.path.join(directory, file_name)
-            write_gatk_prior_table(path, sample, priors)
-            tar.add(path, arcname=file_name)
+            table = gatk_prior_table(sample, priors).encode()
+            member = tarfile.TarInfo(quote_plus(sample, safe="*").replace("~", "%7E") + GATK_PRIORS_EXTENSION)
+            member.size, member.mtime = len(table), int(time.time())
+            tar.addfile(member, io.BytesIO(table))
 
 
-def write_gatk_prior_table(path, sample: str, priors: dict[str, ContextPrior]):
-    with open(path, "w") as file:
-        file.write(GATK_SAMPLE_METADATA + sample + "\n")
-        file.write("\t".join(GATK_PRIORS_COLUMNS) + "\n")
-        for context in CONTEXTS:
-            prior = priors[context]
-            probabilities = [repr(p) for p in prior.prior_k.tolist()]
-            fields = (
-                [context, reverse_complement(context)]
-                + probabilities
-                + [str(prior.num_sites), str(prior.num_alt_sites)]
-            )
-            file.write("\t".join(fields) + "\n")
+def gatk_prior_table(sample: str, priors: dict[str, ContextPrior]) -> str:
+    """GATK's table of a sample's priors, with a row for each context in lexicographic order"""
+    rows = (
+        (context, reverse_complement(context), *prior.prior_k.tolist(), prior.num_sites, prior.num_alt_sites)
+        for context, prior in sorted(priors.items())
+    )
+    lines = [GATK_SAMPLE_METADATA + sample, "\t".join(GATK_PRIORS_COLUMNS), *("\t".join(map(str, row)) for row in rows)]
+    return "\n".join(lines) + "\n"
 
 
 def main():

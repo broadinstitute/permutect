@@ -3,23 +3,17 @@ import tarfile
 
 import numpy as np
 import pytest
+import torch
 
-from permutect.read_orientation.picard_histogram_reader import BASES
+from permutect.read_orientation.picard_histogram_reader import ALT_HISTOGRAM_LABELS
 from permutect.read_orientation.picard_histogram_reader import CONTEXTS
-from permutect.read_orientation.picard_histogram_reader import ORIENTATIONS
-from permutect.read_orientation.picard_histogram_reader import AltSites
+from permutect.read_orientation.picard_histogram_reader import Sites
 from permutect.read_orientation.picard_histogram_reader import read_f1r2_counts
 from permutect.read_orientation.picard_histogram_reader import read_picard_histograms
 from permutect.test.test_file_names import DREAM_TUMOR_4_F1R2_SCATTERS
 
-ALT_LABELS = [
-    f"{context}_{alt_base}_{orientation}"
-    for context in CONTEXTS
-    for alt_base in BASES
-    if alt_base != context[1]
-    for orientation in ORIENTATIONS
-]
 ALT_TABLE_HEADER = "context\tref_count\talt_count\tref_f1r2\talt_f1r2\tdepth\talt"
+A, C, G, T = range(4)
 
 
 def histogram_file_text(sample: str, counts_by_label: dict, max_depth: int) -> str:
@@ -56,7 +50,7 @@ def f1r2_files(sample: str, max_depth: int, ref_counts: dict, alt_counts: dict, 
     """the files of a sample's F1R2 counts, with zero counts for histograms that aren't given"""
     zeros = np.zeros(max_depth, dtype=np.int64)
     ref = {context: ref_counts.get(context, zeros) for context in CONTEXTS}
-    alt = {label: alt_counts.get(label, zeros) for label in ALT_LABELS}
+    alt = {label: alt_counts.get(label, zeros) for label in ALT_HISTOGRAM_LABELS}
     files = {
         sample + ".ref_histogram": histogram_file_text(sample, ref, max_depth),
         sample + ".alt_histogram": histogram_file_text(sample, alt, max_depth),
@@ -64,6 +58,11 @@ def f1r2_files(sample: str, max_depth: int, ref_counts: dict, alt_counts: dict, 
     for context in CONTEXTS:
         files[f"{sample}.{context}.alt_table"] = alt_table_text(sample, alt_rows_by_context.get(context, []))
     return files
+
+
+def rows(sites: Sites) -> list:
+    """the sites as sorted (alt base, alt count, alt F1R2 count, depth, number of sites)"""
+    return sorted(tuple(key) + (count,) for key, count in zip(sites.keys_n4.tolist(), sites.counts_n.tolist()))
 
 
 def test_read_picard_histograms():
@@ -79,12 +78,21 @@ def test_read_picard_histograms():
     ]
     histograms = read_picard_histograms(line + "\n" for line in lines)
     assert histograms.string_headers == ["my sample"]
-    assert histograms.bin_label == "depth"
+    assert histograms.labels == ["AAA", "ACG_T_F1R2"]
     assert histograms.bins_b.tolist() == [1, 2]
-    assert {label: counts.tolist() for label, counts in histograms.counts_by_label.items()} == {
-        "AAA": [3, 5],
-        "ACG_T_F1R2": [0, 7],
-    }
+    assert histograms.counts_bl.tolist() == [[3, 0], [5, 7]]
+
+
+def test_sites():
+    # identical keys are combined, and keys without sites dropped
+    sites = Sites.of([[T, 2, 1, 30], [A, 2, 1, 30], [T, 2, 1, 30], [T, 2, 0, 30], [G, 3, 3, 9]], [1, 1, 2, 1, 0])
+    assert rows(sites) == [(A, 2, 1, 30, 1), (T, 2, 0, 30, 1), (T, 2, 1, 30, 3)]
+    assert (sites.num_sites(), sites.num_sites(sites.alt_bases_n == T)) == (5, 4)
+    assert rows(sites + sites) == [(A, 2, 1, 30, 2), (T, 2, 0, 30, 2), (T, 2, 1, 30, 6)]
+    assert rows(Sites.concatenate([])) == []
+
+    # in the reverse complement's orientation, the alt bases are complementary and F1R2 and F2R1 reads swap
+    assert rows(sites.reverse_complement()) == [(A, 2, 1, 30, 3), (A, 2, 2, 30, 1), (T, 2, 1, 30, 1)]
 
 
 def test_inputs_are_summed(tmp_path):
@@ -104,37 +112,16 @@ def test_inputs_are_summed(tmp_path):
     assert counts_by_sample.keys() == {"S", "OTHER"}
     counts = counts_by_sample["S"]
     assert counts.max_depth == max_depth
-    assert counts.ref_histograms["ACG"].tolist() == [11, 2, 3, 5]
-    assert counts.ref_histograms["TTT"].tolist() == [0, 0, 5, 0]
-    assert counts.ref_histograms["CCC"].tolist() == [0, 0, 0, 0]
-    assert counts.alt_depth_one_histograms[("ACG", "T", "F1R2")].tolist() == [1, 1, 0, 2]
-    assert counts.alt_depth_one_histograms[("ACG", "A", "F2R1")].tolist() == [0, 0, 3, 0]
-
-    # sites with the same alt base, alt count, alt F1R2 count and depth are combined, whatever their ref F1R2 counts
-    acg = counts.alt_sites["ACG"]
-    rows = sorted(zip(*(column.tolist() for column in acg.columns())))
-    t = BASES.index("T")
-    assert rows == [(t, 5, 4, 8, 1), (t, 5, 4, 15, 2), (t, 5, 4, 16, 1)]
-    assert counts.alt_sites["TTT"].num_sites() == 1
-    assert counts.alt_sites["CCC"].num_sites() == 0
-    assert counts_by_sample["OTHER"].ref_histograms["ACG"].tolist() == [1, 2, 3, 4]
-
-
-def test_alt_sites_are_collapsed():
-    sites = AltSites.collapse(
-        np.array([3, 3, 3, 0]),
-        np.array([2, 2, 2, 2]),
-        np.array([1, 1, 0, 1]),
-        np.array([30, 30, 30, 30]),
-        np.array([1, 2, 1, 1]),
-    )
-    assert sorted(zip(*(column.tolist() for column in sites.columns()))) == [
-        (0, 2, 1, 30, 1),
-        (3, 2, 0, 30, 1),
-        (3, 2, 1, 30, 3),
-    ]
-    assert (sites + sites).num_sites() == 10
-    assert len((sites + sites).num_sites_n) == 3
+    assert counts.sites.keys() == set(CONTEXTS)
+    # sites without alt reads have the ref base as their alt base, and alt table sites with the same alt base, alt
+    # count, alt F1R2 count and depth are combined, whatever their ref F1R2 counts
+    ref_sites = [(C, 0, 0, 1, 11), (C, 0, 0, 2, 2), (C, 0, 0, 3, 3), (C, 0, 0, 4, 5)]
+    one_alt_read_sites = [(A, 1, 0, 3, 3), (T, 1, 1, 1, 1), (T, 1, 1, 2, 1), (T, 1, 1, 4, 2)]
+    alt_table_sites = [(T, 5, 4, 8, 1), (T, 5, 4, 15, 2), (T, 5, 4, 16, 1)]
+    assert rows(counts.sites["ACG"]) == sorted(ref_sites + one_alt_read_sites + alt_table_sites)
+    assert rows(counts.sites["TTT"]) == [(G, 2, 1, 9, 1), (T, 0, 0, 3, 5)]
+    assert rows(counts.sites["CCC"]) == []
+    assert rows(counts_by_sample["OTHER"].sites["ACG"]) == [(C, 0, 0, depth, depth) for depth in range(1, 5)]
 
 
 def test_alt_table_of_an_older_gatk_is_rejected(tmp_path):
@@ -167,11 +154,8 @@ def test_gatk_scatters_are_summed():
     together = read_f1r2_counts(DREAM_TUMOR_4_F1R2_SCATTERS)[sample]
     first, second = (read_f1r2_counts([scatter])[sample] for scatter in DREAM_TUMOR_4_F1R2_SCATTERS)
     assert together.max_depth == first.max_depth == second.max_depth == 200
-    for histograms in ("ref_histograms", "alt_depth_one_histograms"):
-        for key, counts in getattr(together, histograms).items():
-            assert np.array_equal(counts, getattr(first, histograms)[key] + getattr(second, histograms)[key])
-    assert all(first.alt_sites[context].num_sites() > 0 for context in ("ACG", "CGT"))
+    assert all(first.sites[context].num_sites(first.sites[context].alt_counts_n >= 2) > 0 for context in ("ACG", "CGT"))
     for context in CONTEXTS:
-        summed = first.alt_sites[context] + second.alt_sites[context]
-        for together_column, summed_column in zip(together.alt_sites[context].columns(), summed.columns()):
-            assert np.array_equal(together_column, summed_column)
+        summed = first.sites[context] + second.sites[context]
+        assert torch.equal(together.sites[context].keys_n4, summed.keys_n4)
+        assert torch.equal(together.sites[context].counts_n, summed.counts_n)

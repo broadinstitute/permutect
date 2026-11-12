@@ -5,58 +5,34 @@ from scipy.stats import betabinom
 
 from permutect.read_orientation.picard_histogram_reader import BASES
 from permutect.read_orientation.picard_histogram_reader import CONTEXTS
-from permutect.read_orientation.picard_histogram_reader import ORIENTATIONS
-from permutect.read_orientation.picard_histogram_reader import AltSites
 from permutect.read_orientation.picard_histogram_reader import F1R2Counts
+from permutect.read_orientation.picard_histogram_reader import Sites
 from permutect.read_orientation.read_orientation_model import ALLELE_FRACTION_PSEUDOCOUNTS_K2
+from permutect.read_orientation.read_orientation_model import ARTIFACT_STATES
 from permutect.read_orientation.read_orientation_model import CANONICAL_CONTEXTS
 from permutect.read_orientation.read_orientation_model import F1R2_FRACTION_PSEUDOCOUNTS_K2
 from permutect.read_orientation.read_orientation_model import HOM_REF
 from permutect.read_orientation.read_orientation_model import NUM_STATES
 from permutect.read_orientation.read_orientation_model import REVERSE_COMPLEMENT_STATES_K
-from permutect.read_orientation.read_orientation_model import STATE_ALT_BASES_K
 from permutect.read_orientation.read_orientation_model import STATES
-from permutect.read_orientation.read_orientation_model import context_data
+from permutect.read_orientation.read_orientation_model import canonical_sites
 from permutect.read_orientation.read_orientation_model import flat_prior
 from permutect.read_orientation.read_orientation_model import learn_prior
 from permutect.read_orientation.read_orientation_model import learn_priors
 from permutect.read_orientation.read_orientation_model import log_likelihoods
-from permutect.read_orientation.read_orientation_model import responsibilities
+from permutect.read_orientation.read_orientation_model import posteriors
 from permutect.read_orientation.read_orientation_model import reverse_complement
 
-# the maximum depth of the histograms, which is 200 by default in Mutect2, high enough for simulations at depth 1000
-MAX_DEPTH = 1000
+A, C, G, T = range(4)
 
 
 def empty_counts() -> F1R2Counts:
-    zeros = np.zeros(MAX_DEPTH, dtype=np.int64)
-    ref = {context: zeros.copy() for context in CONTEXTS}
-    alt = {
-        (context, alt_base, orientation): zeros.copy()
-        for context in CONTEXTS
-        for alt_base in BASES
-        if alt_base != context[1]
-        for orientation in ORIENTATIONS
-    }
-    return F1R2Counts("SAMPLE", MAX_DEPTH, ref, alt, {context: AltSites.empty() for context in CONTEXTS})
+    return F1R2Counts("SAMPLE", max_depth=1000, sites={context: Sites.empty() for context in CONTEXTS})
 
 
 def add_sites(counts: F1R2Counts, context: str, alt_bases_n, alt_counts_n, alt_f1r2_counts_n, depths_n):
-    """add sites to F1R2 counts as GATK collects them: into histograms if they have fewer than two alt reads"""
-    alt_bases_n, alt_counts_n, alt_f1r2_counts_n, depths_n = (
-        np.asarray(x) for x in (alt_bases_n, alt_counts_n, alt_f1r2_counts_n, depths_n)
-    )
-    bins_n = np.minimum(depths_n, MAX_DEPTH) - 1
-    np.add.at(counts.ref_histograms[context], bins_n[alt_counts_n == 0], 1)
-    for alt_base in BASES:
-        for orientation, alt_f1r2_count in (("F1R2", 1), ("F2R1", 0)):
-            sites = (alt_counts_n == 1) & (alt_bases_n == BASES.index(alt_base)) & (alt_f1r2_counts_n == alt_f1r2_count)
-            if np.any(sites):
-                np.add.at(counts.alt_depth_one_histograms[(context, alt_base, orientation)], bins_n[sites], 1)
-    multiple = alt_counts_n >= 2
-    columns = (np.asarray(column)[multiple] for column in (alt_bases_n, alt_counts_n, alt_f1r2_counts_n, depths_n))
-    new_sites = AltSites.collapse(*columns, np.ones(int(multiple.sum()), dtype=np.int64))
-    counts.alt_sites[context] = counts.alt_sites[context] + new_sites
+    keys_n4 = np.column_stack([alt_bases_n, alt_counts_n, alt_f1r2_counts_n, depths_n])
+    counts.sites[context] += Sites.of(keys_n4, np.ones(len(keys_n4)))
 
 
 def test_canonical_contexts():
@@ -70,67 +46,51 @@ def test_reverse_complement_states():
     assert torch.equal(REVERSE_COMPLEMENT_STATES_K[REVERSE_COMPLEMENT_STATES_K], torch.arange(NUM_STATES))
     assert STATES[REVERSE_COMPLEMENT_STATES_K[STATES.index("F1R2_A")]] == "F2R1_T"
     assert STATES[REVERSE_COMPLEMENT_STATES_K[STATES.index("F2R1_G")]] == "F1R2_C"
-    assert all(REVERSE_COMPLEMENT_STATES_K[k] == k for k in range(8, NUM_STATES))
+    assert all(REVERSE_COMPLEMENT_STATES_K[k] == k for k in range(HOM_REF, NUM_STATES))
 
 
 def test_log_likelihoods_are_beta_binomial():
-    ref_base = BASES.index("C")
-    alt_bases_n = torch.tensor([1, 3, 3, 0, 2])  # a ref site, then alt T, T, A and G
-    alt_counts_n = torch.tensor([0, 5, 1, 12, 30])
-    alt_f1r2_counts_n = torch.tensor([0, 5, 0, 6, 2])
-    depths_n = torch.tensor([40, 50, 7, 100, 60])
-    result_nk = log_likelihoods(ref_base, alt_bases_n, alt_counts_n, alt_f1r2_counts_n, depths_n)
+    # a site without alt reads, then sites with alt T, T, A and G in a context with ref C
+    keys = [[C, 0, 0, 40], [T, 5, 5, 50], [T, 1, 0, 7], [A, 12, 6, 100], [G, 30, 2, 60]]
+    sites = Sites.of(keys, [1] * len(keys))
+    result_nk = log_likelihoods(sites, ref_base=C)
 
     af_alpha_k, af_beta_k = ALLELE_FRACTION_PSEUDOCOUNTS_K2.numpy().T
     f1r2_alpha_k, f1r2_beta_k = F1R2_FRACTION_PSEUDOCOUNTS_K2.numpy().T
-    for n in range(len(depths_n)):
-        expected_k = betabinom.logpmf(
-            alt_counts_n[n].item(), depths_n[n].item(), af_alpha_k, af_beta_k
-        ) + betabinom.logpmf(alt_f1r2_counts_n[n].item(), alt_counts_n[n].item(), f1r2_alpha_k, f1r2_beta_k)
+    for (alt_base, alt_count, alt_f1r2_count, depth), result_k in zip(sites.keys_n4.tolist(), result_nk):
+        expected_k = betabinom.logpmf(alt_count, depth, af_alpha_k, af_beta_k)
+        expected_k += betabinom.logpmf(alt_f1r2_count, alt_count, f1r2_alpha_k, f1r2_beta_k)
         # artifact states are possible only for their alt base, which can't be the ref base
-        possible_k = (STATE_ALT_BASES_K == alt_bases_n[n]) & (STATE_ALT_BASES_K != ref_base) | (STATE_ALT_BASES_K < 0)
-        assert torch.all(torch.isinf(result_nk[n, ~possible_k]))
-        assert np.allclose(result_nk[n, possible_k].numpy(), expected_k[possible_k.numpy()], rtol=1e-9)
-    # a ref site can't be an artifact
-    assert torch.all(torch.isinf(result_nk[0, :8]))
+        possible_k = torch.tensor(
+            [state not in ARTIFACT_STATES or (state[-1] == BASES[alt_base] and alt_base != C) for state in STATES]
+        )
+        assert torch.all(torch.isinf(result_k[~possible_k]))
+        assert np.allclose(result_k[possible_k].numpy(), expected_k[possible_k.numpy()], rtol=1e-9)
 
 
-def test_responsibilities():
+def test_posteriors():
     log_likelihoods_nk = torch.log(torch.rand(5, NUM_STATES, dtype=torch.float64))
-    prior_k = flat_prior(BASES.index("A"))
-    result_nk = responsibilities(log_likelihoods_nk, prior_k)
+    result_nk = posteriors(log_likelihoods_nk, flat_prior(A))
     assert torch.allclose(result_nk.sum(dim=-1), torch.ones(5, dtype=torch.float64))
     # the impossible ref-to-ref artifact states, F1R2_A and F2R1_A for ref base A
-    assert torch.all(result_nk[:, [0, 4]] == 0)
-    not_hom_ref_nk = responsibilities(log_likelihoods_nk, prior_k, given_not_hom_ref=True)
-    assert torch.all(not_hom_ref_nk[:, HOM_REF] == 0)
-    assert torch.allclose(not_hom_ref_nk.sum(dim=-1), torch.ones(5, dtype=torch.float64))
+    assert torch.all(result_nk[:, [STATES.index("F1R2_A"), STATES.index("F2R1_A")]] == 0)
 
 
 def test_flat_prior():
-    prior_k = flat_prior(BASES.index("G"))
+    prior_k = flat_prior(G)
     assert prior_k[STATES.index("F1R2_G")] == prior_k[STATES.index("F2R1_G")] == 0
     assert torch.allclose(prior_k[prior_k > 0], torch.full((10,), 0.1, dtype=torch.float64))
 
 
-def test_reverse_complement_data_go_to_the_canonical_context():
+def test_canonical_sites():
     # ACA's reverse complement is TGT, whose alt C reads in F1R2 orientation are alt G reads of ACA in F2R1 orientation.
     # Sites without alt reads get ACA's ref base C as their alt base.
     counts = empty_counts()
-    c, g = BASES.index("C"), BASES.index("G")
-    add_sites(counts, "TGT", [c, c, c], [0, 1, 5], [0, 1, 4], [30, 30, 40])
-    add_sites(counts, "ACA", [g, g], [0, 5], [0, 1], [30, 40])
-    data = context_data(counts, "ACA")
-    assert (data.num_ref_sites, data.num_alt_depth_one_sites, data.num_multiple_alt_sites) == (2, 1, 2)
-    sites = sorted(
-        zip(
-            *(
-                x.tolist()
-                for x in (data.alt_bases_n, data.alt_counts_n, data.alt_f1r2_counts_n, data.depths_n, data.num_sites_n)
-            )
-        )
-    )
-    assert sites == [(c, 0, 0, 30, 2.0), (g, 1, 0, 30, 1.0), (g, 5, 1, 40, 2.0)]
+    add_sites(counts, "TGT", [G, C, C], [0, 1, 5], [0, 1, 4], [30, 30, 40])
+    add_sites(counts, "ACA", [C, G], [0, 5], [0, 1], [30, 40])
+    sites = canonical_sites(counts, "ACA")
+    assert sites.keys_n4.tolist() == [[C, 0, 0, 30], [G, 1, 0, 30], [G, 5, 1, 40]]
+    assert sites.counts_n.tolist() == [2, 1, 2]
 
 
 def simulate(counts: F1R2Counts, context: str, prior_k: np.ndarray, num_sites: int, depth: int, rng):
@@ -142,15 +102,14 @@ def simulate(counts: F1R2Counts, context: str, prior_k: np.ndarray, num_sites: i
     alt reads.  An artifact's allele fraction distribution, Beta(1, 9), gives none at depth d with probability
     9 / (9 + d), which biases its prior down that much: 8% at depth 100 and 1% at depth 1000.
     """
-    alt_base = BASES.index("T")
-    assert context[1] != "T" and all(prior_k[k] == 0 for k in range(8) if STATE_ALT_BASES_K[k] != alt_base)
+    assert context[1] != "T" and not any(p > 0 and state[-1] != "T" for state, p in zip(ARTIFACT_STATES, prior_k))
     states_n = rng.choice(NUM_STATES, size=num_sites, p=prior_k)
     af_alpha_n, af_beta_n = ALLELE_FRACTION_PSEUDOCOUNTS_K2.numpy()[states_n].T
     alt_counts_n = rng.binomial(depth, rng.beta(af_alpha_n, af_beta_n))
     f1r2_alpha_n, f1r2_beta_n = F1R2_FRACTION_PSEUDOCOUNTS_K2.numpy()[states_n].T
     alt_f1r2_counts_n = rng.binomial(alt_counts_n, rng.beta(f1r2_alpha_n, f1r2_beta_n))
     # sites without alt reads have the ref base as their alt base
-    alt_bases_n = np.where(alt_counts_n > 0, alt_base, BASES.index(context[1]))
+    alt_bases_n = np.where(alt_counts_n > 0, T, BASES.index(context[1]))
     add_sites(counts, context, alt_bases_n, alt_counts_n, alt_f1r2_counts_n, np.full(num_sites, depth))
 
 
@@ -164,7 +123,7 @@ def test_em_recovers_the_prior_of_simulated_data():
     counts = empty_counts()
     simulate(counts, "ACG", true_prior_k, num_sites=1_000_000, depth=1000, rng=rng)
 
-    em = learn_prior(context_data(counts, "ACG"), convergence_threshold=1e-8, max_iterations=500)
+    em = learn_prior(canonical_sites(counts, "ACG"), ref_base=C, convergence_threshold=1e-8, max_iterations=500)
     assert em.converged
     for state in states:
         k = STATES.index(state)
@@ -181,7 +140,7 @@ def test_contexts_without_enough_data_keep_the_flat_prior():
     prior_k[HOM_REF] = 1 - prior_k.sum()
     simulate(counts, "ACG", prior_k, num_sites=20000, depth=60, rng=rng)
     # the canonical GGA has sites without alt reads but none with two or more
-    counts.ref_histograms["GGA"][50] = 1000
+    counts.sites["GGA"] = Sites.of([[G, 0, 0, 51]], [1000])
 
     priors = learn_priors(counts)
     assert set(priors) == set(CONTEXTS)
