@@ -35,3 +35,22 @@ MUTECT2_CHR20_FILTERED_VCF_ONLY_T_SNVS = os.path.join(integration_test_dir, "mut
 # gene panels, and in a subdirectory the segments that GATK's CalculateContamination found in them
 CONTAMINATION_TEST_DIR = os.path.join(integration_test_dir, "calculate-contamination")
 GATK_CONTAMINATION_SEGMENTS_DIR = os.path.join(CONTAMINATION_TEST_DIR, "gatk-segments")
+
+# F1R2 counts from GATK CollectF1R2Counts on GATK test data, in scatters, and GATK LearnReadOrientationModel's priors
+# learned from the scatters.  DREAM challenge synthetic tumor 4 (sample
+# synthetic.challenge.set4.tumour), b37 chr20 in two halves: every context has data.  The 3 scatters of the small read
+# orientation test bam of GATK's LearnReadOrientationModelIntegrationTest: about half the contexts have too few sites
+# and keep GATK's flat prior.
+READ_ORIENTATION_TEST_DIR = os.path.join(integration_test_dir, "read-orientation")
+DREAM_TUMOR_4_F1R2_SCATTERS = [
+    os.path.join(READ_ORIENTATION_TEST_DIR, f"dream-tumor-4.f1r2-scatter-{n}.tar.gz") for n in range(2)
+]
+DREAM_TUMOR_4_GATK_ORIENTATION_PRIORS = os.path.join(
+    READ_ORIENTATION_TEST_DIR, "dream-tumor-4.gatk-orientation-priors.tar.gz"
+)
+HAPMAP_F1R2_SCATTERS = [
+    os.path.join(READ_ORIENTATION_TEST_DIR, f"hapmap-read-orientation.f1r2-scatter-{n}.tar.gz") for n in range(3)
+]
+HAPMAP_GATK_ORIENTATION_PRIORS = os.path.join(
+    READ_ORIENTATION_TEST_DIR, "hapmap-read-orientation.gatk-orientation-priors.tar.gz"
+)

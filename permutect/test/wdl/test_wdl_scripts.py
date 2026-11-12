@@ -15,6 +15,7 @@ import pytest
 from permutect import constants
 from permutect.test.test_file_names import test_dir
 from permutect.tools import edit_dataset
+from permutect.tools import learn_read_orientation_model
 from permutect.tools import segment_pileups
 
 SCRIPTS_DIR = os.path.abspath(os.path.join(test_dir, "..", "..", "scripts"))
@@ -189,20 +190,37 @@ def task_output_files(wdl_path: str, task_name: str) -> dict:
     return dict(re.findall(r'File\??\s+(\w+)\s*=\s*"([^"]+)"', outputs))
 
 
+def task_output_globs(wdl_path: str, task_name: str) -> dict:
+    """
+    The glob patterns of a task's array outputs, eg Array[File] f1r2_counts = glob("f1r2-counts/*.tar.gz"), by output
+    name
+    """
+    with open(wdl_path) as file:
+        wdl = file.read()
+    task_start = wdl.index("task " + task_name + " {")
+    output_start = wdl.index("output {", task_start)
+    outputs = wdl[output_start : wdl.index("}", output_start)]
+    return dict(re.findall(r'Array\[File\]\s+(\w+)\s*=\s*glob\("([^"]+)"\)', outputs))
+
+
 def fill_placeholders(command: str, inputs: dict) -> str:
     """
-    Replace the WDL placeholders ~{name}, ~{default="..." name} and ~{"prefix" + name}, as Cromwell would.
-    An undefined (None) input gives its default, or nothing.
+    Replace the WDL placeholders ~{name}, ~{default="..." name}, ~{"prefix" + name} and ~{sep=" " name}, as Cromwell
+    would.  An undefined (None) input gives its default, or nothing, and an array input given a separator its elements
+    joined by the separator.
     """
 
     def fill(match):
-        default, prefix, name = match.groups()
+        _, separator, default, prefix, name = match.groups()
         value = inputs[name]
         if value is None:
             return default or ""
+        if separator is not None:
+            return separator.join(str(element) for element in value)
         return (prefix or "") + str(value)
 
-    return re.sub(r'~\{(?:default="([^"]*)"\s+)?(?:"([^"]*)"\s*\+\s*)?(\w+)\}', fill, command)
+    pattern = r'~\{(?:sep=(["\'])(.*?)\1\s+)?(?:default="([^"]*)"\s+)?(?:"([^"]*)"\s*\+\s*)?(\w+)\}'
+    return re.sub(pattern, fill, command)
 
 
 def edit_dataset_arguments(new_source):
@@ -390,7 +408,8 @@ def test_permutect_filtering_stops_when_filter_variants_fails(tmp_path, filter_v
 
 
 @pytest.mark.parametrize("with_pileups", [True, False])
-def test_archive_and_extract_m2_outputs(tmp_path, with_pileups):
+@pytest.mark.parametrize("num_scatters_with_f1r2_counts", [2, 0])
+def test_archive_and_extract_m2_outputs(tmp_path, with_pileups, num_scatters_with_f1r2_counts):
     # Mutect2 outputs with distinct contents, named as Mutect2 names them
     m2_dir, archive_dir, extract_dir = tmp_path / "mutect2", tmp_path / "archive", tmp_path / "extract"
     for directory in (m2_dir, archive_dir, extract_dir):
@@ -411,8 +430,15 @@ def test_archive_and_extract_m2_outputs(tmp_path, with_pileups):
             m2_outputs[name] = str(m2_dir / file_name)
         else:
             m2_outputs[name] = None
+    # the F1R2 counts of the scatters, which have the same name in each scatter's directory
+    f1r2_counts = []
+    for n in range(num_scatters_with_f1r2_counts):
+        (m2_dir / f"scatter-{n}").mkdir()
+        (m2_dir / f"scatter-{n}" / "f1r2.tar.gz").write_text(f"F1R2 counts of scatter {n}\n")
+        f1r2_counts.append(str(m2_dir / f"scatter-{n}" / "f1r2.tar.gz"))
 
-    archive_command = fill_placeholders(task_command(PERMUTECT_WDL, "ArchiveM2Outputs"), m2_outputs)
+    archive_inputs = m2_outputs | {"f1r2_counts": f1r2_counts}
+    archive_command = fill_placeholders(task_command(PERMUTECT_WDL, "ArchiveM2Outputs"), archive_inputs)
     result = run_bash(archive_command, archive_dir)
     assert result.returncode == 0, result.stderr.decode()
     archive = archive_dir / task_output_files(PERMUTECT_WDL, "ArchiveM2Outputs")["m2_outputs"]
@@ -437,6 +463,27 @@ def test_archive_and_extract_m2_outputs(tmp_path, with_pileups):
 
     # GATK finds the VCF index by its name
     assert extracted_file_names["mutect2_vcf_idx"] == extracted_file_names["mutect2_vcf"] + ".idx"
+
+    # the F1R2 counts of every scatter, in order, are extracted as the ExtractM2Outputs array output of the same name
+    f1r2_glob = task_output_globs(PERMUTECT_WDL, "ExtractM2Outputs")["f1r2_counts"]
+    extracted_f1r2_counts = sorted(glob.glob(str(extract_dir / f1r2_glob)))
+    expected_contents = [f"F1R2 counts of scatter {n}\n" for n in range(num_scatters_with_f1r2_counts)]
+    assert [open(path).read() for path in extracted_f1r2_counts] == expected_contents
+
+
+def test_learn_read_orientation_model_command(tmp_path):
+    # the arguments that the task gives learn_read_orientation_model, which writes the task's output
+    inputs = {"f1r2_counts": ["scatter-0/f1r2.tar.gz", "scatter-1/f1r2.tar.gz"]}
+    command = fill_placeholders(task_command(PERMUTECT_WDL, "LearnReadOrientationModel"), inputs)
+    fake_tool = '#!/bin/bash\nprintf "%s\\n" "$@" > arguments.txt\n'
+    result = run_bash(command, tmp_path, {"learn_read_orientation_model": fake_tool})
+    assert result.returncode == 0, result.stderr.decode()
+
+    arguments = learn_read_orientation_model.parse_arguments((tmp_path / "arguments.txt").read_text().split())
+    assert getattr(arguments, constants.INPUT_NAME) == inputs["f1r2_counts"]
+    assert task_output_files(PERMUTECT_WDL, "LearnReadOrientationModel") == {
+        "priors": getattr(arguments, constants.OUTPUT_NAME)
+    }
 
 
 @pytest.mark.parametrize("with_normal", [True, False])

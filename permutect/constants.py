@@ -71,5 +71,8 @@ MAX_EM_ITERATIONS_NAME = "max_em_iterations"
 PLOT_NAME = "plot"
 NORMAL_PLOT_NAME = "normal_plot"
 
+# arguments for learn_read_orientation_model, which also takes MAX_EM_ITERATIONS_NAME
+CONVERGENCE_THRESHOLD_NAME = "convergence_threshold"
+
 # numerical constants shared by the models
 IMPOSSIBLE_LOG_PROB = -9999  # rules out a call, while staying finite to avoid the NaNs that -inf can give

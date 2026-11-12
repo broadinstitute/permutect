@@ -8,6 +8,7 @@ import pytest
 
 from permutect.test.test_file_names import *
 from permutect.test.wdl.test_wdl_scripts import task_output_files
+from permutect.test.wdl.test_wdl_scripts import task_output_globs
 from permutect.tools.filter_variants import POST_PROB_INFO_KEY
 from permutect.tools.pre_permutect_filtering import HAIRPIN_FILTER
 from permutect.tools.pre_permutect_filtering import MULTIALLELIC_INDEL_FILTER
@@ -21,10 +22,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def make_cached_m2_outputs(working_dir, archive_name: str, with_pileups: bool, with_normal: bool) -> str:
+def make_cached_m2_outputs(
+    working_dir, archive_name: str, with_pileups: bool, with_normal: bool, with_f1r2_counts: bool
+) -> str:
     """
     An archive of Mutect2 outputs for SEQC2 WES chr20, as made by the ArchiveM2Outputs task, with or without the
-    pileups at common variants, which include the normal's only for a matched-normal run
+    pileups at common variants, which include the normal's only for a matched-normal run, and with or without the F1R2
+    counts of the scatters, for which another sample's counts stand in
     """
     m2_outputs = {
         "test_dataset": SEQC2_WES_PLAIN_TEXT_DATA,
@@ -40,17 +44,26 @@ def make_cached_m2_outputs(working_dir, archive_name: str, with_pileups: bool, w
 
     archive = os.path.join(working_dir, archive_name)
     file_names_in_archive = task_output_files(PERMUTECT_WDL, "ExtractM2Outputs")
+    f1r2_directory = os.path.dirname(task_output_globs(PERMUTECT_WDL, "ExtractM2Outputs")["f1r2_counts"])
     with tarfile.open(archive, "w") as tar:
         for name, m2_output in m2_outputs.items():
             tar.add(m2_output, arcname=file_names_in_archive[name])
+        for n, scatter in enumerate(DREAM_TUMOR_4_F1R2_SCATTERS if with_f1r2_counts else []):
+            tar.add(scatter, arcname=os.path.join(f1r2_directory, f"scatter-{n}.tar.gz"))
     return archive
 
 
 def run_permutect_wdl(
-    working_dir, filter_pcr_errors: bool, with_pileups: bool, tumor_only: bool, with_normal: bool
+    working_dir,
+    filter_pcr_errors: bool,
+    with_pileups: bool,
+    tumor_only: bool,
+    with_normal: bool,
+    learn_read_orientation: bool = False,
 ) -> dict:
     """
     Run permutect.wdl with Cromwell on SEQC2 WES chr20 data, giving cached Mutect2 outputs so that Mutect2 is skipped.
+    With learn_read_orientation, the run has run_orientation_bias_mixture_model_filter and the caches have F1R2 counts.
     Returns the Cromwell workflow metadata.
     """
     tumor_only_mode = tumor_only or not with_normal
@@ -75,9 +88,14 @@ def run_permutect_wdl(
         # deep in the execution directory for the socket path length limit
         "Permutect.num_workers": 0,
         "Permutect.filter_pcr_errors": filter_pcr_errors,
+        "Permutect.run_orientation_bias_mixture_model_filter": learn_read_orientation,
         # a tumor-only run is also given matched-normal cached outputs, which it must ignore
         "Permutect.cached_m2_outputs": make_cached_m2_outputs(
-            working_dir, "cached_m2_outputs.tar", with_pileups, with_normal=True
+            working_dir,
+            "cached_m2_outputs.tar",
+            with_pileups,
+            with_normal=True,
+            with_f1r2_counts=learn_read_orientation,
         ),
         "Permutect.tumor_only": tumor_only,
         "Permutect.permutect_docker": PERMUTECT_TEST_DOCKER,
@@ -86,7 +104,9 @@ def run_permutect_wdl(
         "Permutect.test_dataset_truth_vcf": "",
         "Permutect.test_dataset_truth_vcf_idx": "",
         "Permutect.tumor_only_cached_m2_outputs": (
-            make_cached_m2_outputs(working_dir, "tumor_only_cached_m2_outputs.tar", with_pileups, with_normal=False)
+            make_cached_m2_outputs(
+                working_dir, "tumor_only_cached_m2_outputs.tar", with_pileups, False, learn_read_orientation
+            )
             if tumor_only_mode
             else ""
         ),
@@ -110,7 +130,9 @@ def run_permutect_wdl(
     return metadata
 
 
-def check_cached_m2_outputs(metadata: dict, with_pileups: bool, tumor_only_mode: bool):
+def check_cached_m2_outputs(
+    metadata: dict, with_pileups: bool, tumor_only_mode: bool, learn_read_orientation: bool = False
+):
     # the cache for this run's mode is unpacked rather than running Mutect2, and both caches are passed through to the
     # outputs as is
     calls = metadata["calls"]
@@ -133,6 +155,15 @@ def check_cached_m2_outputs(metadata: dict, with_pileups: bool, tumor_only_mode:
     for output in ("normal_segments", "normal_segments_plot"):
         assert (outputs["Permutect." + output] is not None) == (with_pileups and not tumor_only_mode)
 
+    # with run_orientation_bias_mixture_model_filter, learn_read_orientation_model learns the priors of the cached F1R2
+    # counts' sample
+    assert ("Permutect.LearnReadOrientationModel" in calls) == learn_read_orientation
+    priors = outputs["Permutect.read_orientation_priors"]
+    assert (priors is not None) == learn_read_orientation
+    if learn_read_orientation:
+        with tarfile.open(priors, "r:gz") as tar:
+            assert tar.getnames() == ["synthetic.challenge.set4.tumour.orientation_priors"]
+
 
 def output_vcf_records(metadata: dict, tumor_only_mode: bool) -> list[cyvcf2.Variant]:
     # the calls go to the output VCF for the run's mode, and the other mode's output VCF is unset
@@ -153,8 +184,16 @@ def has_filter(v: cyvcf2.Variant, filter_name: str) -> bool:
 
 @pytest.fixture(scope="module")
 def metadata_with_pcr_error_filtering(tmp_path_factory):
+    # also learning the read orientation model
     working_dir = tmp_path_factory.mktemp("with_pcr_error_filtering")
-    return run_permutect_wdl(working_dir, filter_pcr_errors=True, with_pileups=True, tumor_only=False, with_normal=True)
+    return run_permutect_wdl(
+        working_dir,
+        filter_pcr_errors=True,
+        with_pileups=True,
+        tumor_only=False,
+        with_normal=True,
+        learn_read_orientation=True,
+    )
 
 
 @pytest.fixture(scope="module")
@@ -175,7 +214,9 @@ def metadata_without_normal(tmp_path_factory):
 
 
 def test_permutect_wdl_with_pcr_error_filtering(metadata_with_pcr_error_filtering):
-    check_cached_m2_outputs(metadata_with_pcr_error_filtering, with_pileups=True, tumor_only_mode=False)
+    check_cached_m2_outputs(
+        metadata_with_pcr_error_filtering, with_pileups=True, tumor_only_mode=False, learn_read_orientation=True
+    )
     assert "Permutect.PrePermutectFiltering" in metadata_with_pcr_error_filtering["calls"]
     # the empty truth VCF counts as no truth VCF
     assert "Permutect.PermutectConcordance" not in metadata_with_pcr_error_filtering["calls"]
