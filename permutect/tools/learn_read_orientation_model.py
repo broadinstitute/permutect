@@ -5,7 +5,7 @@ import time
 from urllib.parse import quote_plus
 
 from permutect import constants
-from permutect.read_orientation.picard_histogram_reader import read_f1r2_counts
+from permutect.read_orientation.f1r2_counts_reader import read_f1r2_counts
 from permutect.read_orientation.read_orientation_model import STATES
 from permutect.read_orientation.read_orientation_model import ContextPrior
 from permutect.read_orientation.read_orientation_model import learn_priors

@@ -3,10 +3,10 @@ import pytest
 import torch
 from scipy.stats import betabinom
 
-from permutect.read_orientation.picard_histogram_reader import BASES
-from permutect.read_orientation.picard_histogram_reader import CONTEXTS
-from permutect.read_orientation.picard_histogram_reader import F1R2Counts
-from permutect.read_orientation.picard_histogram_reader import Sites
+from permutect.read_orientation.f1r2_counts_reader import BASES
+from permutect.read_orientation.f1r2_counts_reader import CONTEXTS
+from permutect.read_orientation.f1r2_counts_reader import F1R2Counts
+from permutect.read_orientation.f1r2_counts_reader import Sites
 from permutect.read_orientation.read_orientation_model import ALLELE_FRACTION_PSEUDOCOUNTS_K2
 from permutect.read_orientation.read_orientation_model import ARTIFACT_STATES
 from permutect.read_orientation.read_orientation_model import CANONICAL_CONTEXTS

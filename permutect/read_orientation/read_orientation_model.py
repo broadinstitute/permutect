@@ -22,11 +22,11 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
-from permutect.read_orientation.picard_histogram_reader import BASES
-from permutect.read_orientation.picard_histogram_reader import CONTEXTS
-from permutect.read_orientation.picard_histogram_reader import ORIENTATIONS
-from permutect.read_orientation.picard_histogram_reader import F1R2Counts
-from permutect.read_orientation.picard_histogram_reader import Sites
+from permutect.read_orientation.f1r2_counts_reader import BASES
+from permutect.read_orientation.f1r2_counts_reader import CONTEXTS
+from permutect.read_orientation.f1r2_counts_reader import ORIENTATIONS
+from permutect.read_orientation.f1r2_counts_reader import F1R2Counts
+from permutect.read_orientation.f1r2_counts_reader import Sites
 from permutect.utils.stats_utils import beta_binomial_log_lk
 
 # the states in the order of GATK's ArtifactState, the columns of its prior tables
