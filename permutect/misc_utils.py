@@ -265,6 +265,23 @@ def tumor_depths(v: cyvcf2.Variant, tumor_sample_index: int) -> tuple[int, int]:
     return tumor_allele_depths[0], np.sum(tumor_allele_depths[1:])
 
 
+def tumor_alt_orientation_counts(v: cyvcf2.Variant, tumor_sample_index: int) -> tuple[float, float]:
+    """
+    The tumor's counts of reads of the first alt allele in F1R2 and in F2R1 orientation, from Mutect2's F1R2 and F2R1
+    FORMAT annotations, each NaN if the record lacks it or its value is missing
+    """
+    counts = []
+    for key in ("F1R2", "F2R1"):
+        try:
+            values = v.format(key)  # by sample, then by allele, ref first, or None if the record lacks the annotation
+        except KeyError:  # the header doesn't declare the annotation
+            values = None
+        count = np.nan if values is None else values[tumor_sample_index][1]
+        # cyvcf2 gives a missing integer as htslib's most negative integer
+        counts.append(float(count) if count >= 0 else np.nan)
+    return counts[0], counts[1]
+
+
 class VcfEditor:
     """
     Copy a VCF record by record, editing records on the way, to an output VCF whose header is that of the input plus the

@@ -277,6 +277,16 @@ def test_plain_text_data_are_normalized_by_a_process_per_cpu(wdl_path, task_name
     assert tool_words[tool_words.index("--" + constants.NUM_PROCESSES_NAME) + 1] == "4"
 
 
+def test_permutect_filtering_gives_filter_variants_its_models():
+    # the germline and read orientation models, optional inputs named like the filter_variants arguments they become
+    models = {constants.GERMLINE_MODEL_NAME: "germline.pt", constants.READ_ORIENTATION_MODEL_NAME: "orientation.pt"}
+    command = fill_placeholders(task_command(PERMUTECT_WDL, "PermutectFiltering"), defaultdict(lambda: None, models))
+    words = shlex.split(command.replace("\\\n", " "))
+    tool_words = words[words.index("filter_variants") :]
+    for name, path in models.items():
+        assert tool_words[tool_words.index("--" + name) + 1] == path
+
+
 def compare_command(working_dir) -> str:
     """
     The shell command of the Compare task, with its inputs replaced by small VCFs written to working_dir
@@ -398,6 +408,7 @@ def test_permutect_filtering_stops_when_filter_variants_fails(tmp_path, filter_v
         "num_spectrum_iterations": None,
         "spectrum_learning_rate": None,
         "germline_model": None,
+        "read_orientation_model": None,
         "permutect_filtering_extra_args": None,
     }
     command = fill_placeholders(task_command(PERMUTECT_WDL, "PermutectFiltering"), inputs)

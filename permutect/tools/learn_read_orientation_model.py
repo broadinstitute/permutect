@@ -12,7 +12,8 @@ def parse_arguments(argv=None):
         "F1R2 counts from Mutect2 --f1r2-tar-gz or CollectF1R2Counts, eg those of each scatter of a run.  Each 3-base "
         "reference context and its reverse complement get a prior over 8 artifact states, F1R2 or F2R1 for each alt "
         "base, and 4 non-artifact states, learned by expectation maximization.  The output is a ReadOrientationModel "
-        "of the priors and of the distributions of each state's alt count and alt F1R2 count."
+        "of the priors and of the distributions of each state's alt count and alt F1R2 count, for filter_variants "
+        "--read_orientation_model."
     )
     parser.add_argument(
         "--" + constants.INPUT_NAME,

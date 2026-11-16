@@ -32,8 +32,10 @@ from permutect.misc_utils import Timer
 from permutect.misc_utils import encode_datum
 from permutect.misc_utils import encode_variant
 from permutect.misc_utils import get_first_numeric_element
+from permutect.misc_utils import get_tumor_sample_index
 from permutect.misc_utils import overlapping_filters
 from permutect.misc_utils import str_repeat_lengths
+from permutect.misc_utils import tumor_alt_orientation_counts
 
 # numpy.save appends .npy if the extension doesn't already include it.  We preempt this behavior.
 SUFFIX_FOR_INT_MMAP = ".int_mmap.npy"
@@ -293,9 +295,9 @@ class MemoryMappedData:
         return self._restrict(reads_datum_source, estimated_proportion=labeled_proportion)
 
     """
-    Add log allele frequency (AF), minor allele frequency (MAF), normal minor allele frequency (normal MAF), and the
-    lengths of the repeat unit and of the reference STR to the float array of the output MemoryMappedData using
-    information in a VCF and a segmentation.
+    Add log allele frequency (AF), minor allele frequency (MAF), normal minor allele frequency (normal MAF), the
+    lengths of the repeat unit and of the reference STR, and the tumor's counts of alt reads in F1R2 and F2R1
+    orientation to the float array of the output MemoryMappedData using information in a VCF and a segmentation.
 
     Additionally, mark data that have a given set of artifact filters in the VCF as known artifacts with an infinite
     cached artifact logit.
@@ -315,15 +317,19 @@ class MemoryMappedData:
 
         log_allele_frequencies = {}
         repeat_lengths = {}
+        alt_orientation_counts = {}
         artifact_encodings = set()
 
-        print("recording filters, allele frequencies and repeat lengths from input VCF")
-        pbar = tqdm(enumerate(cyvcf2.VCF(input_vcf)), mininterval=60)
+        print("recording filters, allele frequencies, repeat lengths and alt orientation counts from input VCF")
+        vcf = cyvcf2.VCF(input_vcf)
+        tumor_sample_index = get_tumor_sample_index(vcf)
+        pbar = tqdm(enumerate(vcf), mininterval=60)
         for n, v in pbar:
             encoding = encode_variant(v)
             # POPAF is -log10(AF); we convert to natural log without exponentiating to avoid underflow
             log_allele_frequencies[encoding] = -math.log(10) * get_first_numeric_element(v, "POPAF")
             repeat_lengths[encoding] = str_repeat_lengths(v)
+            alt_orientation_counts[encoding] = tumor_alt_orientation_counts(v, tumor_sample_index)
             if overlapping_filters(v, artifact_filters):
                 artifact_encodings.add(encoding)
 
@@ -355,6 +361,9 @@ class MemoryMappedData:
                 repeat_unit_length, repeat_length = repeat_lengths[encoding]
                 new_datum.set(Data.REPEAT_UNIT_LENGTH, repeat_unit_length)
                 new_datum.set(Data.REPEAT_LENGTH, repeat_length)
+                alt_f1r2_count, alt_f2r1_count = alt_orientation_counts[encoding]
+                new_datum.set(Data.ALT_F1R2_COUNT, alt_f1r2_count)
+                new_datum.set(Data.ALT_F2R1_COUNT, alt_f2r1_count)
                 if encoding in artifact_encodings:
                     new_datum.set(Data.CACHED_ARTIFACT_LOGIT, np.inf)
                 yield new_datum

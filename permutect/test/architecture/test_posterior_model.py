@@ -8,10 +8,19 @@ from permutect import constants
 from permutect.architecture.posterior_model import PosteriorModel
 from permutect.architecture.posterior_model import best_error_probability_threshold
 from permutect.architecture.posterior_model_priors import PosteriorModelPriors
+from permutect.data.batch import Batch
 from permutect.data.count_binning import COUNT_BIN_SKIP
 from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.datum import Data
+from permutect.read_orientation.f1r2_counts_reader import BASES
+from permutect.read_orientation.read_orientation_model import CANONICAL_CONTEXTS
+from permutect.read_orientation.read_orientation_model import HOM_REF
+from permutect.read_orientation.read_orientation_model import STATES
+from permutect.read_orientation.read_orientation_model import ContextPrior
+from permutect.read_orientation.read_orientation_model import ReadOrientationModel
+from permutect.read_orientation.read_orientation_model import flat_prior
+from permutect.read_orientation.read_orientation_model import reverse_complement
 from permutect.segmentation.emissions import EmissionModel
 from permutect.segmentation.germline_model import GermlineModel
 from permutect.segmentation.germline_model import SampleSegmentation
@@ -42,7 +51,7 @@ def test_impossible_calls_use_the_shared_impossible_log_prob(monkeypatch):
     log_priors_bc, _, normal_log_lks_bc, log_posteriors_bc = model.log_posterior_and_ingredients(known_artifact)
     assert log_priors_bc[0, Call.GERMLINE].item() == pytest.approx(impossible, abs=1)  # the priors are normalized
     assert normal_log_lks_bc[0, Call.NORMAL_ARTIFACT].item() == impossible
-    for call in (Call.SOMATIC, Call.SEQ_ERROR, Call.GERMLINE, Call.CONTAMINATION):
+    for call in (Call.SOMATIC, Call.SEQ_ERROR, Call.GERMLINE, Call.CONTAMINATION, Call.READ_ORIENTATION):
         assert log_posteriors_bc[0, call].item() == impossible
 
     negative_artifact_logit = make_batch([0.01], values | {Data.CACHED_ARTIFACT_LOGIT: -1})
@@ -281,3 +290,131 @@ def test_learning_leaves_the_germline_model_unchanged():
     after = germline_model.state_dict()
     assert all(torch.equal(before[name], after[name]) for name in before)
     assert not any(parameter.requires_grad for parameter in germline_model.parameters())
+
+
+def make_read_orientation_model(artifact_prior: float = 0.01, sample: str = "TUMOR") -> ReadOrientationModel:
+    """
+    A model of a sample's read orientation artifacts in which an F1R2 artifact of ACG's ref C to T, as from deamination
+    of one strand, has the given prior, and every other artifact is very unlikely
+    """
+    priors = {}
+    for context in CANONICAL_CONTEXTS:
+        prior_k = 1e-8 * flat_prior(BASES.index(context[1]))
+        if context == "ACG":
+            prior_k[STATES.index("F1R2_T")] = artifact_prior
+        prior_k[HOM_REF] = 1 - prior_k.sum() + prior_k[HOM_REF]
+        prior = ContextPrior(context, prior_k, num_sites=1000, num_alt_sites=100)
+        priors[context], priors[reverse_complement(context)] = prior, prior.reverse_complement()
+    return ReadOrientationModel(sample, priors)
+
+
+def make_snv_batch(snvs: list[tuple[str, str, int, int]], values: dict) -> Batch:
+    """
+    A batch of SNVs, each given by its reference context, its alt base, and its counts of alt reads in F1R2 and F2R1
+    orientation, with the given values of other data fields and a population allele frequency that rules out germline
+    variants.  The haplotypes are the context and the context with the alt base.
+    """
+    batch = make_batch([1e-8] * len(snvs), values | {Data.VARIANT_TYPE: Variation.SNV})
+    for b, (context, alt_base, alt_f1r2_count, alt_f2r1_count) in enumerate(snvs):
+        ref_haplotype = [BASES.index(base) for base in context]
+        alt_haplotype = [ref_haplotype[0], BASES.index(alt_base), ref_haplotype[2]]
+        haplotypes_start = Data.HAPLOTYPES_START_IDX
+        batch.int_tensor[b, haplotypes_start : haplotypes_start + 6] = torch.tensor(ref_haplotype + alt_haplotype)
+        batch.float_tensor[b, Data.ALT_F1R2_COUNT.idx] = alt_f1r2_count
+        batch.float_tensor[b, Data.ALT_F2R1_COUNT.idx] = alt_f2r1_count
+    return batch
+
+
+# 6 alt reads of 100, too many for sequencing error, at a site whose normal has none, so that it can't be a normal
+# artifact, with an artifact logit that doesn't favor an artifact or a non-artifact
+SNV_VALUES = PLAUSIBLE_VALUES | {
+    Data.ORIGINAL_DEPTH: 100,
+    Data.ORIGINAL_ALT_COUNT: 6,
+    Data.ORIGINAL_NORMAL_ALT_COUNT: 0,
+    Data.SEQ_ERROR_LOG_LK: -30,
+    Data.CACHED_ARTIFACT_LOGIT: 0,
+}
+
+
+def test_read_orientation_artifacts_are_impossible_without_a_model():
+    # and the read orientation model changes the likelihoods of no other call
+    batch = make_snv_batch([("ACG", "T", 6, 0)], SNV_VALUES)
+    without_model = make_posterior_model("cpu")
+    with_model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=make_read_orientation_model())
+    log_priors_bc, spectra_bc, normal_bc, log_posteriors_bc = without_model.log_posterior_and_ingredients(batch)
+    assert log_priors_bc[0, Call.READ_ORIENTATION].item() == pytest.approx(constants.IMPOSSIBLE_LOG_PROB, abs=1)
+    assert spectra_bc[0, Call.READ_ORIENTATION].item() == 0
+    assert without_model.posterior_probabilities_bc(batch)[0, Call.READ_ORIENTATION].item() == 0
+
+    _, model_spectra_bc, model_normal_bc, _ = with_model.log_posterior_and_ingredients(batch)
+    other_calls = [call for call in Call if call != Call.READ_ORIENTATION]
+    assert torch.equal(spectra_bc[:, other_calls], model_spectra_bc[:, other_calls])
+    assert torch.equal(normal_bc, model_normal_bc)
+
+
+def test_alt_reads_of_one_orientation_in_an_artifact_context_are_a_read_orientation_artifact():
+    model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=make_read_orientation_model())
+    snvs = [
+        ("ACG", "T", 6, 0),  # an F1R2 C to T in ACG, the model's artifact
+        ("CGT", "A", 0, 6),  # the same on the other strand: an F2R1 G to A in CGT, the reverse complement of ACG
+        ("ACG", "T", 3, 3),  # alt reads of both orientations
+        ("ACG", "T", 0, 6),  # an F2R1 C to T in ACG, which the model makes very unlikely
+        ("ACA", "T", 6, 0),  # an F1R2 C to T in another context
+    ]
+    batch = make_snv_batch(snvs, SNV_VALUES)
+    read_orientation_b = model.posterior_probabilities_bc(batch)[:, Call.READ_ORIENTATION]
+    assert read_orientation_b[0].item() > 0.99
+    assert read_orientation_b[1].item() == pytest.approx(read_orientation_b[0].item())
+    # alt reads of both orientations are thousands of times less likely for the artifact, but its prior here is hundreds
+    # of times the somatic prior
+    assert read_orientation_b[2].item() < 0.1
+    assert torch.all(read_orientation_b[3:] < 0.01)
+
+
+def test_read_orientation_artifacts_need_snvs_with_alt_orientation_counts():
+    model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=make_read_orientation_model())
+    batch = make_snv_batch([("ACG", "T", 6, 0)] * 3, SNV_VALUES)
+    batch.float_tensor[1, Data.ALT_F1R2_COUNT.idx] = math.nan  # not annotated from the VCF
+    batch.int_tensor[2, Data.VARIANT_TYPE.idx] = Variation.INSERTION
+    log_priors_bc, spectra_bc, _, _ = model.log_posterior_and_ingredients(batch)
+    assert log_priors_bc[0, Call.READ_ORIENTATION].item() > -10
+    impossible_b = log_priors_bc[1:, Call.READ_ORIENTATION]
+    assert torch.allclose(impossible_b, torch.full_like(impossible_b, constants.IMPOSSIBLE_LOG_PROB), atol=1)
+    assert torch.all(spectra_bc[1:, Call.READ_ORIENTATION] == 0)
+    assert_no_nan(model, batch)
+
+
+@pytest.mark.parametrize("overlap", [1e-6, 0.25, 1 - 1e-6])
+def test_read_orientation_reads_likelihood_interpolates_between_non_artifact_and_artifact(overlap):
+    # relative to a non-artifact's: 1 if the reads of a read orientation artifact look like a non-artifact's, the
+    # relative likelihood exp(artifact logit) of an artifact's if they look like an artifact's, or a mixture of the two
+    model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=make_read_orientation_model())
+    with torch.no_grad():
+        model.read_orientation_artifact_overlap = torch.tensor(overlap)
+    artifact_logits_b = torch.tensor([-5.0, 0.0, 3.0], dtype=torch.float64)
+    result_b = model.read_orientation_reads_log_likelihoods_b(artifact_logits_b)
+    expected_b = torch.log(overlap * torch.exp(artifact_logits_b) + 1 - overlap)
+    assert torch.allclose(result_b, expected_b, atol=1e-6)
+
+
+def test_known_artifacts_rule_out_read_orientation_artifacts():
+    # but negative artifact logits, which rule out other artifacts, don't
+    model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=make_read_orientation_model())
+    batch = make_snv_batch([("ACG", "T", 6, 0)] * 2, SNV_VALUES)
+    batch.float_tensor[0, Data.CACHED_ARTIFACT_LOGIT.idx] = math.inf
+    batch.float_tensor[1, Data.CACHED_ARTIFACT_LOGIT.idx] = -5
+    log_posteriors_bc = model.log_relative_posteriors_bc(batch)
+    assert log_posteriors_bc[0, Call.READ_ORIENTATION].item() == constants.IMPOSSIBLE_LOG_PROB
+    assert log_posteriors_bc[1, Call.ARTIFACT].item() == constants.IMPOSSIBLE_LOG_PROB
+    assert log_posteriors_bc[1, Call.READ_ORIENTATION].item() > -50
+
+
+def test_learning_fits_the_read_orientation_artifact_overlap_and_leaves_the_read_orientation_model_unchanged():
+    read_orientation_model = make_read_orientation_model()
+    model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=read_orientation_model)
+    before = {name: buffer.clone() for name, buffer in read_orientation_model.named_buffers()}
+    # read orientation artifacts whose reads look like artifacts' to the artifact model
+    loader = [make_snv_batch([("ACG", "T", 6, 0)] * 4, SNV_VALUES | {Data.CACHED_ARTIFACT_LOGIT: 3})]
+    model.learn_priors_and_spectra(loader, num_iterations=2, ignored_to_non_ignored_ratio=10, learning_rate=0.1)
+    assert model.read_orientation_artifact_overlap.item() > 0.5
+    assert all(torch.equal(before[name], buffer) for name, buffer in read_orientation_model.named_buffers())

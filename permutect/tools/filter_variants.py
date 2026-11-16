@@ -1,6 +1,7 @@
 import argparse
 import math
 
+import cyvcf2
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -27,6 +28,7 @@ from permutect.misc_utils import Timer
 from permutect.misc_utils import VcfEditor
 from permutect.misc_utils import encode_datum
 from permutect.misc_utils import encode_variant
+from permutect.misc_utils import get_tumor_sample_index
 from permutect.misc_utils import gpu_if_available
 from permutect.misc_utils import overlapping_filters
 from permutect.misc_utils import report_device
@@ -36,6 +38,7 @@ from permutect.parameters import TrainingParameters
 from permutect.parameters import add_num_processes_to_parser
 from permutect.parameters import add_training_params_to_parser
 from permutect.parameters import parse_training_params
+from permutect.read_orientation.read_orientation_model import ReadOrientationModel
 from permutect.segmentation.germline_model import GermlineModel
 from permutect.tools.pre_permutect_filtering import HAIRPIN_FILTER
 from permutect.tools.pre_permutect_filtering import MULTIALLELIC_INDEL_FILTER
@@ -126,6 +129,11 @@ def parse_arguments(argv=None):
         "each variant and the likelihoods of germline variants.  Without it, the minor allele fractions are 1/2 and the "
         "germline likelihoods have default parameters.",
     )
+    parser.add_argument(
+        "--" + constants.READ_ORIENTATION_MODEL_NAME,
+        help="ReadOrientationModel of the tumor from learn_read_orientation_model, which gives the priors and "
+        "likelihoods of read orientation artifacts.  Without it, there are no read orientation artifacts.",
+    )
 
     parser.add_argument(
         "--" + constants.GERMLINE_MODE_NAME,
@@ -158,6 +166,20 @@ def load_germline_model(path) -> GermlineModel:
     return GermlineModel.load(path)
 
 
+def load_read_orientation_model(path, input_vcf) -> ReadOrientationModel | None:
+    """the ReadOrientationModel saved by learn_read_orientation_model, which must be of the VCF's tumor sample, if any"""
+    if path is None:
+        return None
+    print("reading read orientation model")
+    model = ReadOrientationModel.load(path)
+    vcf = cyvcf2.VCF(input_vcf)
+    tumor_sample = vcf.samples[get_tumor_sample_index(vcf)]
+    vcf.close()
+    if model.sample != tumor_sample:
+        raise ValueError(f"The read orientation model is of sample {model.sample}, not the tumor sample {tumor_sample}")
+    return model
+
+
 def main_without_parsing(args):
     # default for filtering is not to retrain any of the model on test data
     training_params = parse_training_params(args, default_training_params=[])
@@ -179,6 +201,9 @@ def main_without_parsing(args):
         recall_weight=getattr(args, constants.RECALL_WEIGHT_NAME),
         no_germline_mode=getattr(args, constants.NO_GERMLINE_MODE_NAME),
         germline_model=load_germline_model(getattr(args, constants.GERMLINE_MODEL_NAME)),
+        read_orientation_model=load_read_orientation_model(
+            getattr(args, constants.READ_ORIENTATION_MODEL_NAME), getattr(args, constants.INPUT_NAME)
+        ),
         num_processes=getattr(args, constants.NUM_PROCESSES_NAME),
     )
 
@@ -200,6 +225,7 @@ def make_filtered_vcf(
     recall_weight: float = 1.0,
     no_germline_mode: bool = False,
     germline_model: GermlineModel = None,
+    read_orientation_model: ReadOrientationModel = None,
     num_processes: int = 1,
 ):
     """
@@ -245,6 +271,7 @@ def make_filtered_vcf(
         no_germline_mode=no_germline_mode,
         device=device,
         germline_model=germline_model,
+        read_orientation_model=read_orientation_model,
     )
     posterior_data_loader = make_posterior_data_loader(
         annotated_dataset=annotated_dataset,
@@ -562,7 +589,7 @@ def apply_filtering_to_vcf(
                     correctness_label = (
                         EmbeddingMetrics.FALSE_POSITIVE if should_be_filtered else EmbeddingMetrics.TRUE_POSITIVE
                     )
-                elif error_call in (Call.ARTIFACT, Call.NORMAL_ARTIFACT):
+                elif error_call in (Call.ARTIFACT, Call.NORMAL_ARTIFACT, Call.READ_ORIENTATION):
                     correctness_label = (
                         EmbeddingMetrics.TRUE_NEGATIVE_ARTIFACT
                         if should_be_filtered

@@ -14,6 +14,7 @@ from permutect.data.batch import Batch
 from permutect.data.datum import Data
 from permutect.metrics import plotting
 from permutect.misc_utils import resolve_device
+from permutect.read_orientation.read_orientation_model import ReadOrientationModel
 from permutect.utils.array_utils import add_at_index
 from permutect.utils.array_utils import index_tensor
 from permutect.utils.enums import Call
@@ -31,6 +32,11 @@ def get_ref_contexts_and_alt_bases(batch: Batch) -> tuple[Tensor, Tensor, Tensor
     idx2 = haplotypes_bs[:, ref_center_idx + 1]
     idx3 = haplotypes_bs[:, alt_center_idx]
     return idx0, idx1, idx2, idx3
+
+
+def has_alt_orientation_counts_b(batch: Batch) -> Tensor:
+    """whether each variant has the tumor's counts of alt reads in F1R2 and F2R1 orientation, which filter_variants sets"""
+    return ~(torch.isnan(batch.get(Data.ALT_F1R2_COUNT)) | torch.isnan(batch.get(Data.ALT_F2R1_COUNT)))
 
 
 def convert_rrra_tensor_to_sc(input_rrra: torch.Tensor) -> torch.Tensor:
@@ -69,6 +75,8 @@ class PosteriorModelPriors(nn.Module):
     exists, but whether sequencing error explains the amount of alt allele reads observed.  Thus the mathematically
     correct thing is to set the prior to one (log prior to zero) and allow the likelihoods (basically the TLOD from
     Mutect2) to distinguish.
+    The read orientation artifact prior isn't learned either.  It comes from the read orientation model, which
+    learn_read_orientation_model learns, so its stored value is also zero and is replaced in log_priors_bc.
     """
 
     def __init__(
@@ -77,9 +85,15 @@ class PosteriorModelPriors(nn.Module):
         artifact_log_prior: float,
         no_germline_mode: bool,
         device=None,
+        read_orientation_model: ReadOrientationModel = None,
     ):
+        """
+        :param read_orientation_model: the read orientation artifact model, whose priors are fixed.  Without one, read
+        orientation artifacts are impossible.
+        """
         super(PosteriorModelPriors, self).__init__()
         self.no_germline_mode = no_germline_mode
+        self.read_orientation_model = read_orientation_model
         self._device = resolve_device(device)
         self.use_context_dependent_snv_priors = True
 
@@ -144,6 +158,7 @@ class PosteriorModelPriors(nn.Module):
             constants.IMPOSSIBLE_LOG_PROB if self.no_germline_mode else log_carrier_priors_b
         )
         log_priors_bc[:, Call.CONTAMINATION] = log_carrier_priors_b
+        log_priors_bc[:, Call.READ_ORIENTATION] = self.read_orientation_log_priors_b(batch, is_snv_b)
 
         if self.use_context_dependent_snv_priors:
             # torch.where rather than mask arithmetic, which gives 0 * -inf = NaN when a log prior is -inf, eg the SNV
@@ -152,6 +167,20 @@ class PosteriorModelPriors(nn.Module):
                 is_snv_b, self.somatic_snv_log_priors(batch), log_priors_bc[:, Call.SOMATIC]
             )
         return torch.nn.functional.log_softmax(log_priors_bc, dim=-1)
+
+    def read_orientation_log_priors_b(self, batch: Batch, is_snv_b: Tensor) -> Tensor:
+        """
+        The log prior of each variant being a read orientation artifact, an F1R2 or an F2R1 artifact of its alt base in
+        its context.  It's IMPOSSIBLE_LOG_PROB without a read orientation model, and for a variant that isn't an SNV or
+        lacks the alt orientation counts that the artifact's likelihoods need.
+        """
+        impossible_b = torch.full_like(batch.get(Data.ALT_F1R2_COUNT), constants.IMPOSSIBLE_LOG_PROB)
+        if self.read_orientation_model is None:
+            return impossible_b
+        log_priors_bo = self.read_orientation_model.log_priors_bo(*get_ref_contexts_and_alt_bases(batch))
+        log_priors_b = torch.logsumexp(log_priors_bo, dim=-1)
+        possible_b = is_snv_b & has_alt_orientation_counts_b(batch) & torch.isfinite(log_priors_b)
+        return torch.where(possible_b, log_priors_b, impossible_b)
 
     def update_priors_m_step(
         self,
@@ -175,6 +204,7 @@ class PosteriorModelPriors(nn.Module):
             self.log_priors_vc[:, Call.SEQ_ERROR] = 0
             self.log_priors_vc[:, Call.GERMLINE] = constants.IMPOSSIBLE_LOG_PROB if self.no_germline_mode else 0
             self.log_priors_vc[:, Call.CONTAMINATION] = 0
+            self.log_priors_vc[:, Call.READ_ORIENTATION] = 0
 
         if self.use_context_dependent_snv_priors:
             total_sc = torch.round(convert_rrra_tensor_to_sc(snv_context_totals_rrra) + total_ignored_per_context).int()

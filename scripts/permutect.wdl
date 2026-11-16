@@ -263,6 +263,7 @@ workflow Permutect {
             test_dataset = select_first([Mutect2.permutect_test_dataset, ExtractM2Outputs.test_dataset]),
             contigs_table = select_first([Mutect2.permutect_contigs_table, ExtractM2Outputs.contigs_table]),
             germline_model = SegmentPileups.germline_model,
+            read_orientation_model = LearnReadOrientationModel.read_orientation_model,
             mutect_stats = select_first([Mutect2.mutect_stats, ExtractM2Outputs.mutect_stats]),
             batch_size = batch_size,
             num_workers = num_workers,
@@ -368,6 +369,7 @@ workflow Permutect {
         File mutect2_vcf
         File mutect2_vcf_idx
         File? germline_model
+        File? read_orientation_model
         File mutect_stats
         Int? num_spectrum_iterations
         Float? spectrum_learning_rate
@@ -403,6 +405,7 @@ workflow Permutect {
             ~{" --num_spectrum_iterations " + num_spectrum_iterations} \
             ~{" --spectrum_learning_rate " + spectrum_learning_rate} \
             ~{" --germline_model " + germline_model} \
+            ~{" --read_orientation_model " + read_orientation_model} \
             --genomic_span $genomic_span ~{permutect_filtering_extra_args}
 
         tar cvf tensorboard.tar tensorboard/
@@ -506,7 +509,7 @@ task SplitMultiallelics {
         gatk --java-options "-Xmx~{command_mem}m" IndexFeatureFile -I split.vcf
 
         gatk --java-options "-Xmx~{command_mem}m" SelectVariants -V split.vcf -O output.vcf --lenient \
-            -DGA DP -DGA AF -DGA F1R2 -DGA F2R1 -DGA FAD -DGA SB \
+            -DGA DP -DGA AF -DGA FAD -DGA SB \
             -DA AS_FilterStatus -DA AS_SB_TABLE -DA ECNT -DA GERMQ -DA MBQ -DA MFRL -DA MMQ -DA MPOS
     >>>
 

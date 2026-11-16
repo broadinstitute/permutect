@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import subprocess
@@ -6,6 +7,7 @@ import tarfile
 import cyvcf2
 import pytest
 
+from permutect.misc_utils import get_tumor_sample_index
 from permutect.read_orientation.read_orientation_model import ReadOrientationModel
 from permutect.test.test_file_names import *
 from permutect.test.wdl.test_wdl_scripts import task_output_files
@@ -13,6 +15,7 @@ from permutect.test.wdl.test_wdl_scripts import task_output_globs
 from permutect.tools.filter_variants import POST_PROB_INFO_KEY
 from permutect.tools.pre_permutect_filtering import HAIRPIN_FILTER
 from permutect.tools.pre_permutect_filtering import MULTIALLELIC_INDEL_FILTER
+from permutect.utils.gatk_table import SAMPLE_METADATA_PREFIX
 
 PERMUTECT_TEST_DOCKER = os.environ.get("PERMUTECT_TEST_DOCKER", "permutect:wdl-test")
 CROMWELL_JAR = os.environ.get("CROMWELL_JAR")
@@ -23,13 +26,41 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def tumor_sample(vcf_path: str) -> str:
+    """the tumor sample of a Mutect2 VCF"""
+    vcf = cyvcf2.VCF(vcf_path)
+    sample = vcf.samples[get_tumor_sample_index(vcf)]
+    vcf.close()
+    return sample
+
+
+def relabel_f1r2_counts(f1r2_counts: str, sample: str, output: str) -> str:
+    """
+    A copy of a tar.gz of one sample's F1R2 counts, as Mutect2 makes it, as the counts of another sample: the tables name
+    their sample in their metadata and in their file names, eg <sample>.ACG.alt_table
+    """
+    with tarfile.open(f1r2_counts, "r:gz") as source, tarfile.open(output, "w:gz") as relabeled:
+        for member in source:
+            first_line, _, rest = source.extractfile(member).read().decode().partition("\n")
+            assert first_line.startswith(SAMPLE_METADATA_PREFIX), f"{member.name} does not start by naming its sample"
+            old_sample = first_line.removeprefix(SAMPLE_METADATA_PREFIX)
+            text = f"{SAMPLE_METADATA_PREFIX}{sample}\n{rest}".encode()
+            directory, name = os.path.split(member.name)
+            assert name.startswith(old_sample + "."), f"{member.name} is not named after its sample {old_sample}"
+            info = tarfile.TarInfo(os.path.join(directory, sample + name.removeprefix(old_sample)))
+            info.size = len(text)
+            relabeled.addfile(info, io.BytesIO(text))
+    return output
+
+
 def make_cached_m2_outputs(
     working_dir, archive_name: str, with_pileups: bool, with_normal: bool, with_f1r2_counts: bool
 ) -> str:
     """
     An archive of Mutect2 outputs for SEQC2 WES chr20, as made by the ArchiveM2Outputs task, with or without the
     pileups at common variants, which include the normal's only for a matched-normal run, and with or without the F1R2
-    counts of the scatters, for which another sample's counts stand in
+    counts of the scatters, for which another sample's counts stand in.  Those are relabeled as the VCF's tumor sample,
+    since filter_variants accepts only a read orientation model of that sample.
     """
     m2_outputs = {
         "test_dataset": SEQC2_WES_PLAIN_TEXT_DATA,
@@ -50,7 +81,12 @@ def make_cached_m2_outputs(
         for name, m2_output in m2_outputs.items():
             tar.add(m2_output, arcname=file_names_in_archive[name])
         for n, scatter in enumerate(DREAM_TUMOR_4_F1R2_SCATTERS if with_f1r2_counts else []):
-            tar.add(scatter, arcname=os.path.join(f1r2_directory, f"scatter-{n}.tar.gz"))
+            relabeled = relabel_f1r2_counts(
+                scatter,
+                tumor_sample(MUTECT2_SEQC2_WES_VCF),
+                os.path.join(working_dir, f"{archive_name}-f1r2-{n}.tar.gz"),
+            )
+            tar.add(relabeled, arcname=os.path.join(f1r2_directory, f"scatter-{n}.tar.gz"))
     return archive
 
 
@@ -157,12 +193,13 @@ def check_cached_m2_outputs(
         assert (outputs["Permutect." + output] is not None) == (with_pileups and not tumor_only_mode)
 
     # with run_orientation_bias_mixture_model_filter, learn_read_orientation_model learns the model of the cached F1R2
-    # counts' sample
+    # counts' sample, relabeled as the tumor sample
     assert ("Permutect.LearnReadOrientationModel" in calls) == learn_read_orientation
     read_orientation_model = outputs["Permutect.read_orientation_model"]
     assert (read_orientation_model is not None) == learn_read_orientation
+    assert (filtering_inputs["read_orientation_model"] is not None) == learn_read_orientation
     if learn_read_orientation:
-        assert ReadOrientationModel.load(read_orientation_model).sample == "synthetic.challenge.set4.tumour"
+        assert ReadOrientationModel.load(read_orientation_model).sample == tumor_sample(MUTECT2_SEQC2_WES_VCF)
 
 
 def output_vcf_records(metadata: dict, tumor_only_mode: bool) -> list[cyvcf2.Variant]:

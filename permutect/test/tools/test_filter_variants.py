@@ -17,9 +17,14 @@ from permutect.data.batch import Batch
 from permutect.data.datum import Data
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.metrics.posterior_result import PosteriorResult
+from permutect.misc_utils import encode_datum
+from permutect.misc_utils import encode_variant
+from permutect.misc_utils import get_tumor_sample_index
+from permutect.misc_utils import tumor_alt_orientation_counts
 from permutect.segmentation.germline_model import GermlineModel
 from permutect.segmentation.germline_model import SampleSegmentation
 from permutect.segmentation.segmenter import Segment
+from permutect.test.architecture.test_posterior_model import make_read_orientation_model
 from permutect.test.architecture.test_posterior_model_priors import make_batch
 from permutect.test.test_file_names import *
 from permutect.test.test_misc_utils import VCF_HEADER
@@ -29,6 +34,7 @@ from permutect.test.tools.test_pre_permutect_filtering import run_pre_permutect_
 from permutect.tools import filter_variants
 from permutect.tools import pre_permutect_filtering
 from permutect.tools import segment_pileups
+from permutect.utils.allele_utils import find_variant_type
 from permutect.utils.enums import Call
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
@@ -141,6 +147,8 @@ def test_filtering_on_seqc2_wes_chr20(tmp_path):
     permutect_vcf = tempfile.NamedTemporaryFile()
     tensorboard_dir = tempfile.TemporaryDirectory()
     germline_model = tmp_path / "germline_model.pt"
+    read_orientation_model = tmp_path / "read_orientation_model.pt"
+    make_read_orientation_model(sample=tumor_sample(pre_filtered_vcf.name)).save(read_orientation_model)
     segment_pileups.segment_pileups(
         SEQC2_WES_TUMOR_PILEUPS,
         tmp_path / "tumor.segments.table",
@@ -154,6 +162,7 @@ def test_filtering_on_seqc2_wes_chr20(tmp_path):
             constants.TEST_DATASET_NAME: SEQC2_WES_PLAIN_TEXT_DATA,
             constants.CONTIGS_TABLE_NAME: HG38_CONTIGS_TABLE,
             constants.GERMLINE_MODEL_NAME: str(germline_model),
+            constants.READ_ORIENTATION_MODEL_NAME: str(read_orientation_model),
             constants.OUTPUT_NAME: permutect_vcf.name,
             constants.TENSORBOARD_DIR_NAME: tensorboard_dir.name,
             # normalizing the test dataset in a process of its own
@@ -202,6 +211,31 @@ def test_filtering_on_seqc2_wes_chr20(tmp_path):
     assert len(target_records) == 1
     assert pre_permutect_filtering.HAIRPIN_FILTER in target_records[0].FILTER.split(";")
 
+    # read orientation artifacts are possible for SNVs, including padded ones, given their alt orientation counts from
+    # the VCF, and only SNVs
+    num_snvs_with_read_orientation_priors = 0
+    for v in cyvcf2.VCF(permutect_vcf.name):
+        log_priors = v.INFO.get(filter_variants.LOG_PRIOR_INFO_KEY)
+        if log_priors is not None and log_priors[Call.READ_ORIENTATION] > constants.IMPOSSIBLE_LOG_PROB / 2:
+            assert find_variant_type(v) == Variation.SNV
+            num_snvs_with_read_orientation_priors += 1
+    assert num_snvs_with_read_orientation_priors > 0
+
+
+def tumor_sample(vcf_path) -> str:
+    vcf = cyvcf2.VCF(vcf_path)
+    return vcf.samples[get_tumor_sample_index(vcf)]
+
+
+def test_the_read_orientation_model_must_be_of_the_tumor_sample(tmp_path):
+    model_path = tmp_path / "read_orientation_model.pt"
+    make_read_orientation_model(sample=tumor_sample(MUTECT2_SEQC2_WES_VCF)).save(model_path)
+    assert filter_variants.load_read_orientation_model(model_path, MUTECT2_SEQC2_WES_VCF).sample == "WES_IL_T_1"
+
+    make_read_orientation_model(sample="WES_IL_N_1").save(model_path)
+    with pytest.raises(ValueError, match="not the tumor sample WES_IL_T_1"):
+        filter_variants.load_read_orientation_model(model_path, MUTECT2_SEQC2_WES_VCF)
+
 
 def contig_index_to_name_map(contigs_table) -> dict[int, str]:
     result = {}
@@ -232,6 +266,21 @@ def test_annotated_mafs_come_from_the_germline_model():
     # stored as float16
     assert np.allclose(mafs, np.where(positions <= 1000000, 0.1, 0.3), atol=1e-3)
     assert np.allclose(normal_mafs, 0.45, atol=1e-3)
+
+
+def test_annotated_alt_orientation_counts_come_from_the_vcf():
+    contig_names = contig_index_to_name_map(HG38_CONTIGS_TABLE)
+    dataset = filter_variants.make_annotated_dataset(SEQC2_WES_PLAIN_TEXT_DATA, MUTECT2_SEQC2_WES_VCF, contig_names)
+    vcf = cyvcf2.VCF(MUTECT2_SEQC2_WES_VCF)
+    tumor_sample_index = get_tumor_sample_index(vcf)
+    vcf_counts = {encode_variant(v): tumor_alt_orientation_counts(v, tumor_sample_index) for v in vcf}
+    data = list(dataset.memory_mapped_data.generate())
+    assert data
+    counts = np.array([(datum.get(Data.ALT_F1R2_COUNT), datum.get(Data.ALT_F2R1_COUNT)) for datum in data])
+    expected_counts = np.array([vcf_counts[encode_datum(datum, contig_names)] for datum in data])
+    assert np.array_equal(counts, expected_counts, equal_nan=True)
+    # Mutect2 annotates every variant, and most have alt reads of both orientations
+    assert not np.isnan(counts).any() and np.mean(counts.min(axis=1) > 0) > 0.5
 
 
 def save_dropout_model(path):

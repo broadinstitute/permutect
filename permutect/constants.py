@@ -55,6 +55,8 @@ STEM_LOOP_MAX_ENERGY_NAME = "stem_loop_max_energy"
 NO_HAIRPIN_FILTER_NAME = "no_hairpin_filter"
 # also an output of segment_pileups
 GERMLINE_MODEL_NAME = "germline_model"
+# also the output of learn_read_orientation_model
+READ_ORIENTATION_MODEL_NAME = "read_orientation_model"
 GERMLINE_MODE_NAME = "germline_mode"
 NO_GERMLINE_MODE_NAME = "no_germline_mode"
 RECALL_WEIGHT_NAME = "recall_weight"
