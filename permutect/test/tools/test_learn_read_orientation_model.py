@@ -3,8 +3,11 @@ import tarfile
 
 import numpy as np
 import pytest
+import torch
 
 from permutect import constants
+from permutect.read_orientation.read_orientation_model import ReadOrientationModel
+from permutect.read_orientation.read_orientation_model import reverse_complement
 from permutect.test.test_file_names import DREAM_TUMOR_4_F1R2_SCATTERS
 from permutect.test.test_file_names import DREAM_TUMOR_4_GATK_ORIENTATION_PRIORS
 from permutect.test.test_file_names import HAPMAP_F1R2_SCATTERS
@@ -12,14 +15,14 @@ from permutect.test.test_file_names import HAPMAP_GATK_ORIENTATION_PRIORS
 from permutect.tools import learn_read_orientation_model
 
 
-def read_prior_tables(tar_gz) -> dict:
-    """the lines of each prior table in a tar.gz, by file name, with the table's rows sorted"""
-    result = {}
+def read_gatk_priors(tar_gz) -> tuple[str, dict[str, list[str]]]:
+    """the sample of the one prior table in a tar.gz from GATK LearnReadOrientationModel, and its rows' fields by context"""
     with tarfile.open(tar_gz, "r:gz") as tar:
-        for member in tar.getmembers():
-            lines = io.TextIOWrapper(tar.extractfile(member)).read().splitlines()
-            result[member.name.removeprefix("./")] = lines[:2] + sorted(lines[2:])
-    return result
+        (member,) = [member for member in tar.getmembers() if member.isfile()]
+        lines = io.TextIOWrapper(tar.extractfile(member)).read().splitlines()
+    # the sample metadata, the header and a row for each context
+    sample = lines[0].removeprefix("#<METADATA>SAMPLE=")
+    return sample, {fields[0]: fields for fields in (line.split("\t") for line in lines[2:])}
 
 
 @pytest.mark.parametrize(
@@ -30,51 +33,48 @@ def read_prior_tables(tar_gz) -> dict:
     ],
 )
 def test_priors_match_gatk(tmp_path, f1r2_counts, gatk_priors):
-    # the priors of GATK LearnReadOrientationModel from the same counts, in tables of the same format, including the
-    # flat priors of contexts with too few sites of the hapmap counts
-    output = str(tmp_path / "priors.tar.gz")
+    # the priors of GATK LearnReadOrientationModel from the same counts, including the flat priors of contexts with too
+    # few sites of the hapmap counts
+    output = str(tmp_path / "model.pt")
     learn_read_orientation_model.main_without_parsing(
         learn_read_orientation_model.parse_arguments(["--input", *f1r2_counts, "--output", output])
     )
-    gatk_tables, tables = read_prior_tables(gatk_priors), read_prior_tables(output)
-    assert tables.keys() == gatk_tables.keys()
-    for name, gatk_lines in gatk_tables.items():
-        lines = tables[name]
-        # the sample metadata, the header and a row for each of the 64 contexts
-        assert lines[:2] == gatk_lines[:2]
-        assert len(lines) == len(gatk_lines) == 66
-        for row, gatk_row in zip(lines[2:], gatk_lines[2:]):
-            fields, gatk_fields = row.split("\t"), gatk_row.split("\t")
-            # context, reverse complement, 12 probabilities, number of sites and of alt sites
-            assert fields[:2] == gatk_fields[:2] and fields[14:] == gatk_fields[14:]
-            probabilities, gatk_probabilities = (
-                np.array(fields[2:14], dtype=float),
-                np.array(gatk_fields[2:14], dtype=float),
-            )
-            assert np.allclose(probabilities, gatk_probabilities, rtol=1e-9, atol=1e-12), fields[0]
+    model = ReadOrientationModel.load(output)
+    gatk_sample, gatk_rows = read_gatk_priors(gatk_priors)
+    assert model.sample == gatk_sample
+    priors = model.context_priors()
+    assert priors.keys() == gatk_rows.keys() and len(priors) == 64
+    for context, fields in gatk_rows.items():
+        # context, reverse complement, 12 probabilities, number of sites and of alt sites
+        prior = priors[context]
+        assert fields[1] == reverse_complement(context)
+        assert [prior.num_sites, prior.num_alt_sites] == [int(fields[14]), int(fields[15])], context
+        gatk_probabilities = np.array(fields[2:14], dtype=float)
+        assert np.allclose(prior.prior_k.numpy(), gatk_probabilities, rtol=1e-9, atol=1e-12), context
 
 
 def test_order_of_inputs_does_not_matter(tmp_path):
     # eg the scatters of a Mutect2 run in the workflow's order or as a cache lists them
-    in_order, reversed_order = str(tmp_path / "in_order.tar.gz"), str(tmp_path / "reversed.tar.gz")
+    in_order, reversed_order = str(tmp_path / "in_order.pt"), str(tmp_path / "reversed.pt")
     learn_read_orientation_model.learn_read_orientation_model(HAPMAP_F1R2_SCATTERS, in_order)
     learn_read_orientation_model.learn_read_orientation_model(HAPMAP_F1R2_SCATTERS[::-1], reversed_order)
-    assert read_prior_tables(in_order) == read_prior_tables(reversed_order)
+    model, reversed_model = ReadOrientationModel.load(in_order), ReadOrientationModel.load(reversed_order)
+    for name, buffer in model.named_buffers():
+        assert torch.equal(buffer, reversed_model.get_buffer(name)), name
+
+
+def test_counts_of_more_than_one_sample_are_an_error(tmp_path):
+    # the DREAM tumor's counts and the hapmap sample's
+    with pytest.raises(ValueError, match="2 samples"):
+        learn_read_orientation_model.learn_read_orientation_model(
+            [*DREAM_TUMOR_4_F1R2_SCATTERS, *HAPMAP_F1R2_SCATTERS], str(tmp_path / "model.pt")
+        )
 
 
 def test_arguments():
-    args = learn_read_orientation_model.parse_arguments(
-        ["--input", "a.tar.gz", "b.tar.gz", "--output", "priors.tar.gz"]
-    )
+    args = learn_read_orientation_model.parse_arguments(["--input", "a.tar.gz", "b.tar.gz", "--output", "model.pt"])
     assert getattr(args, constants.INPUT_NAME) == ["a.tar.gz", "b.tar.gz"]
-    assert getattr(args, constants.OUTPUT_NAME) == "priors.tar.gz"
+    assert getattr(args, constants.OUTPUT_NAME) == "model.pt"
     # GATK's defaults
     assert getattr(args, constants.CONVERGENCE_THRESHOLD_NAME) == 1e-4
     assert getattr(args, constants.MAX_EM_ITERATIONS_NAME) == 20
-
-
-def test_output_must_be_a_tar_gz(tmp_path):
-    with pytest.raises(ValueError, match="tar.gz"):
-        learn_read_orientation_model.learn_read_orientation_model(
-            DREAM_TUMOR_4_F1R2_SCATTERS, str(tmp_path / "priors.tsv")
-        )

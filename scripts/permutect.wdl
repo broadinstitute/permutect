@@ -355,8 +355,8 @@ workflow Permutect {
         File? normal_segments_plot = SegmentPileups.normal_segments_plot
         File? contamination_table = SegmentPileups.contamination_table
 
-        # learn_read_orientation_model's priors, if run_orientation_bias_mixture_model_filter is true
-        File? read_orientation_priors = LearnReadOrientationModel.priors
+        # learn_read_orientation_model's model, if run_orientation_bias_mixture_model_filter is true
+        File? read_orientation_model = LearnReadOrientationModel.read_orientation_model
     }
 }
 
@@ -692,8 +692,8 @@ task SegmentPileups {
     }
 }
 
-# learn the priors of GATK's read orientation artifact model from the F1R2 counts of Mutect2's scatters, as GATK
-# LearnReadOrientationModel does, in the format of its output
+# learn the tumor's read orientation artifact model from the F1R2 counts of Mutect2's scatters, with priors learned as
+# GATK LearnReadOrientationModel learns them
 task LearnReadOrientationModel {
     input {
         Array[File]+ f1r2_counts
@@ -710,7 +710,7 @@ task LearnReadOrientationModel {
 
     command <<<
         set -euo pipefail
-        learn_read_orientation_model --input ~{sep=" " f1r2_counts} --output orientation-priors.tar.gz
+        learn_read_orientation_model --input ~{sep=" " f1r2_counts} --output read-orientation-model.pt
     >>>
 
     runtime {
@@ -724,7 +724,7 @@ task LearnReadOrientationModel {
     }
 
     output {
-        File priors = "orientation-priors.tar.gz"
+        File read_orientation_model = "read-orientation-model.pt"
     }
 }
 

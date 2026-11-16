@@ -6,6 +6,7 @@ import tarfile
 import cyvcf2
 import pytest
 
+from permutect.read_orientation.read_orientation_model import ReadOrientationModel
 from permutect.test.test_file_names import *
 from permutect.test.wdl.test_wdl_scripts import task_output_files
 from permutect.test.wdl.test_wdl_scripts import task_output_globs
@@ -155,14 +156,13 @@ def check_cached_m2_outputs(
     for output in ("normal_segments", "normal_segments_plot"):
         assert (outputs["Permutect." + output] is not None) == (with_pileups and not tumor_only_mode)
 
-    # with run_orientation_bias_mixture_model_filter, learn_read_orientation_model learns the priors of the cached F1R2
+    # with run_orientation_bias_mixture_model_filter, learn_read_orientation_model learns the model of the cached F1R2
     # counts' sample
     assert ("Permutect.LearnReadOrientationModel" in calls) == learn_read_orientation
-    priors = outputs["Permutect.read_orientation_priors"]
-    assert (priors is not None) == learn_read_orientation
+    read_orientation_model = outputs["Permutect.read_orientation_model"]
+    assert (read_orientation_model is not None) == learn_read_orientation
     if learn_read_orientation:
-        with tarfile.open(priors, "r:gz") as tar:
-            assert tar.getnames() == ["synthetic.challenge.set4.tumour.orientation_priors"]
+        assert ReadOrientationModel.load(read_orientation_model).sample == "synthetic.challenge.set4.tumour"
 
 
 def output_vcf_records(metadata: dict, tumor_only_mode: bool) -> list[cyvcf2.Variant]:

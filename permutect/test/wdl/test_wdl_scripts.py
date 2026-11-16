@@ -482,7 +482,7 @@ def test_learn_read_orientation_model_command(tmp_path):
     arguments = learn_read_orientation_model.parse_arguments((tmp_path / "arguments.txt").read_text().split())
     assert getattr(arguments, constants.INPUT_NAME) == inputs["f1r2_counts"]
     assert task_output_files(PERMUTECT_WDL, "LearnReadOrientationModel") == {
-        "priors": getattr(arguments, constants.OUTPUT_NAME)
+        "read_orientation_model": getattr(arguments, constants.OUTPUT_NAME)
     }
 
 

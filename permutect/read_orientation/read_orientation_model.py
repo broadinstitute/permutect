@@ -15,18 +15,25 @@ lexicographically smaller, canonical context.
 
 Since the likelihoods are fixed, learning the priors, which expectation maximization (EM) does as in GATK, is a mixture
 weights problem.
+
+A ReadOrientationModel holds what is learned for a sample, the priors of every context, together with the pseudocounts of
+the likelihoods.
 """
 
+import math
 from dataclasses import dataclass
 
 import torch
 from torch import Tensor
+from torch import nn
 
 from permutect.read_orientation.f1r2_counts_reader import BASES
 from permutect.read_orientation.f1r2_counts_reader import CONTEXTS
 from permutect.read_orientation.f1r2_counts_reader import ORIENTATIONS
 from permutect.read_orientation.f1r2_counts_reader import F1R2Counts
 from permutect.read_orientation.f1r2_counts_reader import Sites
+from permutect.utils.array_utils import flattened_indices
+from permutect.utils.array_utils import index_tensor
 from permutect.utils.stats_utils import beta_binomial_log_lk
 
 # the states in the order of GATK's ArtifactState, the columns of its prior tables
@@ -34,6 +41,7 @@ ARTIFACT_STATES = tuple(f"{orientation}_{base}" for orientation in ORIENTATIONS 
 STATES = ARTIFACT_STATES + ("HOM_REF", "GERMLINE_HET", "SOMATIC_HET", "HOM_VAR")
 NUM_ARTIFACT_STATES, NUM_STATES = len(ARTIFACT_STATES), len(STATES)
 HOM_REF = STATES.index("HOM_REF")
+SOMATIC_HET = STATES.index("SOMATIC_HET")
 # the alt base (an index into BASES) of each artifact state
 ARTIFACT_ALT_BASES = torch.arange(len(BASES)).repeat(len(ORIENTATIONS))
 # The state of the reverse complement of a context that is equivalent to each state of the context.  Since the
@@ -184,3 +192,120 @@ def learn_priors(
         result[context] = prior
         result[reverse_complement(context)] = prior.reverse_complement()
     return result
+
+
+def context_indices(context: str) -> tuple[int, ...]:
+    """the indices into BASES of a context's left, ref and right bases"""
+    return tuple(BASES.index(base) for base in context)
+
+
+def artifact_states_bo(alt_bases_b: Tensor) -> Tensor:
+    """
+    The indices of the F1R2 and the F2R1 artifact states of each alt base, a (B, 2) tensor.  ARTIFACT_STATES are in
+    order of orientation, then of alt base.
+    """
+    orientations_o = torch.arange(len(ORIENTATIONS), device=alt_bases_b.device)
+    return flattened_indices((len(ORIENTATIONS), len(BASES)), (orientations_o, alt_bases_b.long().unsqueeze(-1)))
+
+
+def priors_by_context(prior_rrrk: Tensor, num_sites_rrr: Tensor, num_alt_sites_rrr: Tensor) -> dict[str, ContextPrior]:
+    """the prior of every context, by context, from tensors indexed by the context's left, ref and right bases"""
+    result = {}
+    for context in CONTEXTS:
+        idx = context_indices(context)
+        result[context] = ContextPrior(context, prior_rrrk[idx], int(num_sites_rrr[idx]), int(num_alt_sites_rrr[idx]))
+    return result
+
+
+class ReadOrientationModel(nn.Module):
+    """
+    A sample's read orientation artifact model, which learn_read_orientation_model learns: the prior of each state in
+    every context, and the pseudocounts of the beta-binomial distributions of each state's alt count and alt F1R2 count.
+    The pseudocounts are GATK's fixed ones for now.
+
+    The methods are batched over variants.  Bases are indices into BASES, so that A, C, G, T are 0 to 3, as in
+    Permutect's haplotypes, where 4 is a deletion.
+    """
+
+    def __init__(
+        self,
+        sample: str,
+        priors: dict[str, ContextPrior],
+        allele_fraction_pseudocounts_k2: Tensor = ALLELE_FRACTION_PSEUDOCOUNTS_K2,
+        f1r2_fraction_pseudocounts_k2: Tensor = F1R2_FRACTION_PSEUDOCOUNTS_K2,
+    ):
+        super().__init__()
+        if set(priors) != set(CONTEXTS):
+            raise ValueError(f"A read orientation model needs the priors of all {len(CONTEXTS)} contexts")
+        self.sample = sample
+        # indexed by a context's left, ref and right bases, then by state.  Buffers rather than parameters, since nothing
+        # that uses the model changes them.
+        num_bases = len(BASES)
+        prior_rrrk = torch.zeros(num_bases, num_bases, num_bases, NUM_STATES, dtype=torch.float64)
+        num_sites_rrr = torch.zeros(num_bases, num_bases, num_bases, dtype=torch.long)
+        num_alt_sites_rrr = torch.zeros_like(num_sites_rrr)
+        for context, prior in priors.items():
+            idx = context_indices(context)
+            prior_rrrk[idx] = prior.prior_k
+            num_sites_rrr[idx], num_alt_sites_rrr[idx] = prior.num_sites, prior.num_alt_sites
+        self.register_buffer("prior_rrrk", prior_rrrk)
+        self.register_buffer("num_sites_rrr", num_sites_rrr)
+        self.register_buffer("num_alt_sites_rrr", num_alt_sites_rrr)
+        self.register_buffer("allele_fraction_pseudocounts_k2", allele_fraction_pseudocounts_k2.double().clone())
+        self.register_buffer("f1r2_fraction_pseudocounts_k2", f1r2_fraction_pseudocounts_k2.double().clone())
+
+    def context_priors(self) -> dict[str, ContextPrior]:
+        """the prior of every context, by context, as learn_priors gives them"""
+        return priors_by_context(self.prior_rrrk, self.num_sites_rrr, self.num_alt_sites_rrr)
+
+    def log_priors_bo(self, left_bases_b: Tensor, ref_bases_b: Tensor, right_bases_b: Tensor, alt_bases_b: Tensor):
+        """
+        The log priors of an F1R2 and an F2R1 artifact of each variant's alt base in its reference context, a (B, 2)
+        tensor.  They are -inf where the alt base is the ref base or any base is a deletion, since only SNVs can be
+        read orientation artifacts.
+        """
+        bases = (left_bases_b, ref_bases_b, right_bases_b, alt_bases_b)
+        snvs_b = (torch.stack(bases) < len(BASES)).all(dim=0) & (alt_bases_b != ref_bases_b)
+        # a deletion's index, len(BASES), is past the priors' last base, and its log priors are -inf anyway
+        left_b, ref_b, right_b, alt_b = (bases_b.long().clamp(max=len(BASES) - 1) for bases_b in bases)
+        idx = (left_b.unsqueeze(-1), ref_b.unsqueeze(-1), right_b.unsqueeze(-1), artifact_states_bo(alt_b))
+        return torch.where(snvs_b.unsqueeze(-1), index_tensor(self.prior_rrrk, idx).log(), -math.inf)
+
+    def artifact_f1r2_log_likelihoods_bo(self, alt_bases_b: Tensor, alt_counts_b: Tensor, alt_f1r2_counts_b: Tensor):
+        """
+        The log likelihoods of each variant's count of alt reads in F1R2 orientation, given an F1R2 and an F2R1 artifact
+        of its alt base, a (B, 2) tensor.  Deletions (alt base 4) get those of alt base T.
+        """
+        states_bo = artifact_states_bo(alt_bases_b.clamp(max=len(BASES) - 1))
+        alpha_bo, beta_bo = self.f1r2_fraction_pseudocounts_k2[states_bo].unbind(-1)
+        return beta_binomial_log_lk(alt_counts_b.unsqueeze(-1), alt_f1r2_counts_b.unsqueeze(-1), alpha_bo, beta_bo)
+
+    def non_artifact_f1r2_log_likelihoods_b(self, alt_counts_b: Tensor, alt_f1r2_counts_b: Tensor):
+        """
+        The log likelihoods of each variant's count of alt reads in F1R2 orientation if it isn't an artifact, a 1D
+        tensor.  These are the likelihoods of a somatic het, whose alt reads are equally likely in each orientation, as
+        are those of every non-artifact state.
+        """
+        alpha, beta = self.f1r2_fraction_pseudocounts_k2[SOMATIC_HET]
+        return beta_binomial_log_lk(alt_counts_b, alt_f1r2_counts_b, alpha, beta)
+
+    def artifact_spectrum_log_likelihoods_bo(self, alt_bases_b: Tensor, depths_b: Tensor, alt_counts_b: Tensor):
+        """
+        The log likelihoods of each variant's alt count, given its depth and an F1R2 and an F2R1 artifact of its alt
+        base, a (B, 2) tensor.  Deletions (alt base 4) get those of alt base T.
+        """
+        states_bo = artifact_states_bo(alt_bases_b.clamp(max=len(BASES) - 1))
+        alpha_bo, beta_bo = self.allele_fraction_pseudocounts_k2[states_bo].unbind(-1)
+        return beta_binomial_log_lk(depths_b.unsqueeze(-1), alt_counts_b.unsqueeze(-1), alpha_bo, beta_bo)
+
+    def save(self, path):
+        """save everything needed to reconstruct the model, as tensors and a string, which torch.load can read safely"""
+        state = {name: buffer.cpu() for name, buffer in self.named_buffers()}
+        torch.save(state | {"sample": self.sample}, path)
+
+    @classmethod
+    def load(cls, path) -> "ReadOrientationModel":
+        state = torch.load(path, map_location="cpu", weights_only=True)
+        priors = priors_by_context(state["prior_rrrk"], state["num_sites_rrr"], state["num_alt_sites_rrr"])
+        pseudocounts = (state["allele_fraction_pseudocounts_k2"], state["f1r2_fraction_pseudocounts_k2"])
+        return cls(state["sample"], priors, *pseudocounts)

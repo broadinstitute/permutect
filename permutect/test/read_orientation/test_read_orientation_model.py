@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import pytest
 import torch
@@ -14,7 +16,11 @@ from permutect.read_orientation.read_orientation_model import F1R2_FRACTION_PSEU
 from permutect.read_orientation.read_orientation_model import HOM_REF
 from permutect.read_orientation.read_orientation_model import NUM_STATES
 from permutect.read_orientation.read_orientation_model import REVERSE_COMPLEMENT_STATES_K
+from permutect.read_orientation.read_orientation_model import SOMATIC_HET
 from permutect.read_orientation.read_orientation_model import STATES
+from permutect.read_orientation.read_orientation_model import ContextPrior
+from permutect.read_orientation.read_orientation_model import ReadOrientationModel
+from permutect.read_orientation.read_orientation_model import artifact_states_bo
 from permutect.read_orientation.read_orientation_model import canonical_sites
 from permutect.read_orientation.read_orientation_model import flat_prior
 from permutect.read_orientation.read_orientation_model import learn_prior
@@ -152,3 +158,63 @@ def test_contexts_without_enough_data_keep_the_flat_prior():
     assert acg.num_sites == cgt.num_sites == 20000
     assert acg.prior_k[STATES.index("F1R2_T")] == cgt.prior_k[STATES.index("F2R1_A")]
     assert torch.equal(acg.prior_k[HOM_REF:], cgt.prior_k[HOM_REF:])
+
+
+def random_priors(rng) -> dict[str, ContextPrior]:
+    """a random prior of each canonical context, and the equivalent prior of its reverse complement"""
+    priors = {}
+    for context in CANONICAL_CONTEXTS:
+        prior_k = flat_prior(BASES.index(context[1])) * torch.from_numpy(rng.uniform(0.1, 1.0, NUM_STATES))
+        num_sites, num_alt_sites = rng.integers(1000), rng.integers(100)
+        prior = ContextPrior(context, prior_k / prior_k.sum(), int(num_sites), int(num_alt_sites))
+        priors[context], priors[reverse_complement(context)] = prior, prior.reverse_complement()
+    return priors
+
+
+def test_model_save_and_load(tmp_path):
+    model = ReadOrientationModel("TUMOR", random_priors(np.random.default_rng(0)))
+    model.save(tmp_path / "model.pt")
+    loaded = ReadOrientationModel.load(tmp_path / "model.pt")
+    assert loaded.sample == "TUMOR"
+    for name, buffer in model.named_buffers():
+        assert torch.equal(buffer, loaded.get_buffer(name)), name
+
+
+def test_model_needs_the_priors_of_every_context():
+    priors = random_priors(np.random.default_rng(0))
+    del priors["ACG"]
+    with pytest.raises(ValueError, match="all 64 contexts"):
+        ReadOrientationModel("TUMOR", priors)
+
+
+def test_model_log_priors():
+    priors = random_priors(np.random.default_rng(1))
+    model = ReadOrientationModel("TUMOR", priors)
+    # ACG with alt T, then its reverse complement CGT with alt A, whose F1R2 artifacts are ACG's F2R1 artifacts and vice
+    # versa, then ACG with alt C, its ref base, and a deletion, neither of which can be a read orientation artifact
+    left_b, ref_b, right_b, alt_b = torch.tensor([[A, C, G, T], [C, G, T, A], [A, C, G, C], [A, C, G, 4]]).T
+    result_bo = model.log_priors_bo(left_b, ref_b, right_b, alt_b)
+    expected_o = priors["ACG"].prior_k[[STATES.index("F1R2_T"), STATES.index("F2R1_T")]].log()
+    assert torch.allclose(result_bo[0], expected_o)
+    assert torch.allclose(result_bo[1], expected_o.flip(0))
+    assert torch.all(result_bo[2:] == -math.inf)
+
+
+def test_model_likelihoods_are_those_of_the_em():
+    # the log likelihoods of an artifact state are the sum of the model's spectrum and F1R2 log likelihoods, and those of
+    # a somatic het include its non-artifact F1R2 log likelihoods
+    keys = [[T, 5, 5, 50], [T, 1, 0, 7], [A, 12, 6, 100], [G, 30, 2, 60]]
+    sites = Sites.of(keys, [1] * len(keys))
+    em_nk = log_likelihoods(sites, ref_base=C)
+    model = ReadOrientationModel("TUMOR", random_priors(np.random.default_rng(2)))
+    alt_counts_n, alt_f1r2_counts_n, depths_n = (
+        x.double() for x in (sites.alt_counts_n, sites.alt_f1r2_counts_n, sites.depths_n)
+    )
+    artifact_no = model.artifact_spectrum_log_likelihoods_bo(sites.alt_bases_n, depths_n, alt_counts_n)
+    artifact_no += model.artifact_f1r2_log_likelihoods_bo(sites.alt_bases_n, alt_counts_n, alt_f1r2_counts_n)
+    assert torch.allclose(artifact_no, em_nk.gather(1, artifact_states_bo(sites.alt_bases_n)))
+
+    non_artifact_f1r2_n = model.non_artifact_f1r2_log_likelihoods_b(alt_counts_n, alt_f1r2_counts_n)
+    alpha, beta = ALLELE_FRACTION_PSEUDOCOUNTS_K2[SOMATIC_HET].tolist()
+    somatic_spectrum_n = betabinom.logpmf(alt_counts_n.numpy(), depths_n.numpy(), alpha, beta)
+    assert np.allclose(em_nk[:, SOMATIC_HET].numpy(), somatic_spectrum_n + non_artifact_f1r2_n.numpy())
