@@ -15,6 +15,7 @@ dependencies = [
     "torch>=2.10.0,<2.11",
     "tensorboard>=2.8.0",
     "numpy>=1.26.2",
+    "pandas>=2.2",
     "numba>=0.65",
     "pymc>=5.28.1",
     "tqdm>=4.66.1",
@@ -42,6 +43,7 @@ pre_permutect_filtering = "permutect.tools.pre_permutect_filtering:main"
 preprocess_dataset = "permutect.tools.preprocess_dataset:main"
 edit_dataset = "permutect.tools.edit_dataset:main"
 segment_pileups = "permutect.tools.segment_pileups:main"
+learn_read_orientation_model = "permutect.tools.learn_read_orientation_model:main"
 
 [tool.setuptools.packages.find]
 include = ["permutect*"]

@@ -1,3 +1,4 @@
+import math
 import time
 from types import SimpleNamespace
 
@@ -28,9 +29,11 @@ from permutect.misc_utils import encode_datum
 from permutect.misc_utils import encode_variant
 from permutect.misc_utils import float_dtype
 from permutect.misc_utils import get_first_numeric_element
+from permutect.misc_utils import get_tumor_sample_index
 from permutect.misc_utils import overlapping_filters
 from permutect.misc_utils import report_device
 from permutect.misc_utils import resolve_device
+from permutect.misc_utils import tumor_alt_orientation_counts
 from permutect.misc_utils import tumor_depths
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
@@ -556,3 +559,35 @@ def test_models_accept_string_devices():
     model = PosteriorModel(-10, -10, device="cpu")
     assert model._device == model.spectra._device == model.priors._device == torch.device("cpu")
     assert model._dtype == DEFAULT_CPU_FLOAT
+
+
+def test_tumor_alt_orientation_counts(tmp_path):
+    # the tumor's alt F1R2 and F2R1 counts, each NaN where the record lacks it or its value is missing
+    header = TUMOR_NORMAL_VCF_HEADER.replace(
+        "##tumor_sample",
+        '##FORMAT=<ID=F1R2,Number=R,Type=Integer,Description="Count of reads in F1R2 pair orientation">\n'
+        '##FORMAT=<ID=F2R1,Number=R,Type=Integer,Description="Count of reads in F2R1 pair orientation">\n'
+        "##tumor_sample",
+    )
+    lines = [
+        vcf_line("A", "T", pos=100) + "\tAD:F1R2:F2R1\t10,0:5,0:5,0\t6,3:4,3:2,0",
+        vcf_line("C", "G", pos=200) + "\tAD\t8,1\t5,2",
+        vcf_line("G", "A", pos=300) + "\tAD:F1R2:F2R1\t8,1:4,.:4,1\t5,2:3,.:2,2",
+    ]
+    path = tmp_path / "variants.vcf"
+    path.write_text(header + "".join(line + "\n" for line in lines))
+    with cyvcf2.VCF(str(path)) as vcf:
+        tumor_sample_index = get_tumor_sample_index(vcf)
+        counts = [tumor_alt_orientation_counts(v, tumor_sample_index) for v in vcf]
+    assert counts[0] == (3.0, 0.0)
+    assert all(math.isnan(count) for count in counts[1])
+    assert math.isnan(counts[2][0]) and counts[2][1] == 2.0
+
+
+def test_tumor_alt_orientation_counts_without_the_annotations_in_the_header(tmp_path):
+    lines = [vcf_line("A", "T", pos=100) + "\tAD\t10,0\t6,3"]
+    path = tmp_path / "variants.vcf"
+    path.write_text(TUMOR_NORMAL_VCF_HEADER + "".join(line + "\n" for line in lines))
+    with cyvcf2.VCF(str(path)) as vcf:
+        (counts,) = [tumor_alt_orientation_counts(v, get_tumor_sample_index(vcf)) for v in vcf]
+    assert all(math.isnan(count) for count in counts)

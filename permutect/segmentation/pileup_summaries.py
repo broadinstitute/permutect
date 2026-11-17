@@ -7,7 +7,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
-SAMPLE_HEADER = "#<METADATA>SAMPLE="
+from permutect.utils.gatk_table import SAMPLE_METADATA_PREFIX
+from permutect.utils.gatk_table import read_gatk_table
+
+# the line of a table of pileup summaries that names its sample, for writing one
+SAMPLE_HEADER = SAMPLE_METADATA_PREFIX
+COUNT_COLUMNS = ("ref_count", "alt_count", "other_alt_count")
 
 
 @dataclass
@@ -41,31 +46,15 @@ class PileupSummaries:
 
 def read_pileup_summaries(table) -> PileupSummaries:
     """all the sites of a GetPileupSummaries table, in its order"""
-    sample = ""
     with open(table) as file:
-        for line in file:
-            if line.startswith(SAMPLE_HEADER):
-                sample = line[len(SAMPLE_HEADER) :].strip()
-            elif not line.startswith("#"):
-                columns = line.split()
-                break
-        names = ("contig", "position", "ref_count", "alt_count", "other_alt_count", "allele_frequency")
-        contig_column, *number_columns = (columns.index(name) for name in names)
-        contigs, numbers = [], []
-        for line in file:
-            tokens = line.split()
-            contigs.append(tokens[contig_column])
-            numbers.append([float(tokens[column]) for column in number_columns])
-
-    positions, ref_counts, alt_counts, other_alt_counts, allele_frequencies = (
-        np.array(numbers, dtype=np.float64).reshape(-1, 5).T
-    )
+        pileups = read_gatk_table(
+            file, usecols=["contig", "position", *COUNT_COLUMNS, "allele_frequency"], dtype={"contig": str}
+        )
+    rows = pileups.rows
     return PileupSummaries(
-        sample,
-        np.array(contigs, dtype=object),
-        positions.astype(np.int64),
-        ref_counts.astype(np.int64),
-        alt_counts.astype(np.int64),
-        other_alt_counts.astype(np.int64),
-        allele_frequencies,
+        pileups.sample or "",
+        rows["contig"].to_numpy(dtype=object),
+        rows["position"].to_numpy(dtype=np.int64),
+        *(rows[column].to_numpy(dtype=np.int64) for column in COUNT_COLUMNS),
+        rows["allele_frequency"].to_numpy(dtype=np.float64),
     )

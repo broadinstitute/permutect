@@ -55,6 +55,8 @@ STEM_LOOP_MAX_ENERGY_NAME = "stem_loop_max_energy"
 NO_HAIRPIN_FILTER_NAME = "no_hairpin_filter"
 # also an output of segment_pileups
 GERMLINE_MODEL_NAME = "germline_model"
+# also the output of learn_read_orientation_model
+READ_ORIENTATION_MODEL_NAME = "read_orientation_model"
 GERMLINE_MODE_NAME = "germline_mode"
 NO_GERMLINE_MODE_NAME = "no_germline_mode"
 RECALL_WEIGHT_NAME = "recall_weight"
@@ -70,6 +72,9 @@ MAF_PRIOR_CONCENTRATION_NAME = "maf_prior_concentration"
 MAX_EM_ITERATIONS_NAME = "max_em_iterations"
 PLOT_NAME = "plot"
 NORMAL_PLOT_NAME = "normal_plot"
+
+# arguments for learn_read_orientation_model, which also takes MAX_EM_ITERATIONS_NAME
+CONVERGENCE_THRESHOLD_NAME = "convergence_threshold"
 
 # numerical constants shared by the models
 IMPOSSIBLE_LOG_PROB = -9999  # rules out a call, while staying finite to avoid the NaNs that -inf can give

@@ -1,6 +1,6 @@
 version 1.0
 
-import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/59/plain-WDL/descriptor" as m2
+import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/60/plain-WDL/descriptor" as m2
 
 workflow Permutect {
     input {
@@ -39,6 +39,8 @@ workflow Permutect {
         File? dragstr_model
         String? realignment_extra_args
         Boolean skip_m2_filtering = true
+        # Mutect2 collects F1R2 counts, from which learn_read_orientation_model learns the priors of GATK's read
+        # orientation artifact model.  With cached Mutect2 outputs, the cache must come from a run with this true.
         Boolean run_orientation_bias_mixture_model_filter = false
         # apply pre_permutect_filtering's hairpin filter.  pre_permutect_filtering runs regardless, for its multiallelic
         # indel filter.
@@ -54,8 +56,9 @@ workflow Permutect {
         Boolean split_mnvs = false
 
         # Mutect2's outputs from an earlier run, ie the m2_outputs output of that run: an uncompressed tar archive of
-        # the Permutect test dataset, the Mutect2 VCF and its index, the contigs table, the Mutect2 stats, and the tumor
-        # and normal pileups at the common variants if Mutect2 made them.  If this is given, Mutect2 is not run.
+        # the Permutect test dataset, the Mutect2 VCF and its index, the contigs table, the Mutect2 stats, the tumor
+        # and normal pileups at the common variants if Mutect2 made them, and the F1R2 counts of the scatters if
+        # Mutect2 ran with run_orientation_bias_mixture_model_filter.  If this is given, Mutect2 is not run.
         # This HACK is required to get around Terra's unreliable call-caching
         # note: defining it as a String instead of a File is essential because otherwise
         # a cached input gs://[some hash]/final-outputs/file.txt is written as
@@ -180,6 +183,7 @@ workflow Permutect {
                 mutect_stats = Mutect2.mutect_stats,
                 tumor_pileups = Mutect2.tumor_pileups,
                 normal_pileups = Mutect2.normal_pileups,
+                f1r2_counts = Mutect2.f1r2_counts,
                 permutect_docker = permutect_docker,
                 preemptible = preemptible,
                 max_retries = max_retries
@@ -222,6 +226,20 @@ workflow Permutect {
     # allows them to be absent, as they are without common variants.
     File? tumor_pileups = if defined(Mutect2.tumor_pileups) then Mutect2.tumor_pileups else ExtractM2Outputs.tumor_pileups
     File? normal_pileups = if defined(Mutect2.normal_pileups) then Mutect2.normal_pileups else ExtractM2Outputs.normal_pileups
+    # likewise the F1R2 counts of Mutect2's scatters, which it makes with run_orientation_bias_mixture_model_filter
+    Array[File] f1r2_counts = select_first([Mutect2.f1r2_counts, ExtractM2Outputs.f1r2_counts])
+
+    # A cache from a run without run_orientation_bias_mixture_model_filter has no F1R2 counts, and the task's
+    # non-empty array input then fails
+    if (run_orientation_bias_mixture_model_filter) {
+        call LearnReadOrientationModel {
+            input:
+                f1r2_counts = f1r2_counts,
+                permutect_docker = permutect_docker,
+                preemptible = preemptible,
+                max_retries = max_retries
+        }
+    }
 
     # without pileups, filter_variants uses minor allele fractions of 1/2 and default germline likelihoods
     if (defined(tumor_pileups)) {
@@ -245,6 +263,7 @@ workflow Permutect {
             test_dataset = select_first([Mutect2.permutect_test_dataset, ExtractM2Outputs.test_dataset]),
             contigs_table = select_first([Mutect2.permutect_contigs_table, ExtractM2Outputs.contigs_table]),
             germline_model = SegmentPileups.germline_model,
+            read_orientation_model = LearnReadOrientationModel.read_orientation_model,
             mutect_stats = select_first([Mutect2.mutect_stats, ExtractM2Outputs.mutect_stats]),
             batch_size = batch_size,
             num_workers = num_workers,
@@ -336,6 +355,9 @@ workflow Permutect {
         File? normal_segments = SegmentPileups.normal_segments
         File? normal_segments_plot = SegmentPileups.normal_segments_plot
         File? contamination_table = SegmentPileups.contamination_table
+
+        # learn_read_orientation_model's model, if run_orientation_bias_mixture_model_filter is true
+        File? read_orientation_model = LearnReadOrientationModel.read_orientation_model
     }
 }
 
@@ -347,6 +369,7 @@ workflow Permutect {
         File mutect2_vcf
         File mutect2_vcf_idx
         File? germline_model
+        File? read_orientation_model
         File mutect_stats
         Int? num_spectrum_iterations
         Float? spectrum_learning_rate
@@ -382,6 +405,7 @@ workflow Permutect {
             ~{" --num_spectrum_iterations " + num_spectrum_iterations} \
             ~{" --spectrum_learning_rate " + spectrum_learning_rate} \
             ~{" --germline_model " + germline_model} \
+            ~{" --read_orientation_model " + read_orientation_model} \
             --genomic_span $genomic_span ~{permutect_filtering_extra_args}
 
         tar cvf tensorboard.tar tensorboard/
@@ -485,7 +509,7 @@ task SplitMultiallelics {
         gatk --java-options "-Xmx~{command_mem}m" IndexFeatureFile -I split.vcf
 
         gatk --java-options "-Xmx~{command_mem}m" SelectVariants -V split.vcf -O output.vcf --lenient \
-            -DGA DP -DGA AF -DGA F1R2 -DGA F2R1 -DGA FAD -DGA SB \
+            -DGA DP -DGA AF -DGA FAD -DGA SB \
             -DA AS_FilterStatus -DA AS_SB_TABLE -DA ECNT -DA GERMQ -DA MBQ -DA MFRL -DA MMQ -DA MPOS
     >>>
 
@@ -671,6 +695,42 @@ task SegmentPileups {
     }
 }
 
+# learn the tumor's read orientation artifact model from the F1R2 counts of Mutect2's scatters, with priors learned as
+# GATK LearnReadOrientationModel learns them
+task LearnReadOrientationModel {
+    input {
+        Array[File]+ f1r2_counts
+
+        String permutect_docker
+        Int? preemptible
+        Int? max_retries
+        Int? mem
+    }
+
+    # Mem is in units of GB but our runtime value is in MB.  The tool reads the counts without extracting them.
+    Int machine_mem = if defined(mem) then mem * 1000 else 4000
+    Int disk_space = ceil(size(f1r2_counts, "GB")) + 10
+
+    command <<<
+        set -euo pipefail
+        learn_read_orientation_model --input ~{sep=" " f1r2_counts} --output read-orientation-model.pt
+    >>>
+
+    runtime {
+        docker: permutect_docker
+        bootDiskSizeGb: 12
+        memory: machine_mem + " MB"
+        disks: "local-disk " + disk_space + " SSD"
+        preemptible: select_first([preemptible, 0])
+        maxRetries: select_first([max_retries, 0])
+        cpu: 1
+    }
+
+    output {
+        File read_orientation_model = "read-orientation-model.pt"
+    }
+}
+
 # bundle Mutect2's outputs into a single uncompressed tar archive, which ExtractM2Outputs unpacks in later runs
 task ArchiveM2Outputs {
     input {
@@ -681,6 +741,7 @@ task ArchiveM2Outputs {
         File mutect_stats
         File? tumor_pileups
         File? normal_pileups
+        Array[File] f1r2_counts = []
         String permutect_docker
         Int? preemptible
         Int? max_retries
@@ -688,7 +749,7 @@ task ArchiveM2Outputs {
 
     # room for the inputs and the archive
     Int disk_space = ceil(2 * (size([test_dataset, mutect2_vcf, mutect2_vcf_idx, contigs_table, mutect_stats], "GB")
-        + size(tumor_pileups, "GB") + size(normal_pileups, "GB"))) + 10
+        + size(tumor_pileups, "GB") + size(normal_pileups, "GB") + size(f1r2_counts, "GB"))) + 10
 
     command <<<
         set -euo pipefail
@@ -710,6 +771,13 @@ task ArchiveM2Outputs {
         normal_pileups="~{default="" normal_pileups}"
         if [ -n "$tumor_pileups" ]; then ln -s "$tumor_pileups" archive/tumor-pileups.table; fi
         if [ -n "$normal_pileups" ]; then ln -s "$normal_pileups" archive/normal-pileups.table; fi
+        # the F1R2 counts of the scatters, numbered since each scatter's is named f1r2.tar.gz
+        mkdir archive/f1r2-counts
+        n=0
+        for counts in ~{sep=" " f1r2_counts}; do
+            ln -s "$counts" archive/f1r2-counts/scatter-$(printf "%04d" $n).tar.gz
+            n=$((n + 1))
+        done
 
         # uncompressed (no -z), and archiving the files that the links point to (-h)
         tar -chf cached_m2_outputs.tar -C archive .
@@ -767,5 +835,7 @@ task ExtractM2Outputs {
         # absent if Mutect2 didn't make them, ie without common variants, and the normal's without a normal
         File? tumor_pileups = "tumor-pileups.table"
         File? normal_pileups = "normal-pileups.table"
+        # the F1R2 counts of the scatters, none if Mutect2 ran without run_orientation_bias_mixture_model_filter
+        Array[File] f1r2_counts = glob("f1r2-counts/*.tar.gz")
     }
 }
