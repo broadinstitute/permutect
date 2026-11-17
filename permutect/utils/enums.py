@@ -27,6 +27,9 @@ class Variation(enum.IntEnum):
             return Variation.BIG_DELETION if diff < -1 else Variation.DELETION
 
 
+INDEL_VARIATIONS = (Variation.INSERTION, Variation.DELETION, Variation.BIG_INSERTION, Variation.BIG_DELETION)
+
+
 class Call(enum.IntEnum):
     SOMATIC = 0
     ARTIFACT = 1
@@ -36,6 +39,8 @@ class Call(enum.IntEnum):
     CONTAMINATION = 5
     # an SNV from damage to one strand before amplification, whose alt reads are mostly in one orientation, F1R2 or F2R1
     READ_ORIENTATION = 6
+    # an indel of one repeat unit of a short tandem repeat from polymerase slippage, a sequencing error endemic to STRs
+    SLIPPAGE = 7
 
 
 class Epoch(enum.IntEnum):

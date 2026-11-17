@@ -208,6 +208,18 @@ def str_repeat_lengths(variant) -> tuple[int, int]:
     return len(repeat_unit), len(repeat_unit) * int(get_first_numeric_element(variant, "RPA"))
 
 
+def str_repeat_count_change(variant) -> int:
+    """
+    The change from the reference to the first alt allele in the number of repeat units of the short tandem repeat (STR)
+    that a variant is in, from Mutect2's RPA (repeats per allele) annotation, eg -1 for the deletion of one repeat unit,
+    or 0 for a variant outside an STR, which has no RU
+    """
+    repeats_per_allele = variant.INFO.get("RPA")
+    if not variant.INFO.get("RU") or not isinstance(repeats_per_allele, tuple) or len(repeats_per_allele) < 2:
+        return 0
+    return int(repeats_per_allele[1]) - int(repeats_per_allele[0])
+
+
 def encode(contig: str, position: int, ref: str, alt: str):
     # contig is a name such as chr1; encode_datum converts a Datum's contig index to its name
     # both alleles are needed to distinguish eg AT>A from ATT>A.  They are truncated like the alleles stored in a Datum.

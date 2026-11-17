@@ -34,6 +34,7 @@ from permutect.misc_utils import encode_variant
 from permutect.misc_utils import get_first_numeric_element
 from permutect.misc_utils import get_tumor_sample_index
 from permutect.misc_utils import overlapping_filters
+from permutect.misc_utils import str_repeat_count_change
 from permutect.misc_utils import str_repeat_lengths
 from permutect.misc_utils import tumor_alt_orientation_counts
 
@@ -296,8 +297,9 @@ class MemoryMappedData:
 
     """
     Add log allele frequency (AF), minor allele frequency (MAF), normal minor allele frequency (normal MAF), the
-    lengths of the repeat unit and of the reference STR, and the tumor's counts of alt reads in F1R2 and F2R1
-    orientation to the float array of the output MemoryMappedData using information in a VCF and a segmentation.
+    lengths of the repeat unit and of the reference STR, the change in the STR's repeat count, and the tumor's counts of
+    alt reads in F1R2 and F2R1 orientation to the float array of the output MemoryMappedData using information in a VCF
+    and a segmentation.
 
     Additionally, mark data that have a given set of artifact filters in the VCF as known artifacts with an infinite
     cached artifact logit.
@@ -317,6 +319,7 @@ class MemoryMappedData:
 
         log_allele_frequencies = {}
         repeat_lengths = {}
+        repeat_count_changes = {}
         alt_orientation_counts = {}
         artifact_encodings = set()
 
@@ -329,6 +332,7 @@ class MemoryMappedData:
             # POPAF is -log10(AF); we convert to natural log without exponentiating to avoid underflow
             log_allele_frequencies[encoding] = -math.log(10) * get_first_numeric_element(v, "POPAF")
             repeat_lengths[encoding] = str_repeat_lengths(v)
+            repeat_count_changes[encoding] = str_repeat_count_change(v)
             alt_orientation_counts[encoding] = tumor_alt_orientation_counts(v, tumor_sample_index)
             if overlapping_filters(v, artifact_filters):
                 artifact_encodings.add(encoding)
@@ -361,6 +365,7 @@ class MemoryMappedData:
                 repeat_unit_length, repeat_length = repeat_lengths[encoding]
                 new_datum.set(Data.REPEAT_UNIT_LENGTH, repeat_unit_length)
                 new_datum.set(Data.REPEAT_LENGTH, repeat_length)
+                new_datum.set(Data.REPEAT_COUNT_CHANGE, repeat_count_changes[encoding])
                 alt_f1r2_count, alt_f2r1_count = alt_orientation_counts[encoding]
                 new_datum.set(Data.ALT_F1R2_COUNT, alt_f1r2_count)
                 new_datum.set(Data.ALT_F2R1_COUNT, alt_f2r1_count)

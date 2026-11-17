@@ -33,6 +33,7 @@ from permutect.misc_utils import get_tumor_sample_index
 from permutect.misc_utils import overlapping_filters
 from permutect.misc_utils import report_device
 from permutect.misc_utils import resolve_device
+from permutect.misc_utils import str_repeat_count_change
 from permutect.misc_utils import tumor_alt_orientation_counts
 from permutect.misc_utils import tumor_depths
 from permutect.utils.enums import Epoch
@@ -591,3 +592,22 @@ def test_tumor_alt_orientation_counts_without_the_annotations_in_the_header(tmp_
     with cyvcf2.VCF(str(path)) as vcf:
         (counts,) = [tumor_alt_orientation_counts(v, get_tumor_sample_index(vcf)) for v in vcf]
     assert all(math.isnan(count) for count in counts)
+
+
+def test_str_repeat_count_change(tmp_path):
+    # the change in the number of repeat units from the reference to the alt allele, from RPA, or 0 outside an STR
+    header = VCF_HEADER.replace(
+        "#CHROM",
+        '##INFO=<ID=RU,Number=1,Type=String,Description="Tandem repeat unit">\n'
+        '##INFO=<ID=RPA,Number=R,Type=Integer,Description="Repeats per allele">\n#CHROM',
+    )
+    lines = [
+        vcf_line("CAG", "C", pos=100, info="RU=AG;RPA=6,5"),
+        vcf_line("C", "CAG", pos=200, info="RU=AG;RPA=6,7"),
+        vcf_line("CAGAG", "C", pos=300, info="RU=AG;RPA=6,4"),
+        vcf_line("C", "T", pos=400),
+    ]
+    path = tmp_path / "variants.vcf"
+    path.write_text(header + "".join(line + "\n" for line in lines))
+    with cyvcf2.VCF(str(path)) as vcf:
+        assert [str_repeat_count_change(v) for v in vcf] == [-1, 1, -2, 0]

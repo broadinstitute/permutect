@@ -15,6 +15,7 @@ from permutect.data.datum import Data
 from permutect.metrics import plotting
 from permutect.misc_utils import resolve_device
 from permutect.read_orientation.read_orientation_model import ReadOrientationModel
+from permutect.slippage.slippage_model import SlippageModel
 from permutect.utils.array_utils import add_at_index
 from permutect.utils.array_utils import index_tensor
 from permutect.utils.enums import Call
@@ -37,6 +38,12 @@ def get_ref_contexts_and_alt_bases(batch: Batch) -> tuple[Tensor, Tensor, Tensor
 def has_alt_orientation_counts_b(batch: Batch) -> Tensor:
     """whether each variant has the tumor's counts of alt reads in F1R2 and F2R1 orientation, which filter_variants sets"""
     return ~(torch.isnan(batch.get(Data.ALT_F1R2_COUNT)) | torch.isnan(batch.get(Data.ALT_F2R1_COUNT)))
+
+
+def possible_slippage_b(slippage_model: SlippageModel, batch: Batch) -> Tensor:
+    """whether each variant can be slippage, given the STR annotations that filter_variants sets"""
+    repeat_lengths_b, repeat_count_changes_b = batch.get(Data.REPEAT_LENGTH), batch.get(Data.REPEAT_COUNT_CHANGE)
+    return slippage_model.possible_b(batch.get(Data.VARIANT_TYPE), repeat_lengths_b, repeat_count_changes_b)
 
 
 def convert_rrra_tensor_to_sc(input_rrra: torch.Tensor) -> torch.Tensor:
@@ -77,6 +84,8 @@ class PosteriorModelPriors(nn.Module):
     Mutect2) to distinguish.
     The read orientation artifact prior isn't learned either.  It comes from the read orientation model, which
     learn_read_orientation_model learns, so its stored value is also zero and is replaced in log_priors_bc.
+    The slippage prior is zero for the same reason as the sequencing error prior: slippage can always happen in a long
+    enough STR.  It is IMPOSSIBLE_LOG_PROB for a variant that can't be slippage.
     """
 
     def __init__(
@@ -86,14 +95,17 @@ class PosteriorModelPriors(nn.Module):
         no_germline_mode: bool,
         device=None,
         read_orientation_model: ReadOrientationModel = None,
+        slippage_model: SlippageModel = None,
     ):
         """
         :param read_orientation_model: the read orientation artifact model, whose priors are fixed.  Without one, read
         orientation artifacts are impossible.
+        :param slippage_model: which variants can be slippage, by default as in FilterMutectCalls
         """
         super(PosteriorModelPriors, self).__init__()
         self.no_germline_mode = no_germline_mode
         self.read_orientation_model = read_orientation_model
+        self.slippage_model = SlippageModel() if slippage_model is None else slippage_model
         self._device = resolve_device(device)
         self.use_context_dependent_snv_priors = True
 
@@ -159,6 +171,9 @@ class PosteriorModelPriors(nn.Module):
         )
         log_priors_bc[:, Call.CONTAMINATION] = log_carrier_priors_b
         log_priors_bc[:, Call.READ_ORIENTATION] = self.read_orientation_log_priors_b(batch, is_snv_b)
+        log_priors_bc[:, Call.SLIPPAGE] = torch.where(
+            possible_slippage_b(self.slippage_model, batch), 0, constants.IMPOSSIBLE_LOG_PROB
+        )
 
         if self.use_context_dependent_snv_priors:
             # torch.where rather than mask arithmetic, which gives 0 * -inf = NaN when a log prior is -inf, eg the SNV
@@ -205,6 +220,7 @@ class PosteriorModelPriors(nn.Module):
             self.log_priors_vc[:, Call.GERMLINE] = constants.IMPOSSIBLE_LOG_PROB if self.no_germline_mode else 0
             self.log_priors_vc[:, Call.CONTAMINATION] = 0
             self.log_priors_vc[:, Call.READ_ORIENTATION] = 0
+            self.log_priors_vc[:, Call.SLIPPAGE] = 0
 
         if self.use_context_dependent_snv_priors:
             total_sc = torch.round(convert_rrra_tensor_to_sc(snv_context_totals_rrra) + total_ignored_per_context).int()
