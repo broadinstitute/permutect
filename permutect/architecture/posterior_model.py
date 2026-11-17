@@ -25,6 +25,7 @@ from permutect.misc_utils import float_dtype
 from permutect.misc_utils import resolve_device
 from permutect.read_orientation.read_orientation_model import ReadOrientationModel
 from permutect.segmentation.germline_model import GermlineModel
+from permutect.slippage.slippage_model import SlippageModel
 from permutect.utils.enums import Call
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
@@ -72,12 +73,14 @@ class PosteriorModel(torch.nn.Module):
         device=None,
         germline_model: GermlineModel = None,
         read_orientation_model: ReadOrientationModel = None,
+        slippage_model: SlippageModel = None,
     ):
         """
         :param germline_model: from segment_pileups, for germline likelihoods.  Without one, the MAF is 1/2
         everywhere and the germline likelihoods have default parameters.
         :param read_orientation_model: from learn_read_orientation_model, for the priors and likelihoods of read
         orientation artifacts.  Without one, read orientation artifacts are impossible.
+        :param slippage_model: which variants can be slippage and their likelihoods, by default as in FilterMutectCalls
         """
         super(PosteriorModel, self).__init__()
 
@@ -85,9 +88,15 @@ class PosteriorModel(torch.nn.Module):
         self._dtype = float_dtype(self._device)
         self.no_germline_mode = no_germline_mode
 
-        self.spectra = PosteriorModelSpectra(germline_model, self._device, read_orientation_model)
+        slippage_model = SlippageModel() if slippage_model is None else slippage_model
+        self.spectra = PosteriorModelSpectra(germline_model, self._device, read_orientation_model, slippage_model)
         self.priors = PosteriorModelPriors(
-            variant_log_prior, artifact_log_prior, no_germline_mode, self._device, read_orientation_model
+            variant_log_prior,
+            artifact_log_prior,
+            no_germline_mode,
+            self._device,
+            read_orientation_model,
+            slippage_model,
         )
 
         # The probability that the reads of a read orientation artifact look like an artifact's to the artifact model,
@@ -147,6 +156,8 @@ class PosteriorModel(torch.nn.Module):
         log_posteriors_bc[:, Call.ARTIFACT] += artifact_logits_b
         log_posteriors_bc[:, Call.NORMAL_ARTIFACT] += artifact_logits_b
         log_posteriors_bc[:, Call.READ_ORIENTATION] += self.read_orientation_reads_log_likelihoods_b(artifact_logits_b)
+        # slippage, like any sequencing error, gets no artifact logit: its reads look like a non-artifact's
+
         # a known artifact can only be an artifact or a normal artifact, not even a read orientation artifact
         for call in set(Call) - {Call.ARTIFACT, Call.NORMAL_ARTIFACT}:
             log_posteriors_bc[:, call] = torch.where(

@@ -368,8 +368,8 @@ def test_vcf_annotation_without_a_segmentation(tmp_path):
 
 
 def test_vcf_annotation_records_repeat_lengths(tmp_path):
-    # the repeat unit's and the STR's lengths come from Mutect2's RU and RPA, whose first count is the reference's, and
-    # are 0 outside STRs
+    # the repeat unit's and the STR's lengths and the change in the repeat count come from Mutect2's RU and RPA, whose
+    # first count is the reference's, and are 0 outside STRs
     repeat_header_lines = (
         '##INFO=<ID=RU,Number=1,Type=String,Description="Tandem repeat unit">\n'
         '##INFO=<ID=RPA,Number=R,Type=Integer,Description="Repeats per allele">\n'
@@ -385,10 +385,9 @@ def test_vcf_annotation_records_repeat_lengths(tmp_path):
     data = [make_datum_with_alleles(0, 100, "C", "T"), make_datum_with_alleles(0, 200, "CAG", "C")]
     memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=2, estimated_num_reads=6)
     annotated = memory_mapped_data.make_vcf_annotate_memory_mapped_data(str(vcf), {0: "chr1"}, artifact_filters=set())
-    repeat_lengths = [
-        (float(d.get(Data.REPEAT_UNIT_LENGTH)), float(d.get(Data.REPEAT_LENGTH))) for d in annotated.generate()
-    ]
-    assert repeat_lengths == [(0.0, 0.0), (2.0, 12.0)]
+    fields = (Data.REPEAT_UNIT_LENGTH, Data.REPEAT_LENGTH, Data.REPEAT_COUNT_CHANGE)
+    repeats = [tuple(float(d.get(field)) for field in fields) for d in annotated.generate()]
+    assert repeats == [(0.0, 0.0, 0.0), (2.0, 12.0, -1.0)]
 
 
 def test_data_saved_in_an_older_layout_fail_to_load(tmp_path):
