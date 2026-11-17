@@ -51,7 +51,7 @@ def test_impossible_calls_use_the_shared_impossible_log_prob(monkeypatch):
     log_priors_bc, _, normal_log_lks_bc, log_posteriors_bc = model.log_posterior_and_ingredients(known_artifact)
     assert log_priors_bc[0, Call.GERMLINE].item() == pytest.approx(impossible, abs=1)  # the priors are normalized
     assert normal_log_lks_bc[0, Call.NORMAL_ARTIFACT].item() == impossible
-    for call in (Call.SOMATIC, Call.SEQ_ERROR, Call.GERMLINE, Call.CONTAMINATION, Call.READ_ORIENTATION):
+    for call in set(Call) - {Call.ARTIFACT, Call.NORMAL_ARTIFACT}:
         assert log_posteriors_bc[0, call].item() == impossible
 
     negative_artifact_logit = make_batch([0.01], values | {Data.CACHED_ARTIFACT_LOGIT: -1})
@@ -418,3 +418,48 @@ def test_learning_fits_the_read_orientation_artifact_overlap_and_leaves_the_read
     model.learn_priors_and_spectra(loader, num_iterations=2, ignored_to_non_ignored_ratio=10, learning_rate=0.1)
     assert model.read_orientation_artifact_overlap.item() > 0.5
     assert all(torch.equal(before[name], buffer) for name, buffer in read_orientation_model.named_buffers())
+
+
+# the deletion of one repeat unit of a 12-base STR, at depth 100 with 6 alt reads, with the values of SNV_VALUES
+STR_INDEL_VALUES = SNV_VALUES | {
+    Data.VARIANT_TYPE: Variation.DELETION,
+    Data.REPEAT_UNIT_LENGTH: 1,
+    Data.REPEAT_LENGTH: 12,
+    Data.REPEAT_COUNT_CHANGE: -1,
+}
+
+
+@pytest.mark.parametrize(
+    "values, expected_probability",
+    [
+        ({}, 1),  # a low allele fraction of a one-unit change of a long STR
+        ({Data.ORIGINAL_ALT_COUNT: 40}, 0),  # too high an allele fraction
+        ({Data.REPEAT_LENGTH: 7}, 0),  # too short an STR
+        ({Data.REPEAT_COUNT_CHANGE: -2}, 0),  # two repeat units
+        ({Data.REPEAT_LENGTH: math.nan, Data.REPEAT_COUNT_CHANGE: math.nan}, 0),  # not annotated from the VCF
+        ({Data.VARIANT_TYPE: Variation.SNV}, 0),
+    ],
+)
+def test_one_unit_indels_of_long_strs_at_low_allele_fractions_are_slippage(values, expected_probability):
+    model = make_posterior_model("cpu")
+    batch = make_batch([1e-8], STR_INDEL_VALUES | values)
+    slippage_probability = model.posterior_probabilities_bc(batch)[0, Call.SLIPPAGE].item()
+    assert slippage_probability == pytest.approx(expected_probability, abs=0.01)
+    assert_no_nan(model, batch)
+
+
+def test_slippage_is_a_sequencing_error():
+    # with the prior and the normal's likelihood of a sequencing error, and no artifact logit
+    model = make_posterior_model("cpu")
+    batch = make_batch([1e-8, 1e-8], STR_INDEL_VALUES)
+    batch.float_tensor[1, Data.CACHED_ARTIFACT_LOGIT.idx] = 3
+    log_priors_bc, _, normal_log_lks_bc, log_posteriors_bc = model.log_posterior_and_ingredients(batch)
+    assert torch.equal(log_priors_bc[:, Call.SLIPPAGE], log_priors_bc[:, Call.SEQ_ERROR])
+    assert torch.equal(normal_log_lks_bc[:, Call.SLIPPAGE], normal_log_lks_bc[:, Call.SEQ_ERROR])
+    assert log_posteriors_bc[0, Call.SLIPPAGE].item() == log_posteriors_bc[1, Call.SLIPPAGE].item()
+
+
+def test_known_artifacts_rule_out_slippage():
+    model = make_posterior_model("cpu")
+    batch = make_batch([1e-8], STR_INDEL_VALUES | {Data.CACHED_ARTIFACT_LOGIT: math.inf})
+    assert model.log_relative_posteriors_bc(batch)[0, Call.SLIPPAGE].item() == constants.IMPOSSIBLE_LOG_PROB

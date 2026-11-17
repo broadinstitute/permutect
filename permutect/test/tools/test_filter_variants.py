@@ -20,10 +20,13 @@ from permutect.metrics.posterior_result import PosteriorResult
 from permutect.misc_utils import encode_datum
 from permutect.misc_utils import encode_variant
 from permutect.misc_utils import get_tumor_sample_index
+from permutect.misc_utils import str_repeat_count_change
+from permutect.misc_utils import str_repeat_lengths
 from permutect.misc_utils import tumor_alt_orientation_counts
 from permutect.segmentation.germline_model import GermlineModel
 from permutect.segmentation.germline_model import SampleSegmentation
 from permutect.segmentation.segmenter import Segment
+from permutect.slippage.slippage_model import MIN_SLIPPAGE_STR_LENGTH
 from permutect.test.architecture.test_posterior_model import make_read_orientation_model
 from permutect.test.architecture.test_posterior_model_priors import make_batch
 from permutect.test.test_file_names import *
@@ -35,6 +38,7 @@ from permutect.tools import filter_variants
 from permutect.tools import pre_permutect_filtering
 from permutect.tools import segment_pileups
 from permutect.utils.allele_utils import find_variant_type
+from permutect.utils.enums import INDEL_VARIATIONS
 from permutect.utils.enums import Call
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
@@ -220,6 +224,21 @@ def test_filtering_on_seqc2_wes_chr20(tmp_path):
             assert find_variant_type(v) == Variation.SNV
             num_snvs_with_read_orientation_priors += 1
     assert num_snvs_with_read_orientation_priors > 0
+
+    # Mutect2's slippage filter isn't trusted, so the posterior model scores the variants it filtered.  The posterior
+    # model's own slippage calls are one-unit indels of STRs of at least the minimum length.
+    mutect2_slippage = {
+        (v.CHROM, v.POS, v.REF, v.ALT[0]) for v in cyvcf2.VCF(pre_filtered_vcf.name) if "slippage" in record_filters(v)
+    }
+    num_scored_mutect2_slippage, num_slippage_calls = 0, 0
+    for v in cyvcf2.VCF(permutect_vcf.name):
+        scored = v.INFO.get(filter_variants.POST_PROB_INFO_KEY) is not None
+        num_scored_mutect2_slippage += scored and (v.CHROM, v.POS, v.REF, v.ALT[0]) in mutect2_slippage
+        if scored and "slippage" in record_filters(v):
+            num_slippage_calls += 1
+            assert find_variant_type(v) in INDEL_VARIATIONS
+            assert abs(str_repeat_count_change(v)) == 1 and str_repeat_lengths(v)[1] >= MIN_SLIPPAGE_STR_LENGTH
+    assert num_scored_mutect2_slippage > 0 and num_slippage_calls > 0
 
 
 def tumor_sample(vcf_path) -> str:

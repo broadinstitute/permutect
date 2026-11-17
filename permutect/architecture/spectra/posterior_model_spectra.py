@@ -4,6 +4,7 @@ from torch import nn
 from permutect import constants
 from permutect.architecture.posterior_model_priors import get_ref_contexts_and_alt_bases
 from permutect.architecture.posterior_model_priors import has_alt_orientation_counts_b
+from permutect.architecture.posterior_model_priors import possible_slippage_b
 from permutect.architecture.spectra.artifact_spectra import ArtifactSpectra
 from permutect.architecture.spectra.normal_artifact_spectrum import NormalArtifactSpectrum
 from permutect.architecture.spectra.somatic_spectrum import SomaticSpectrum
@@ -13,11 +14,10 @@ from permutect.misc_utils import float_dtype
 from permutect.misc_utils import resolve_device
 from permutect.read_orientation.read_orientation_model import ReadOrientationModel
 from permutect.segmentation.germline_model import GermlineModel
+from permutect.slippage.slippage_model import SlippageModel
+from permutect.utils.enums import INDEL_VARIATIONS
 from permutect.utils.enums import Call
 from permutect.utils.enums import Variation
-
-# the variant types whose germline likelihoods use the germline model's indel parameters
-INDEL_VARIATIONS = (Variation.INSERTION, Variation.DELETION, Variation.BIG_INSERTION, Variation.BIG_DELETION)
 
 
 class PosteriorModelSpectra(nn.Module):
@@ -28,11 +28,16 @@ class PosteriorModelSpectra(nn.Module):
         3) normal artifact spectrum
         4) germline and contamination likelihoods, of the germline model, which are fixed
         5) read orientation artifact likelihoods, of the read orientation model, which are fixed
+        6) slippage likelihoods, of the slippage model, which are fixed
     Basically, anything that computes the likelihood of alt and ref read counts goes here.
     """
 
     def __init__(
-        self, germline_model: GermlineModel = None, device=None, read_orientation_model: ReadOrientationModel = None
+        self,
+        germline_model: GermlineModel = None,
+        device=None,
+        read_orientation_model: ReadOrientationModel = None,
+        slippage_model: SlippageModel = None,
     ):
         super(PosteriorModelSpectra, self).__init__()
 
@@ -42,6 +47,7 @@ class PosteriorModelSpectra(nn.Module):
         self.germline_model = GermlineModel() if germline_model is None else germline_model
         # without one, read orientation artifacts are impossible, as their priors make them
         self.read_orientation_model = read_orientation_model
+        self.slippage_model = SlippageModel() if slippage_model is None else slippage_model
 
         # TODO introduce parameters class so that num_components is not hard-coded
         self.somatic_spectrum = SomaticSpectrum(num_components=5)
@@ -99,6 +105,12 @@ class PosteriorModelSpectra(nn.Module):
             alt_counts_b, depths_b, log_afs_b
         )
         spectra_log_lks_bc[:, Call.READ_ORIENTATION] = self.read_orientation_log_likelihoods_b(batch)
+        # 0 where the prior makes slippage impossible
+        spectra_log_lks_bc[:, Call.SLIPPAGE] = torch.where(
+            possible_slippage_b(self.slippage_model, batch),
+            self.slippage_model.tumor_log_likelihoods_b(depths_b, alt_counts_b),
+            0,
+        )
 
         normal_seq_error_log_lks = batch.get(Data.NORMAL_SEQ_ERROR_LOG_LK)
         normal_log_lks_bc = torch.zeros_like(spectra_log_lks_bc)
@@ -109,6 +121,9 @@ class PosteriorModelSpectra(nn.Module):
         normal_log_lks_bc[:, Call.CONTAMINATION] = normal_seq_error_log_lks
         # read orientation artifacts come from damage to the tumor's DNA
         normal_log_lks_bc[:, Call.READ_ORIENTATION] = normal_seq_error_log_lks
+        # as for sequencing error, the normal's alt reads are sequencing errors.  Slippage can happen in the normal too,
+        # which a joint model of the tumor and normal could use.
+        normal_log_lks_bc[:, Call.SLIPPAGE] = normal_seq_error_log_lks
         normal_log_lks_bc[:, Call.NORMAL_ARTIFACT] = torch.where(
             normal_alt_counts_b < 1, constants.IMPOSSIBLE_LOG_PROB, na_normal_log_lks_b
         )
