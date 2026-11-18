@@ -7,6 +7,7 @@ from scipy.stats import betabinom
 
 from permutect.read_orientation.f1r2_counts_reader import BASES
 from permutect.read_orientation.f1r2_counts_reader import CONTEXTS
+from permutect.read_orientation.f1r2_counts_reader import UNKNOWN_REF_F1R2
 from permutect.read_orientation.f1r2_counts_reader import F1R2Counts
 from permutect.read_orientation.f1r2_counts_reader import Sites
 from permutect.read_orientation.maf_mixtures import MAF_GRID
@@ -114,6 +115,43 @@ def test_non_artifact_f1r2_pseudocounts(tmp_path):
     alt_counts_b, alt_f1r2_counts_b = torch.tensor([10, 10, 3]), torch.tensor([1, 5, 3])
     result_b = ReadOrientationModel.load(path).non_artifact_f1r2_log_likelihoods_b(alt_counts_b, alt_f1r2_counts_b)
     assert np.allclose(result_b.numpy(), betabinom.logpmf(alt_f1r2_counts_b.numpy(), alt_counts_b.numpy(), 3.0, 17.0))
+
+
+def test_log_likelihoods_conditioned_on_ref_reads():
+    # alt T sites in a context with ref C: with 40 ref reads, 36 of them F1R2, then without known ref F1R2 counts
+    pseudocounts_k2 = non_artifact_f1r2_pseudocounts_k2(3.0, 17.0)
+    sites = Sites.of([[T, 6, 6, 46], [T, 6, 6, 46]], [1, 1], ref_f1r2_counts_n=[36, UNKNOWN_REF_F1R2])
+    unconditioned_nk = log_likelihoods(sites, C, f1r2_fraction_pseudocounts_k2=pseudocounts_k2)
+    conditioned_nk = log_likelihoods(
+        sites, C, f1r2_fraction_pseudocounts_k2=pseudocounts_k2, condition_on_ref_reads=True
+    )
+    # artifacts and the site of unknown ref F1R2 count are unchanged
+    assert torch.equal(conditioned_nk[:, :NUM_ARTIFACT_STATES], unconditioned_nk[:, :NUM_ARTIFACT_STATES])
+    (unknown,) = (sites.ref_f1r2_counts_n == UNKNOWN_REF_F1R2).nonzero().flatten().tolist()
+    assert torch.equal(conditioned_nk[unknown], unconditioned_nk[unknown])
+    # the non-artifact states' F1R2 fraction of the other is Beta(3 + 36, 17 + 4), under which 6 F1R2 alt reads are
+    # likely
+    known = 1 - unknown
+    af_alpha_k, af_beta_k = ALLELE_FRACTION_PSEUDOCOUNTS_K2[NUM_ARTIFACT_STATES:].numpy().T
+    expected_k = betabinom.logpmf(6, 46, af_alpha_k, af_beta_k) + betabinom.logpmf(6, 6, 39.0, 21.0)
+    assert np.allclose(conditioned_nk[known, NUM_ARTIFACT_STATES:].numpy(), expected_k)
+    assert torch.all(conditioned_nk[known, NUM_ARTIFACT_STATES:] > unconditioned_nk[known, NUM_ARTIFACT_STATES:] + 2)
+
+
+def test_non_artifact_f1r2_likelihoods_conditioned_on_ref_reads():
+    model = ReadOrientationModel(
+        "SAMPLE",
+        learn_priors(empty_counts()),
+        f1r2_fraction_pseudocounts_k2=non_artifact_f1r2_pseudocounts_k2(3.0, 17.0),
+    )
+    alt_counts_b, alt_f1r2_counts_b = torch.tensor([6.0, 6.0]), torch.tensor([6.0, 6.0])
+    # 40 ref reads, 36 of them F1R2, then unknown ref counts
+    ref_counts_b, ref_f1r2_counts_b = torch.tensor([40.0, math.nan]), torch.tensor([36.0, math.nan])
+    result_b = model.non_artifact_f1r2_log_likelihoods_b(
+        alt_counts_b, alt_f1r2_counts_b, ref_counts_b, ref_f1r2_counts_b
+    )
+    expected = [betabinom.logpmf(6, 6, 39.0, 21.0), betabinom.logpmf(6, 6, 3.0, 17.0)]
+    assert result_b.tolist() == pytest.approx(expected, rel=1e-5)  # float32
 
 
 def test_canonical_contexts():

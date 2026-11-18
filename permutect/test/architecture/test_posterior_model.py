@@ -371,6 +371,20 @@ def test_alt_reads_of_one_orientation_in_an_artifact_context_are_a_read_orientat
     assert torch.all(read_orientation_b[3:] < 0.01)
 
 
+def test_ref_reads_of_the_alt_reads_orientation_make_them_less_like_an_artifact():
+    # all 6 alt reads F1R2, as in the model's artifact, at sites with unknown ref orientation counts, with ref reads of
+    # both orientations, and with 90 of their 94 ref reads F1R2
+    model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=make_read_orientation_model())
+    batch = make_snv_batch([("ACG", "T", 6, 0)] * 3, SNV_VALUES)
+    batch.float_tensor[0, Data.REF_F1R2_COUNT.idx] = batch.float_tensor[0, Data.REF_F2R1_COUNT.idx] = math.nan
+    batch.float_tensor[1, Data.REF_F1R2_COUNT.idx], batch.float_tensor[1, Data.REF_F2R1_COUNT.idx] = 47, 47
+    batch.float_tensor[2, Data.REF_F1R2_COUNT.idx], batch.float_tensor[2, Data.REF_F2R1_COUNT.idx] = 90, 4
+    # relative to a non-artifact's: balanced ref reads make one-sided alt reads look more like an artifact, and ref
+    # reads skewed the same way make them over ten times less like one
+    relative_log_lks_b = model.spectra.read_orientation_log_likelihoods_b(batch)
+    assert relative_log_lks_b[1] > relative_log_lks_b[0] > relative_log_lks_b[2] + math.log(10)
+
+
 def test_read_orientation_artifacts_need_snvs_with_alt_orientation_counts():
     model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=make_read_orientation_model())
     batch = make_snv_batch([("ACG", "T", 6, 0)] * 3, SNV_VALUES)

@@ -7,6 +7,7 @@ import torch
 from permutect.read_orientation.f1r2_counts_reader import ALT_HISTOGRAM_KEY_COLUMNS
 from permutect.read_orientation.f1r2_counts_reader import CONTEXTS
 from permutect.read_orientation.f1r2_counts_reader import REF_HISTOGRAM_KEY_COLUMNS
+from permutect.read_orientation.f1r2_counts_reader import UNKNOWN_REF_F1R2
 from permutect.read_orientation.f1r2_counts_reader import Sites
 from permutect.read_orientation.f1r2_counts_reader import read_f1r2_counts
 from permutect.read_orientation.maf_mixtures import BALANCED_MIXTURE
@@ -83,6 +84,18 @@ def test_sites_with_maf_mixtures():
     assert Sites.of([[T, 2, 1, 30]], [1]).maf_mixtures_n.tolist() == [BALANCED_MIXTURE]
 
 
+def test_sites_with_ref_f1r2_counts():
+    # the same keys with different ref F1R2 counts are different sites, and sites without them have unknown ones
+    sites = Sites.of([[T, 2, 1, 30]] * 3, [1, 2, 4], ref_f1r2_counts_n=[10, 3, 10])
+    assert sites.counts_n.tolist() == [2, 5] and sites.ref_f1r2_counts_n.tolist() == [3, 10]
+    assert Sites.of([[T, 2, 1, 30]], [1]).ref_f1r2_counts_n.tolist() == [UNKNOWN_REF_F1R2]
+    # in the reverse complement's orientation, the F1R2 and F2R1 ref reads, 28 of them, swap too, unless unknown
+    reversed_sites = Sites.of(
+        [[T, 2, 1, 30]] * 2, [1, 1], ref_f1r2_counts_n=[10, UNKNOWN_REF_F1R2]
+    ).reverse_complement()
+    assert sorted(reversed_sites.ref_f1r2_counts_n.tolist()) == [UNKNOWN_REF_F1R2, 18]
+
+
 def test_maf_mixtures_of_sites(tmp_path):
     depths = [1, 2]
     ref_rows = [("chr1", 1, "ACG", [3, 0]), ("chr1", 1_000_001, "ACG", [0, 4])]
@@ -136,11 +149,15 @@ def test_inputs_are_summed(tmp_path):
     assert counts.max_depth == 4
     assert counts.sites.keys() == set(CONTEXTS)
     # sites without alt reads have the ref base as their alt base, and alt table sites with the same alt base, alt
-    # count, alt F1R2 count and depth are combined, whatever their ref F1R2 counts
+    # count, alt F1R2 count and depth are combined only if their ref F1R2 counts are the same too
     ref_sites = [(C, 0, 0, 1, 11), (C, 0, 0, 2, 2), (C, 0, 0, 3, 3), (C, 0, 0, 4, 5)]
     one_alt_read_sites = [(A, 1, 0, 3, 3), (T, 1, 1, 1, 1), (T, 1, 1, 2, 1), (T, 1, 1, 4, 2)]
-    alt_table_sites = [(T, 5, 4, 8, 1), (T, 5, 4, 15, 2), (T, 5, 4, 16, 1)]
+    alt_table_sites = [(T, 5, 4, 8, 1), (T, 5, 4, 15, 1), (T, 5, 4, 15, 1), (T, 5, 4, 16, 1)]
     assert rows(counts.sites["ACG"]) == sorted(ref_sites + one_alt_read_sites + alt_table_sites)
+    # the alt table sites' own ref F1R2 counts, and unknown ones for the histograms' sites
+    acg = counts.sites["ACG"]
+    assert sorted(acg.ref_f1r2_counts_n[acg.alt_counts_n >= 2].tolist()) == [2, 3, 5, 6]
+    assert set(acg.ref_f1r2_counts_n[acg.alt_counts_n < 2].tolist()) == {UNKNOWN_REF_F1R2}
     assert rows(counts.sites["TTT"]) == [(G, 2, 1, 9, 1), (T, 0, 0, 3, 5)]
     assert rows(counts.sites["CCC"]) == []
     assert rows(counts_by_sample["OTHER"].sites["ACG"]) == [(C, 0, 0, depth, depth) for depth in range(1, 5)]

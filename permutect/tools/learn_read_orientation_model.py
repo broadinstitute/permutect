@@ -17,7 +17,8 @@ def parse_arguments(argv=None):
         "reference context and its reverse complement get a prior over 8 artifact states, F1R2 or F2R1 for each alt "
         "base, and 4 non-artifact states, learned by expectation maximization.  Unlike GATK's, non-artifact sites' alt "
         "reads have the sample's baseline orientation, a beta-binomial fit to the F1R2 counts of the ref reads at the "
-        "alt tables' sites, in place of GATK's Beta(10, 10).  The output is a ReadOrientationModel of the priors and "
+        "alt tables' sites, in place of GATK's Beta(10, 10), and updated at each alt table site by its own ref reads.  "
+        "The output is a ReadOrientationModel of the priors and "
         "of the distributions of each state's alt count and alt F1R2 count, for filter_variants "
         "--read_orientation_model."
     )
@@ -97,7 +98,14 @@ def learn_read_orientation_model(
         )
         f1r2_pseudocounts_k2 = non_artifact_f1r2_pseudocounts_k2(*baseline.pseudocounts())
 
-    priors = learn_priors(counts, convergence_threshold, max_em_iterations, emission_model, f1r2_pseudocounts_k2)
+    priors = learn_priors(
+        counts,
+        convergence_threshold,
+        max_em_iterations,
+        emission_model,
+        f1r2_pseudocounts_k2,
+        condition_on_ref_reads=True,
+    )
     model = ReadOrientationModel(sample, priors, f1r2_fraction_pseudocounts_k2=f1r2_pseudocounts_k2)
     model.save(output_path)
 

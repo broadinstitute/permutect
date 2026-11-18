@@ -151,3 +151,12 @@ def test_baseline_orientation_is_fit_and_saved(tmp_path):
     saved_k2 = ReadOrientationModel.load(output).f1r2_fraction_pseudocounts_k2
     assert torch.allclose(saved_k2, expected_k2)
     assert not torch.allclose(saved_k2[NUM_ARTIFACT_STATES:], F1R2_FRACTION_PSEUDOCOUNTS_K2[NUM_ARTIFACT_STATES:])
+
+    # and the alt table sites' own ref reads update them in learning the priors
+    saved_priors = ReadOrientationModel.load(output).context_priors()
+    for condition_on_ref_reads in (True, False):
+        priors = learn_priors(
+            counts, f1r2_fraction_pseudocounts_k2=expected_k2, condition_on_ref_reads=condition_on_ref_reads
+        )
+        same = all(torch.allclose(priors[c].prior_k, saved_priors[c].prior_k) for c in priors)
+        assert same == condition_on_ref_reads

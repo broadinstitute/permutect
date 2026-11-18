@@ -282,13 +282,23 @@ def tumor_alt_orientation_counts(v: cyvcf2.Variant, tumor_sample_index: int) -> 
     The tumor's counts of reads of the first alt allele in F1R2 and in F2R1 orientation, from Mutect2's F1R2 and F2R1
     FORMAT annotations, each NaN if the record lacks it or its value is missing
     """
+    return tumor_orientation_counts(v, tumor_sample_index, allele=1)
+
+
+def tumor_ref_orientation_counts(v: cyvcf2.Variant, tumor_sample_index: int) -> tuple[float, float]:
+    """likewise the tumor's counts of ref reads in F1R2 and in F2R1 orientation"""
+    return tumor_orientation_counts(v, tumor_sample_index, allele=0)
+
+
+def tumor_orientation_counts(v: cyvcf2.Variant, tumor_sample_index: int, allele: int) -> tuple[float, float]:
+    """the tumor's counts of reads of an allele, 0 for the ref, in F1R2 and in F2R1 orientation"""
     counts = []
     for key in ("F1R2", "F2R1"):
         try:
             values = v.format(key)  # by sample, then by allele, ref first, or None if the record lacks the annotation
         except KeyError:  # the header doesn't declare the annotation
             values = None
-        count = np.nan if values is None else values[tumor_sample_index][1]
+        count = np.nan if values is None else values[tumor_sample_index][allele]
         # cyvcf2 gives a missing integer as htslib's most negative integer
         counts.append(float(count) if count >= 0 else np.nan)
     return counts[0], counts[1]

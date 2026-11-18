@@ -134,6 +134,8 @@ class PosteriorModelSpectra(nn.Module):
         """
         The log likelihood of each variant's alt count and alt F1R2 count given a read orientation artifact, relative to
         the likelihood of its alt F1R2 count given a non-artifact, a factor that every other call shares and leaves out.
+        A non-artifact's alt reads have the orientation of the site's ref reads, if their counts are known, and
+        otherwise the sample's baseline orientation.
         A read orientation artifact is a mixture of an F1R2 and an F2R1 artifact of the alt base, weighted by their
         priors.  It's 0 where the priors make the artifact impossible: without a read orientation model, and for a
         variant that isn't an SNV or lacks the alt orientation counts.
@@ -154,7 +156,12 @@ class PosteriorModelSpectra(nn.Module):
         artifact_log_lks_bo += model.artifact_f1r2_log_likelihoods_bo(alt_b, oriented_alt_counts_b, alt_f1r2_counts_b)
         log_prior_b = torch.logsumexp(log_priors_bo, dim=-1)
         log_lks_b = torch.logsumexp(log_priors_bo + artifact_log_lks_bo, dim=-1) - log_prior_b
-        log_lks_b -= model.non_artifact_f1r2_log_likelihoods_b(oriented_alt_counts_b, alt_f1r2_counts_b)
+        ref_f1r2_counts_b, ref_f2r1_counts_b = (
+            batch.get(field) for field in (Data.REF_F1R2_COUNT, Data.REF_F2R1_COUNT)
+        )
+        log_lks_b -= model.non_artifact_f1r2_log_likelihoods_b(
+            oriented_alt_counts_b, alt_f1r2_counts_b, ref_f1r2_counts_b + ref_f2r1_counts_b, ref_f1r2_counts_b
+        )
 
         is_snv_b = batch.get(Data.VARIANT_TYPE) == Variation.SNV
         possible_b = is_snv_b & has_alt_orientation_counts_b(batch) & torch.isfinite(log_prior_b)

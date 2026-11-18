@@ -23,6 +23,7 @@ from permutect.misc_utils import get_tumor_sample_index
 from permutect.misc_utils import str_repeat_count_change
 from permutect.misc_utils import str_repeat_lengths
 from permutect.misc_utils import tumor_alt_orientation_counts
+from permutect.misc_utils import tumor_ref_orientation_counts
 from permutect.segmentation.germline_model import GermlineModel
 from permutect.segmentation.germline_model import SampleSegmentation
 from permutect.segmentation.segmenter import Segment
@@ -292,10 +293,15 @@ def test_annotated_alt_orientation_counts_come_from_the_vcf():
     dataset = filter_variants.make_annotated_dataset(SEQC2_WES_PLAIN_TEXT_DATA, MUTECT2_SEQC2_WES_VCF, contig_names)
     vcf = cyvcf2.VCF(MUTECT2_SEQC2_WES_VCF)
     tumor_sample_index = get_tumor_sample_index(vcf)
-    vcf_counts = {encode_variant(v): tumor_alt_orientation_counts(v, tumor_sample_index) for v in vcf}
+    vcf_counts = {
+        encode_variant(v): tumor_alt_orientation_counts(v, tumor_sample_index)
+        + tumor_ref_orientation_counts(v, tumor_sample_index)
+        for v in vcf
+    }
     data = list(dataset.memory_mapped_data.generate())
     assert data
-    counts = np.array([(datum.get(Data.ALT_F1R2_COUNT), datum.get(Data.ALT_F2R1_COUNT)) for datum in data])
+    fields = (Data.ALT_F1R2_COUNT, Data.ALT_F2R1_COUNT, Data.REF_F1R2_COUNT, Data.REF_F2R1_COUNT)
+    counts = np.array([[datum.get(field) for field in fields] for datum in data])
     expected_counts = np.array([vcf_counts[encode_datum(datum, contig_names)] for datum in data])
     assert np.array_equal(counts, expected_counts, equal_nan=True)
     # Mutect2 annotates every variant, and most have alt reads of both orientations
