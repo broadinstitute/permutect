@@ -229,18 +229,6 @@ workflow Permutect {
     # likewise the F1R2 counts of Mutect2's scatters, which it makes with run_orientation_bias_mixture_model_filter
     Array[File] f1r2_counts = select_first([Mutect2.f1r2_counts, ExtractM2Outputs.f1r2_counts])
 
-    # A cache from a run without run_orientation_bias_mixture_model_filter has no F1R2 counts, and the task's
-    # non-empty array input then fails
-    if (run_orientation_bias_mixture_model_filter) {
-        call LearnReadOrientationModel {
-            input:
-                f1r2_counts = f1r2_counts,
-                permutect_docker = permutect_docker,
-                preemptible = preemptible,
-                max_retries = max_retries
-        }
-    }
-
     # without pileups, filter_variants uses minor allele fractions of 1/2 and default germline likelihoods
     if (defined(tumor_pileups)) {
         call SegmentPileups {
@@ -250,6 +238,19 @@ workflow Permutect {
                 segment_pileups_extra_args = segment_pileups_extra_args,
                 permutect_docker = permutect_docker,
                 mem = segment_pileups_mem,
+                preemptible = preemptible,
+                max_retries = max_retries
+        }
+    }
+
+    # A cache from a run without run_orientation_bias_mixture_model_filter has no F1R2 counts, and the task's
+    # non-empty array input then fails.  Without pileups, there is no germline model to pass along.
+    if (run_orientation_bias_mixture_model_filter) {
+        call LearnReadOrientationModel {
+            input:
+                f1r2_counts = f1r2_counts,
+                germline_model = SegmentPileups.germline_model,
+                permutect_docker = permutect_docker,
                 preemptible = preemptible,
                 max_retries = max_retries
         }
@@ -696,10 +697,11 @@ task SegmentPileups {
 }
 
 # learn the tumor's read orientation artifact model from the F1R2 counts of Mutect2's scatters, with priors learned as
-# GATK LearnReadOrientationModel learns them
+# GATK LearnReadOrientationModel learns them, given segment_pileups' GermlineModel if there is one
 task LearnReadOrientationModel {
     input {
         Array[File]+ f1r2_counts
+        File? germline_model
 
         String permutect_docker
         Int? preemptible
@@ -709,11 +711,12 @@ task LearnReadOrientationModel {
 
     # Mem is in units of GB but our runtime value is in MB.  The tool reads the counts without extracting them.
     Int machine_mem = if defined(mem) then mem * 1000 else 4000
-    Int disk_space = ceil(size(f1r2_counts, "GB")) + 10
+    Int disk_space = ceil(size(f1r2_counts, "GB") + size(germline_model, "GB")) + 10
 
     command <<<
         set -euo pipefail
-        learn_read_orientation_model --input ~{sep=" " f1r2_counts} --output read-orientation-model.pt
+        learn_read_orientation_model --input ~{sep=" " f1r2_counts} ~{"--germline_model " + germline_model} \
+            --output read-orientation-model.pt
     >>>
 
     runtime {

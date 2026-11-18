@@ -482,9 +482,11 @@ def test_archive_and_extract_m2_outputs(tmp_path, with_pileups, num_scatters_wit
     assert [open(path).read() for path in extracted_f1r2_counts] == expected_contents
 
 
-def test_learn_read_orientation_model_command(tmp_path):
-    # the arguments that the task gives learn_read_orientation_model, which writes the task's output
-    inputs = {"f1r2_counts": ["scatter-0/f1r2.tar.gz", "scatter-1/f1r2.tar.gz"]}
+@pytest.mark.parametrize("germline_model", ["germline-model.pt", None])
+def test_learn_read_orientation_model_command(tmp_path, germline_model):
+    # the arguments that the task gives learn_read_orientation_model, which writes the task's output, with segment_pileups'
+    # germline model if there is one
+    inputs = {"f1r2_counts": ["scatter-0/f1r2.tar.gz", "scatter-1/f1r2.tar.gz"], "germline_model": germline_model}
     command = fill_placeholders(task_command(PERMUTECT_WDL, "LearnReadOrientationModel"), inputs)
     fake_tool = '#!/bin/bash\nprintf "%s\\n" "$@" > arguments.txt\n'
     result = run_bash(command, tmp_path, {"learn_read_orientation_model": fake_tool})
@@ -492,6 +494,7 @@ def test_learn_read_orientation_model_command(tmp_path):
 
     arguments = learn_read_orientation_model.parse_arguments((tmp_path / "arguments.txt").read_text().split())
     assert getattr(arguments, constants.INPUT_NAME) == inputs["f1r2_counts"]
+    assert getattr(arguments, constants.GERMLINE_MODEL_NAME) == germline_model
     assert task_output_files(PERMUTECT_WDL, "LearnReadOrientationModel") == {
         "read_orientation_model": getattr(arguments, constants.OUTPUT_NAME)
     }

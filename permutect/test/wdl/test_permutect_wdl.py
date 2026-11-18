@@ -193,8 +193,11 @@ def check_cached_m2_outputs(
         assert (outputs["Permutect." + output] is not None) == (with_pileups and not tumor_only_mode)
 
     # with run_orientation_bias_mixture_model_filter, learn_read_orientation_model learns the model of the cached F1R2
-    # counts' sample, relabeled as the tumor sample
+    # counts' sample, relabeled as the tumor sample, given the germline model if there are pileups
     assert ("Permutect.LearnReadOrientationModel" in calls) == learn_read_orientation
+    if learn_read_orientation:
+        orientation_inputs = calls["Permutect.LearnReadOrientationModel"][0]["inputs"]
+        assert (orientation_inputs["germline_model"] is not None) == with_pileups
     read_orientation_model = outputs["Permutect.read_orientation_model"]
     assert (read_orientation_model is not None) == learn_read_orientation
     assert (filtering_inputs["read_orientation_model"] is not None) == learn_read_orientation

@@ -4,6 +4,7 @@ from permutect import constants
 from permutect.read_orientation.f1r2_counts_reader import read_f1r2_counts
 from permutect.read_orientation.read_orientation_model import ReadOrientationModel
 from permutect.read_orientation.read_orientation_model import learn_priors
+from permutect.segmentation.germline_model import GermlineModel
 
 
 def parse_arguments(argv=None):
@@ -24,6 +25,11 @@ def parse_arguments(argv=None):
     )
     parser.add_argument("--" + constants.OUTPUT_NAME, required=True, help="path to the output ReadOrientationModel")
     parser.add_argument(
+        "--" + constants.GERMLINE_MODEL_NAME,
+        help="optional GermlineModel from segment_pileups, whose segmentation of the sample by minor allele fraction "
+        "is to account for germline hets in regions of loss of heterozygosity.  Not used yet.",
+    )
+    parser.add_argument(
         "--" + constants.CONVERGENCE_THRESHOLD_NAME,
         type=float,
         default=1e-4,
@@ -39,17 +45,24 @@ def parse_arguments(argv=None):
 
 
 def main_without_parsing(args):
+    germline_model_path = getattr(args, constants.GERMLINE_MODEL_NAME)
     learn_read_orientation_model(
         input_tar_gzs=getattr(args, constants.INPUT_NAME),
         output_path=getattr(args, constants.OUTPUT_NAME),
         convergence_threshold=getattr(args, constants.CONVERGENCE_THRESHOLD_NAME),
         max_em_iterations=getattr(args, constants.MAX_EM_ITERATIONS_NAME),
+        germline_model=None if germline_model_path is None else GermlineModel.load(germline_model_path),
     )
 
 
 def learn_read_orientation_model(
-    input_tar_gzs, output_path, convergence_threshold: float = 1e-4, max_em_iterations: int = 20
+    input_tar_gzs,
+    output_path,
+    convergence_threshold: float = 1e-4,
+    max_em_iterations: int = 20,
+    germline_model: GermlineModel = None,
 ):
+    """germline_model, segment_pileups' segmentation of the sample by minor allele fraction, if any, isn't used yet"""
     counts_by_sample = read_f1r2_counts(input_tar_gzs)
     # Mutect2 collects the F1R2 counts of tumor samples, and Permutect calls one tumor
     if len(counts_by_sample) != 1:

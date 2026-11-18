@@ -8,6 +8,7 @@ import torch
 from permutect import constants
 from permutect.read_orientation.read_orientation_model import ReadOrientationModel
 from permutect.read_orientation.read_orientation_model import reverse_complement
+from permutect.segmentation.germline_model import GermlineModel
 from permutect.test.test_file_names import DREAM_TUMOR_4_F1R2_SCATTERS
 from permutect.test.test_file_names import DREAM_TUMOR_4_GATK_ORIENTATION_PRIORS
 from permutect.test.test_file_names import HAPMAP_F1R2_SCATTERS
@@ -78,3 +79,22 @@ def test_arguments():
     # GATK's defaults
     assert getattr(args, constants.CONVERGENCE_THRESHOLD_NAME) == 1e-4
     assert getattr(args, constants.MAX_EM_ITERATIONS_NAME) == 20
+    assert getattr(args, constants.GERMLINE_MODEL_NAME) is None
+
+
+def test_germline_model_is_passed_along(tmp_path, monkeypatch):
+    # the GermlineModel that segment_pileups saved, recognizable by its contamination
+    germline_model = str(tmp_path / "germline-model.pt")
+    GermlineModel(contamination=0.123).save(germline_model)
+    received = {}
+    monkeypatch.setattr(
+        learn_read_orientation_model, "learn_read_orientation_model", lambda **kwargs: received.update(kwargs)
+    )
+    arguments = ["--input", *HAPMAP_F1R2_SCATTERS, "--output", str(tmp_path / "model.pt")]
+
+    learn_read_orientation_model.main_without_parsing(learn_read_orientation_model.parse_arguments(arguments))
+    assert received["germline_model"] is None
+
+    arguments += ["--" + constants.GERMLINE_MODEL_NAME, germline_model]
+    learn_read_orientation_model.main_without_parsing(learn_read_orientation_model.parse_arguments(arguments))
+    assert received["germline_model"].contamination == pytest.approx(0.123)
