@@ -26,8 +26,9 @@ def parse_arguments(argv=None):
     parser.add_argument("--" + constants.OUTPUT_NAME, required=True, help="path to the output ReadOrientationModel")
     parser.add_argument(
         "--" + constants.GERMLINE_MODEL_NAME,
-        help="optional GermlineModel from segment_pileups, whose segmentation of the sample by minor allele fraction "
-        "is to account for germline hets in regions of loss of heterozygosity.  Not used yet.",
+        help="optional GermlineModel from segment_pileups of the same sample, whose segmentation of the sample by "
+        "minor allele fraction and emission model give the likelihoods of germline hets, accounting for hets in regions "
+        "of loss of heterozygosity.  Without it, germline hets have GATK's likelihoods.",
     )
     parser.add_argument(
         "--" + constants.CONVERGENCE_THRESHOLD_NAME,
@@ -62,8 +63,11 @@ def learn_read_orientation_model(
     max_em_iterations: int = 20,
     germline_model: GermlineModel = None,
 ):
-    """germline_model, segment_pileups' segmentation of the sample by minor allele fraction, if any, isn't used yet"""
-    counts_by_sample = read_f1r2_counts(input_tar_gzs)
+    """
+    Given germline_model, segment_pileups' model of the counts' sample, germline hets have the likelihoods of its emission
+    model at the minor allele fractions of its segmentation
+    """
+    counts_by_sample = read_f1r2_counts(input_tar_gzs, None if germline_model is None else germline_model.tumor)
     # Mutect2 collects the F1R2 counts of tumor samples, and Permutect calls one tumor
     if len(counts_by_sample) != 1:
         raise ValueError(
@@ -71,7 +75,12 @@ def learn_read_orientation_model(
             + ", ".join(sorted(counts_by_sample))
         )
     ((sample, counts),) = counts_by_sample.items()
-    model = ReadOrientationModel(sample, learn_priors(counts, convergence_threshold, max_em_iterations))
+    if germline_model is not None and germline_model.tumor.sample != sample:
+        raise ValueError(
+            f"The germline model is of sample {germline_model.tumor.sample}, but the F1R2 counts are of sample {sample}"
+        )
+    emission_model = None if germline_model is None else germline_model.tumor.emission_model
+    model = ReadOrientationModel(sample, learn_priors(counts, convergence_threshold, max_em_iterations, emission_model))
     model.save(output_path)
 
 

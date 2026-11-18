@@ -13,6 +13,10 @@ its reverse complement share their priors, with each F1R2 artifact state of one 
 other with the complementary alt base, eg F1R2_T of ACG to F2R1_A of CGT.  The data of each pair go to the
 lexicographically smaller, canonical context.
 
+Given segment_pileups' model of the sample, a germline het's alt count instead has the likelihood of that model's
+emissions, at the minor allele fraction (MAF) of the site's segment, or the mixture of MAFs of its block (see
+permutect.read_orientation.maf_mixtures).  This accounts for germline hets in regions of loss of heterozygosity.
+
 Since the likelihoods are fixed, learning the priors, which expectation maximization (EM) does as in GATK, is a mixture
 weights problem.
 
@@ -32,6 +36,8 @@ from permutect.read_orientation.f1r2_counts_reader import CONTEXTS
 from permutect.read_orientation.f1r2_counts_reader import ORIENTATIONS
 from permutect.read_orientation.f1r2_counts_reader import F1R2Counts
 from permutect.read_orientation.f1r2_counts_reader import Sites
+from permutect.read_orientation.maf_mixtures import MAF_GRID
+from permutect.segmentation.emissions import EmissionModel
 from permutect.utils.array_utils import flattened_indices
 from permutect.utils.array_utils import index_tensor
 from permutect.utils.stats_utils import beta_binomial_log_lk
@@ -41,6 +47,7 @@ ARTIFACT_STATES = tuple(f"{orientation}_{base}" for orientation in ORIENTATIONS 
 STATES = ARTIFACT_STATES + ("HOM_REF", "GERMLINE_HET", "SOMATIC_HET", "HOM_VAR")
 NUM_ARTIFACT_STATES, NUM_STATES = len(ARTIFACT_STATES), len(STATES)
 HOM_REF = STATES.index("HOM_REF")
+GERMLINE_HET = STATES.index("GERMLINE_HET")
 SOMATIC_HET = STATES.index("SOMATIC_HET")
 # the alt base (an index into BASES) of each artifact state
 ARTIFACT_ALT_BASES = torch.arange(len(BASES)).repeat(len(ORIENTATIONS))
@@ -93,20 +100,48 @@ def flat_prior(ref_base: int) -> Tensor:
     return possible_k / possible_k.sum()
 
 
+class GermlineHetLikelihoods:
+    """
+    The log likelihoods of germline hets' alt counts from segment_pileups' emission model of the sample, which has its
+    reference bias, contamination, error rate and concentration of hets, at the MAFs of the sites' MAF mixtures.  The
+    alt allele is on the minor haplotype, whose fraction of the alleles is the MAF, or on the major haplotype, each with
+    probability 1/2.  The sites' population allele frequencies, which the contaminant's expected alt fraction is, are
+    taken to be 0.
+    """
+
+    def __init__(self, emission_model: EmissionModel, maf_mixtures_mg: Tensor):
+        self.emission_model = emission_model
+        self.log_weights_mg = maf_mixtures_mg.log()
+
+    def __call__(self, sites: Sites) -> Tensor:
+        mafs_1g = torch.tensor(MAF_GRID, dtype=torch.float64).unsqueeze(0)
+        alt_counts_n1, depths_n1 = (x.double().unsqueeze(-1) for x in (sites.alt_counts_n, sites.depths_n))
+        with torch.no_grad():
+            _, minor_ng, major_ng, _ = self.emission_model.phased_genotype_log_likelihoods(
+                alt_counts_n1, depths_n1, torch.zeros((), dtype=torch.float64), mafs_1g
+            )
+        het_ng = torch.logaddexp(minor_ng, major_ng) - math.log(2)
+        return torch.logsumexp(het_ng + self.log_weights_mg[sites.maf_mixtures_n], dim=-1)
+
+
 def log_likelihoods(
     sites: Sites,
     ref_base: int,
     allele_fraction_pseudocounts_k2: Tensor = ALLELE_FRACTION_PSEUDOCOUNTS_K2,
     f1r2_fraction_pseudocounts_k2: Tensor = F1R2_FRACTION_PSEUDOCOUNTS_K2,
+    germline_het: GermlineHetLikelihoods = None,
 ) -> Tensor:
     """
     The log likelihood of each of the sites' alt count and alt F1R2 count given each state, in an (N, NUM_STATES)
-    tensor, -inf for impossible states
+    tensor, -inf for impossible states.  Given germline_het, germline hets' alt counts have its likelihoods instead of
+    the beta-binomial of their pseudocounts.
     """
     alt_counts_n1, alt_f1r2_counts_n1, depths_n1 = (
         x.double().unsqueeze(-1) for x in (sites.alt_counts_n, sites.alt_f1r2_counts_n, sites.depths_n)
     )
     allele_fraction_nk = beta_binomial_log_lk(depths_n1, alt_counts_n1, *allele_fraction_pseudocounts_k2.unbind(-1))
+    if germline_het is not None:
+        allele_fraction_nk[:, GERMLINE_HET] = germline_het(sites)
     f1r2_fraction_nk = beta_binomial_log_lk(
         alt_counts_n1, alt_f1r2_counts_n1, *f1r2_fraction_pseudocounts_k2.unbind(-1)
     )
@@ -126,14 +161,20 @@ class EMResult:
     converged: bool
 
 
-def learn_prior(sites: Sites, ref_base: int, convergence_threshold: float = 1e-4, max_iterations: int = 20) -> EMResult:
+def learn_prior(
+    sites: Sites,
+    ref_base: int,
+    convergence_threshold: float = 1e-4,
+    max_iterations: int = 20,
+    germline_het: GermlineHetLikelihoods = None,
+) -> EMResult:
     """
     The maximum a posteriori prior of the states of sites of a context with the given ref base, by EM as in GATK: the
     prior starts flat and is updated until it changes by at most the convergence threshold (Euclidean distance), or for
     at most max_iterations.  Each update adds the flat prior to the expected numbers of sites in each state as
-    pseudocounts.
+    pseudocounts.  Given germline_het, germline hets have its likelihoods (see log_likelihoods).
     """
-    log_likelihoods_nk = log_likelihoods(sites, ref_base)
+    log_likelihoods_nk = log_likelihoods(sites, ref_base, germline_het=germline_het)
     pseudocounts_k = flat_prior(ref_base)
     prior_k = pseudocounts_k
     for iteration in range(1, max_iterations + 1):
@@ -169,12 +210,18 @@ def canonical_sites(counts: F1R2Counts, context: str) -> Sites:
 
 
 def learn_priors(
-    counts: F1R2Counts, convergence_threshold: float = 1e-4, max_iterations: int = 20
+    counts: F1R2Counts,
+    convergence_threshold: float = 1e-4,
+    max_iterations: int = 20,
+    emission_model: EmissionModel = None,
 ) -> dict[str, ContextPrior]:
     """
     The prior of every context of a sample, by context.  As in GATK, a canonical context and its reverse complement keep
     the flat prior unless they have sites without alt reads and sites with two or more, which are in GATK's alt tables.
+    Given segment_pileups' emission model of the sample, germline hets have its likelihoods at the MAFs of the counts'
+    MAF mixtures.
     """
+    germline_het = None if emission_model is None else GermlineHetLikelihoods(emission_model, counts.maf_mixtures_mg)
     result = {}
     for context in CANONICAL_CONTEXTS:
         sites, ref_base = canonical_sites(counts, context), BASES.index(context[1])
@@ -185,7 +232,7 @@ def learn_priors(
             print(f"{description}, too few to learn from.  Using the flat prior.")
             prior = ContextPrior(context, flat_prior(ref_base), 0, 0)
         else:
-            em = learn_prior(sites, ref_base, convergence_threshold, max_iterations)
+            em = learn_prior(sites, ref_base, convergence_threshold, max_iterations, germline_het)
             outcome = f"converged in {em.num_iterations}" if em.converged else f"did not converge in {max_iterations}"
             print(f"{description}, EM {outcome} iterations")
             prior = ContextPrior(context, em.prior_k, sites.num_sites(), num_alt_sites)

@@ -9,6 +9,8 @@ from permutect import constants
 from permutect.read_orientation.read_orientation_model import ReadOrientationModel
 from permutect.read_orientation.read_orientation_model import reverse_complement
 from permutect.segmentation.germline_model import GermlineModel
+from permutect.segmentation.germline_model import SampleSegmentation
+from permutect.segmentation.segmenter import Segment
 from permutect.test.test_file_names import DREAM_TUMOR_4_F1R2_SCATTERS
 from permutect.test.test_file_names import DREAM_TUMOR_4_GATK_ORIENTATION_PRIORS
 from permutect.test.test_file_names import HAPMAP_F1R2_SCATTERS
@@ -98,3 +100,39 @@ def test_germline_model_is_passed_along(tmp_path, monkeypatch):
     arguments += ["--" + constants.GERMLINE_MODEL_NAME, germline_model]
     learn_read_orientation_model.main_without_parsing(learn_read_orientation_model.parse_arguments(arguments))
     assert received["germline_model"].contamination == pytest.approx(0.123)
+
+
+def test_germline_model(tmp_path):
+    # segment_pileups' model of the DREAM tumor, with chromosome 20 split into loss of heterozygosity and a balanced region
+    sample, _ = read_gatk_priors(DREAM_TUMOR_4_GATK_ORIENTATION_PRIORS)
+    segments = [Segment("20", 1, 30_000_000, 0.0, 0.0), Segment("20", 30_000_001, 63_025_520, 0.5, 0.5)]
+    germline_model = str(tmp_path / "germline-model.pt")
+    GermlineModel(SampleSegmentation(sample, segments)).save(germline_model)
+    arguments = ["--input", *DREAM_TUMOR_4_F1R2_SCATTERS]
+    with_germline_model, without = str(tmp_path / "with.pt"), str(tmp_path / "without.pt")
+    learn_read_orientation_model.main_without_parsing(
+        learn_read_orientation_model.parse_arguments(
+            [*arguments, "--output", with_germline_model, "--" + constants.GERMLINE_MODEL_NAME, germline_model]
+        )
+    )
+    learn_read_orientation_model.main_without_parsing(
+        learn_read_orientation_model.parse_arguments([*arguments, "--output", without])
+    )
+
+    # the germline hets' likelihoods change the priors, but not where there's too little data to learn from
+    priors, priors_without = (
+        ReadOrientationModel.load(path).context_priors() for path in (with_germline_model, without)
+    )
+    changed = [
+        context for context in priors if not torch.equal(priors[context].prior_k, priors_without[context].prior_k)
+    ]
+    assert changed and all(priors_without[context].num_sites > 0 for context in changed)
+
+
+def test_germline_model_of_another_sample_is_an_error(tmp_path):
+    germline_model = str(tmp_path / "germline-model.pt")
+    GermlineModel(SampleSegmentation("ANOTHER_SAMPLE")).save(germline_model)
+    arguments = ["--input", *DREAM_TUMOR_4_F1R2_SCATTERS, "--output", str(tmp_path / "model.pt")]
+    arguments += ["--" + constants.GERMLINE_MODEL_NAME, germline_model]
+    with pytest.raises(ValueError, match="germline model is of sample ANOTHER_SAMPLE"):
+        learn_read_orientation_model.main_without_parsing(learn_read_orientation_model.parse_arguments(arguments))

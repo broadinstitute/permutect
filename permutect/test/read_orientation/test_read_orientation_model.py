@@ -9,16 +9,19 @@ from permutect.read_orientation.f1r2_counts_reader import BASES
 from permutect.read_orientation.f1r2_counts_reader import CONTEXTS
 from permutect.read_orientation.f1r2_counts_reader import F1R2Counts
 from permutect.read_orientation.f1r2_counts_reader import Sites
+from permutect.read_orientation.maf_mixtures import MAF_GRID
 from permutect.read_orientation.read_orientation_model import ALLELE_FRACTION_PSEUDOCOUNTS_K2
 from permutect.read_orientation.read_orientation_model import ARTIFACT_STATES
 from permutect.read_orientation.read_orientation_model import CANONICAL_CONTEXTS
 from permutect.read_orientation.read_orientation_model import F1R2_FRACTION_PSEUDOCOUNTS_K2
+from permutect.read_orientation.read_orientation_model import GERMLINE_HET
 from permutect.read_orientation.read_orientation_model import HOM_REF
 from permutect.read_orientation.read_orientation_model import NUM_STATES
 from permutect.read_orientation.read_orientation_model import REVERSE_COMPLEMENT_STATES_K
 from permutect.read_orientation.read_orientation_model import SOMATIC_HET
 from permutect.read_orientation.read_orientation_model import STATES
 from permutect.read_orientation.read_orientation_model import ContextPrior
+from permutect.read_orientation.read_orientation_model import GermlineHetLikelihoods
 from permutect.read_orientation.read_orientation_model import ReadOrientationModel
 from permutect.read_orientation.read_orientation_model import artifact_states_bo
 from permutect.read_orientation.read_orientation_model import canonical_sites
@@ -28,6 +31,7 @@ from permutect.read_orientation.read_orientation_model import learn_priors
 from permutect.read_orientation.read_orientation_model import log_likelihoods
 from permutect.read_orientation.read_orientation_model import posteriors
 from permutect.read_orientation.read_orientation_model import reverse_complement
+from permutect.segmentation.emissions import EmissionModel
 
 A, C, G, T = range(4)
 
@@ -39,6 +43,60 @@ def empty_counts() -> F1R2Counts:
 def add_sites(counts: F1R2Counts, context: str, alt_bases_n, alt_counts_n, alt_f1r2_counts_n, depths_n):
     keys_n4 = np.column_stack([alt_bases_n, alt_counts_n, alt_f1r2_counts_n, depths_n])
     counts.sites[context] += Sites.of(keys_n4, np.ones(len(keys_n4)))
+
+
+def emission_het_log_likelihood(emission_model: EmissionModel, alt_count: int, depth: int, maf: float) -> float:
+    """a germline het's log likelihood from an emission model: its alt allele is on either haplotype, with probability 1/2"""
+    with torch.no_grad():
+        _, minor, major, _ = emission_model.phased_genotype_log_likelihoods(
+            *(torch.tensor(float(x), dtype=torch.float64) for x in (alt_count, depth, 0, maf))
+        )
+    return math.log(0.5 * math.exp(minor.item()) + 0.5 * math.exp(major.item()))
+
+
+def test_germline_het_likelihoods():
+    emission_model = EmissionModel(contamination=0.02, het_concentration=50.0, reference_bias=1.1)
+    # the grid MAFs alone, then a mixture of 30% MAF 0.1 and 70% MAF 0.5
+    mixture = torch.zeros(1, len(MAF_GRID), dtype=torch.float64)
+    mixture[0, [MAF_GRID.index(0.1), MAF_GRID.index(0.5)]] = torch.tensor([0.3, 0.7], dtype=torch.float64)
+    germline_het = GermlineHetLikelihoods(
+        emission_model, torch.cat([torch.eye(len(MAF_GRID), dtype=torch.float64), mixture])
+    )
+    keys = [[C, 0, 0, 30], [T, 3, 1, 30], [T, 15, 8, 30], [T, 3, 1, 30]]
+    sites = Sites.of(
+        keys, [1] * len(keys), [MAF_GRID.index(0.01), MAF_GRID.index(0.1), MAF_GRID.index(0.5), len(MAF_GRID)]
+    )
+
+    for (_, alt_count, _, depth), mixture_index, result in zip(
+        sites.keys_n4.tolist(), sites.maf_mixtures_n.tolist(), germline_het(sites).tolist()
+    ):
+        if mixture_index < len(MAF_GRID):
+            expected = emission_het_log_likelihood(emission_model, alt_count, depth, MAF_GRID[mixture_index])
+        else:
+            likelihood_01, likelihood_05 = (
+                math.exp(emission_het_log_likelihood(emission_model, alt_count, depth, maf)) for maf in (0.1, 0.5)
+            )
+            expected = math.log(0.3 * likelihood_01 + 0.7 * likelihood_05)
+        assert result == pytest.approx(expected, rel=1e-9)
+
+    # in loss of heterozygosity, a het without alt reads is likely, its alt allele on the lost haplotype, unlike at MAF 1/2
+    assert (
+        emission_het_log_likelihood(emission_model, 0, 30, 0.01)
+        > emission_het_log_likelihood(emission_model, 0, 30, 0.5) + 5
+    )
+
+
+def test_germline_het_likelihoods_replace_only_the_germline_het_allele_fraction():
+    sites = Sites.of([[C, 0, 0, 40], [T, 5, 5, 50], [G, 30, 2, 60]], [1, 1, 1], [0, 13, 7])
+    germline_het = GermlineHetLikelihoods(EmissionModel(), torch.eye(len(MAF_GRID), dtype=torch.float64))
+    without_nk = log_likelihoods(sites, ref_base=C)
+    with_nk = log_likelihoods(sites, ref_base=C, germline_het=germline_het)
+    others = [k for k in range(NUM_STATES) if k != GERMLINE_HET]
+    assert torch.equal(with_nk[:, others], without_nk[:, others])
+    # GATK's beta-binomial allele fraction gives way, and the F1R2 term stays
+    alpha, beta = ALLELE_FRACTION_PSEUDOCOUNTS_K2[GERMLINE_HET].tolist()
+    gatk_n = torch.tensor(betabinom.logpmf(sites.alt_counts_n.numpy(), sites.depths_n.numpy(), alpha, beta))
+    assert torch.allclose(with_nk[:, GERMLINE_HET], without_nk[:, GERMLINE_HET] - gatk_n + germline_het(sites))
 
 
 def test_canonical_contexts():
