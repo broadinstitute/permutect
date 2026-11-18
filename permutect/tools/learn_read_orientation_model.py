@@ -1,26 +1,25 @@
 import argparse
 
 from permutect import constants
-from permutect.read_orientation.baseline_orientation import fit_baseline_orientation
+from permutect.read_orientation.capture_bias import fit_capture_bias
 from permutect.read_orientation.f1r2_counts_reader import read_f1r2_counts
-from permutect.read_orientation.read_orientation_model import F1R2_FRACTION_PSEUDOCOUNTS_K2
-from permutect.read_orientation.read_orientation_model import ReadOrientationModel
-from permutect.read_orientation.read_orientation_model import learn_priors
-from permutect.read_orientation.read_orientation_model import non_artifact_f1r2_pseudocounts_k2
+from permutect.read_orientation.read_orientation_model import DEFAULT_CAPTURE_PSEUDOCOUNTS
+from permutect.read_orientation.read_orientation_model import fit_read_orientation_model
 from permutect.segmentation.germline_model import GermlineModel
 
 
 def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(
-        description="Learn a sample's read orientation artifact model, as GATK LearnReadOrientationModel does, from its "
-        "F1R2 counts from Mutect2 --f1r2-tar-gz or CollectF1R2Counts, eg those of each scatter of a run.  Each 3-base "
-        "reference context and its reverse complement get a prior over 8 artifact states, F1R2 or F2R1 for each alt "
-        "base, and 4 non-artifact states, learned by expectation maximization.  Unlike GATK's, non-artifact sites' alt "
-        "reads have the sample's baseline orientation, a beta-binomial fit to the F1R2 counts of the ref reads at the "
-        "alt tables' sites, in place of GATK's Beta(10, 10), and updated at each alt table site by its own ref reads.  "
-        "The output is a ReadOrientationModel of the priors and "
-        "of the distributions of each state's alt count and alt F1R2 count, for filter_variants "
-        "--read_orientation_model."
+        description="Learn a sample's read orientation artifact model, which plays the role of GATK "
+        "LearnReadOrientationModel's, from its F1R2 counts from Mutect2 --f1r2-tar-gz or CollectF1R2Counts, eg those of "
+        "each scatter of a run.  The model is generative: hybrid capture splits a site's reads between F1R2 and F2R1, "
+        "from the + and - strands of the original DNA, by the sample's capture bias, a beta-binomial fit to the reads "
+        "of the alt tables' sites; a real variant's alt reads are in both orientations in proportion; and every strand "
+        "of every site is damaged at some rate, which puts alt reads in its own orientation.  Each of the 192 physical "
+        "damage processes, the damaged strand's 3-base context and the base it comes to read, gets a distribution of "
+        "its rate across sites, with a shared hierarchical prior, and each pair of a context and its reverse complement "
+        "a prior of the genotypes, learned by expectation maximization.  The output is a ReadOrientationModel for "
+        "filter_variants --read_orientation_model, whose damage is part of the likelihood of a sequencing error."
     )
     parser.add_argument(
         "--" + constants.INPUT_NAME,
@@ -70,8 +69,9 @@ def learn_read_orientation_model(
     germline_model: GermlineModel = None,
 ):
     """
-    Given germline_model, segment_pileups' model of the counts' sample, germline hets have the likelihoods of its emission
-    model at the minor allele fractions of its segmentation
+    The read orientation model of the sample of the F1R2 counts in input_tar_gzs, saved to output_path.  Given
+    germline_model, segment_pileups' model of the counts' sample, germline hets have the likelihoods of its emission
+    model at the minor allele fractions of its segmentation.
     """
     counts_by_sample = read_f1r2_counts(input_tar_gzs, None if germline_model is None else germline_model.tumor)
     # Mutect2 collects the F1R2 counts of tumor samples, and Permutect calls one tumor
@@ -87,26 +87,20 @@ def learn_read_orientation_model(
         )
     emission_model = None if germline_model is None else germline_model.tumor.emission_model
 
-    baseline = fit_baseline_orientation(counts.ref_orientations)
-    if baseline is None:
-        print("No ref reads at the alt tables' sites, so non-artifact sites keep GATK's F1R2 pseudocounts (10, 10)")
-        f1r2_pseudocounts_k2 = F1R2_FRACTION_PSEUDOCOUNTS_K2
+    capture = fit_capture_bias(counts.capture_counts)
+    if capture is None:
+        print(f"No alt table sites to fit the capture bias to, so it is Beta{DEFAULT_CAPTURE_PSEUDOCOUNTS}")
+        capture_pseudocounts = DEFAULT_CAPTURE_PSEUDOCOUNTS
     else:
         print(
-            f"Baseline orientation, from the ref reads of {counts.ref_orientations.num_sites()} sites: F1R2 fraction "
-            f"{baseline.f1r2_fraction.item():.3f}, concentration {baseline.concentration.item():.1f}"
+            f"Capture bias, from the reads of {counts.capture_counts.num_sites()} sites: F1R2 fraction "
+            f"{capture.f1r2_fraction.item():.3f}, concentration {capture.concentration.item():.1f}"
         )
-        f1r2_pseudocounts_k2 = non_artifact_f1r2_pseudocounts_k2(*baseline.pseudocounts())
+        capture_pseudocounts = capture.pseudocounts()
 
-    priors = learn_priors(
-        counts,
-        convergence_threshold,
-        max_em_iterations,
-        emission_model,
-        f1r2_pseudocounts_k2,
-        condition_on_ref_reads=True,
+    model = fit_read_orientation_model(
+        counts, capture_pseudocounts, emission_model, convergence_threshold, max_em_iterations
     )
-    model = ReadOrientationModel(sample, priors, f1r2_fraction_pseudocounts_k2=f1r2_pseudocounts_k2)
     model.save(output_path)
 
 

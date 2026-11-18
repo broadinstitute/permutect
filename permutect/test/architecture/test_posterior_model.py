@@ -14,13 +14,10 @@ from permutect.data.count_binning import NUM_ALT_COUNT_BINS
 from permutect.data.count_binning import alt_count_bin_name
 from permutect.data.datum import Data
 from permutect.read_orientation.f1r2_counts_reader import BASES
-from permutect.read_orientation.read_orientation_model import CANONICAL_CONTEXTS
-from permutect.read_orientation.read_orientation_model import HOM_REF
-from permutect.read_orientation.read_orientation_model import STATES
-from permutect.read_orientation.read_orientation_model import ContextPrior
+from permutect.read_orientation.read_orientation_model import CONTEXT_INDICES
+from permutect.read_orientation.read_orientation_model import NUM_BASES
+from permutect.read_orientation.read_orientation_model import NUM_CONTEXTS
 from permutect.read_orientation.read_orientation_model import ReadOrientationModel
-from permutect.read_orientation.read_orientation_model import flat_prior
-from permutect.read_orientation.read_orientation_model import reverse_complement
 from permutect.segmentation.emissions import EmissionModel
 from permutect.segmentation.germline_model import GermlineModel
 from permutect.segmentation.germline_model import SampleSegmentation
@@ -292,20 +289,15 @@ def test_learning_leaves_the_germline_model_unchanged():
     assert not any(parameter.requires_grad for parameter in germline_model.parameters())
 
 
-def make_read_orientation_model(artifact_prior: float = 0.01, sample: str = "TUMOR") -> ReadOrientationModel:
+def make_read_orientation_model(damage_mean: float = 0.1, sample: str = "TUMOR") -> ReadOrientationModel:
     """
-    A model of a sample's read orientation artifacts in which an F1R2 artifact of ACG's ref C to T, as from deamination
-    of one strand, has the given prior, and every other artifact is very unlikely
+    A model of a sample in which damage ACG -> ATG, the deamination of the C of ACG on whichever strand reads ACG, has
+    rates Beta(2, 18) for the default mean 0.1, and every other physical process has rates of mean 1e-5
     """
-    priors = {}
-    for context in CANONICAL_CONTEXTS:
-        prior_k = 1e-8 * flat_prior(BASES.index(context[1]))
-        if context == "ACG":
-            prior_k[STATES.index("F1R2_T")] = artifact_prior
-        prior_k[HOM_REF] = 1 - prior_k.sum() + prior_k[HOM_REF]
-        prior = ContextPrior(context, prior_k, num_sites=1000, num_alt_sites=100)
-        priors[context], priors[reverse_complement(context)] = prior, prior.reverse_complement()
-    return ReadOrientationModel(sample, priors)
+    pseudocounts_ca2 = torch.tensor([1e-5 * 1000, (1 - 1e-5) * 1000], dtype=torch.float64)
+    pseudocounts_ca2 = pseudocounts_ca2.expand(NUM_CONTEXTS, NUM_BASES, 2).clone()
+    pseudocounts_ca2[CONTEXT_INDICES["ACG"], BASES.index("T")] = torch.tensor([damage_mean, 1 - damage_mean]) * 20
+    return ReadOrientationModel(sample, pseudocounts_ca2)
 
 
 def make_snv_batch(snvs: list[tuple[str, str, int, int]], values: dict) -> Batch:
@@ -325,112 +317,92 @@ def make_snv_batch(snvs: list[tuple[str, str, int, int]], values: dict) -> Batch
     return batch
 
 
-# 6 alt reads of 100, too many for sequencing error, at a site whose normal has none, so that it can't be a normal
-# artifact, with an artifact logit that doesn't favor an artifact or a non-artifact
+# 6 alt reads of 100, too many for Mutect2's sequencing error, at a site whose normal has none, so that it can't be a
+# normal artifact, with an artifact logit that doesn't favor an artifact or a non-artifact
 SNV_VALUES = PLAUSIBLE_VALUES | {
     Data.ORIGINAL_DEPTH: 100,
     Data.ORIGINAL_ALT_COUNT: 6,
     Data.ORIGINAL_NORMAL_ALT_COUNT: 0,
     Data.SEQ_ERROR_LOG_LK: -30,
     Data.CACHED_ARTIFACT_LOGIT: 0,
+    # the 94 ref reads, half of them in each orientation
+    Data.REF_F1R2_COUNT: 47,
+    Data.REF_F2R1_COUNT: 47,
 }
 
 
-def test_read_orientation_artifacts_are_impossible_without_a_model():
-    # and the read orientation model changes the likelihoods of no other call
+def test_seq_error_is_mutect2s_without_a_read_orientation_model():
+    # and given one, damage changes SEQ_ERROR's likelihood alone
     batch = make_snv_batch([("ACG", "T", 6, 0)], SNV_VALUES)
     without_model = make_posterior_model("cpu")
     with_model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=make_read_orientation_model())
-    log_priors_bc, spectra_bc, normal_bc, log_posteriors_bc = without_model.log_posterior_and_ingredients(batch)
-    assert log_priors_bc[0, Call.READ_ORIENTATION].item() == pytest.approx(constants.IMPOSSIBLE_LOG_PROB, abs=1)
-    assert spectra_bc[0, Call.READ_ORIENTATION].item() == 0
-    assert without_model.posterior_probabilities_bc(batch)[0, Call.READ_ORIENTATION].item() == 0
+    log_priors_bc, spectra_bc, normal_bc, _ = without_model.log_posterior_and_ingredients(batch)
+    assert spectra_bc[0, Call.SEQ_ERROR].item() == SNV_VALUES[Data.SEQ_ERROR_LOG_LK]
 
-    _, model_spectra_bc, model_normal_bc, _ = with_model.log_posterior_and_ingredients(batch)
-    other_calls = [call for call in Call if call != Call.READ_ORIENTATION]
+    model_log_priors_bc, model_spectra_bc, model_normal_bc, _ = with_model.log_posterior_and_ingredients(batch)
+    other_calls = [call for call in Call if call != Call.SEQ_ERROR]
     assert torch.equal(spectra_bc[:, other_calls], model_spectra_bc[:, other_calls])
-    assert torch.equal(normal_bc, model_normal_bc)
+    assert torch.equal(normal_bc, model_normal_bc) and torch.equal(log_priors_bc, model_log_priors_bc)
+    assert model_spectra_bc[0, Call.SEQ_ERROR].item() > spectra_bc[0, Call.SEQ_ERROR].item() + 10
 
 
-def test_alt_reads_of_one_orientation_in_an_artifact_context_are_a_read_orientation_artifact():
+def test_alt_reads_of_one_orientation_from_a_damaging_process_are_seq_errors():
     model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=make_read_orientation_model())
     snvs = [
-        ("ACG", "T", 6, 0),  # an F1R2 C to T in ACG, the model's artifact
-        ("CGT", "A", 0, 6),  # the same on the other strand: an F2R1 G to A in CGT, the reverse complement of ACG
+        ("ACG", "T", 6, 0),  # ACG -> ATG of the + strand, the model's damage, which puts alt reads in F1R2 orientation
+        ("CGT", "A", 0, 6),  # ACG -> ATG of the - strand, which reads ACG at a site of CGT, in F2R1 orientation
         ("ACG", "T", 3, 3),  # alt reads of both orientations
-        ("ACG", "T", 0, 6),  # an F2R1 C to T in ACG, which the model makes very unlikely
-        ("ACA", "T", 6, 0),  # an F1R2 C to T in another context
+        ("ACG", "T", 0, 6),  # CGT -> CAT of the - strand, which the model makes rare
+        ("ACA", "T", 6, 0),  # ACA -> ATA of the + strand, rare too
     ]
     batch = make_snv_batch(snvs, SNV_VALUES)
-    read_orientation_b = model.posterior_probabilities_bc(batch)[:, Call.READ_ORIENTATION]
-    assert read_orientation_b[0].item() > 0.99
-    assert read_orientation_b[1].item() == pytest.approx(read_orientation_b[0].item())
-    # alt reads of both orientations are thousands of times less likely for the artifact, but its prior here is hundreds
-    # of times the somatic prior
-    assert read_orientation_b[2].item() < 0.1
-    assert torch.all(read_orientation_b[3:] < 0.01)
+    seq_error_b = model.posterior_probabilities_bc(batch)[:, Call.SEQ_ERROR]
+    assert seq_error_b[0].item() > 0.99
+    assert seq_error_b[1].item() == pytest.approx(seq_error_b[0].item())
+    # alt reads of both orientations need damage of the - strand too, at a rate around 3 / 47, which is rare
+    assert seq_error_b[2].item() < 0.2
+    assert torch.all(seq_error_b[3:] < 0.01)
 
 
-def test_ref_reads_of_the_alt_reads_orientation_make_them_less_like_an_artifact():
-    # all 6 alt reads F1R2, as in the model's artifact, at sites with unknown ref orientation counts, with ref reads of
-    # both orientations, and with 90 of their 94 ref reads F1R2
+def test_capture_bias_toward_the_alt_reads_orientation_makes_them_less_like_damage():
+    # all 6 alt reads F1R2, as from the model's damage, with ref reads of both orientations, with 90 of the 94 F1R2, as
+    # capture bias can make them, and without ref orientation counts, which leaves Mutect2's sequencing error alone
     model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=make_read_orientation_model())
     batch = make_snv_batch([("ACG", "T", 6, 0)] * 3, SNV_VALUES)
-    batch.float_tensor[0, Data.REF_F1R2_COUNT.idx] = batch.float_tensor[0, Data.REF_F2R1_COUNT.idx] = math.nan
-    batch.float_tensor[1, Data.REF_F1R2_COUNT.idx], batch.float_tensor[1, Data.REF_F2R1_COUNT.idx] = 47, 47
-    batch.float_tensor[2, Data.REF_F1R2_COUNT.idx], batch.float_tensor[2, Data.REF_F2R1_COUNT.idx] = 90, 4
-    # relative to a non-artifact's: balanced ref reads make one-sided alt reads look more like an artifact, and ref
-    # reads skewed the same way make them over ten times less like one
-    relative_log_lks_b = model.spectra.read_orientation_log_likelihoods_b(batch)
-    assert relative_log_lks_b[1] > relative_log_lks_b[0] > relative_log_lks_b[2] + math.log(10)
+    batch.float_tensor[1, Data.REF_F1R2_COUNT.idx], batch.float_tensor[1, Data.REF_F2R1_COUNT.idx] = 90, 4
+    batch.float_tensor[2, Data.REF_F1R2_COUNT.idx] = batch.float_tensor[2, Data.REF_F2R1_COUNT.idx] = math.nan
+    seq_error_b = model.spectra.seq_error_log_likelihoods_b(batch)
+    assert seq_error_b[0] > seq_error_b[1] + math.log(10)
+    assert seq_error_b[2].item() == SNV_VALUES[Data.SEQ_ERROR_LOG_LK]
 
 
-def test_read_orientation_artifacts_need_snvs_with_alt_orientation_counts():
+def test_damage_needs_snvs_with_orientation_counts():
     model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=make_read_orientation_model())
-    batch = make_snv_batch([("ACG", "T", 6, 0)] * 3, SNV_VALUES)
+    batch = make_snv_batch([("ACG", "T", 6, 0)] * 4, SNV_VALUES)
     batch.float_tensor[1, Data.ALT_F1R2_COUNT.idx] = math.nan  # not annotated from the VCF
-    batch.int_tensor[2, Data.VARIANT_TYPE.idx] = Variation.INSERTION
-    log_priors_bc, spectra_bc, _, _ = model.log_posterior_and_ingredients(batch)
-    assert log_priors_bc[0, Call.READ_ORIENTATION].item() > -10
-    impossible_b = log_priors_bc[1:, Call.READ_ORIENTATION]
-    assert torch.allclose(impossible_b, torch.full_like(impossible_b, constants.IMPOSSIBLE_LOG_PROB), atol=1)
-    assert torch.all(spectra_bc[1:, Call.READ_ORIENTATION] == 0)
+    batch.float_tensor[2, Data.REF_F2R1_COUNT.idx] = math.nan
+    batch.int_tensor[3, Data.VARIANT_TYPE.idx] = Variation.INSERTION
+    seq_error_b = model.spectra.seq_error_log_likelihoods_b(batch)
+    assert seq_error_b[0].item() > SNV_VALUES[Data.SEQ_ERROR_LOG_LK] + 10
+    assert torch.all(seq_error_b[1:] == SNV_VALUES[Data.SEQ_ERROR_LOG_LK])
+    assert torch.equal(seq_error_b, model.spectra.seq_error_log_likelihoods_b(batch, with_damage=True))
+    assert torch.all(model.spectra.seq_error_log_likelihoods_b(batch, with_damage=False) == -30)
     assert_no_nan(model, batch)
 
 
-@pytest.mark.parametrize("overlap", [1e-6, 0.25, 1 - 1e-6])
-def test_read_orientation_reads_likelihood_interpolates_between_non_artifact_and_artifact(overlap):
-    # relative to a non-artifact's: 1 if the reads of a read orientation artifact look like a non-artifact's, the
-    # relative likelihood exp(artifact logit) of an artifact's if they look like an artifact's, or a mixture of the two
+def test_known_artifacts_rule_out_seq_errors_from_damage():
     model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=make_read_orientation_model())
-    with torch.no_grad():
-        model.read_orientation_artifact_overlap = torch.tensor(overlap)
-    artifact_logits_b = torch.tensor([-5.0, 0.0, 3.0], dtype=torch.float64)
-    result_b = model.read_orientation_reads_log_likelihoods_b(artifact_logits_b)
-    expected_b = torch.log(overlap * torch.exp(artifact_logits_b) + 1 - overlap)
-    assert torch.allclose(result_b, expected_b, atol=1e-6)
-
-
-def test_known_artifacts_rule_out_read_orientation_artifacts():
-    # but negative artifact logits, which rule out other artifacts, don't
-    model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=make_read_orientation_model())
-    batch = make_snv_batch([("ACG", "T", 6, 0)] * 2, SNV_VALUES)
+    batch = make_snv_batch([("ACG", "T", 6, 0)], SNV_VALUES)
     batch.float_tensor[0, Data.CACHED_ARTIFACT_LOGIT.idx] = math.inf
-    batch.float_tensor[1, Data.CACHED_ARTIFACT_LOGIT.idx] = -5
-    log_posteriors_bc = model.log_relative_posteriors_bc(batch)
-    assert log_posteriors_bc[0, Call.READ_ORIENTATION].item() == constants.IMPOSSIBLE_LOG_PROB
-    assert log_posteriors_bc[1, Call.ARTIFACT].item() == constants.IMPOSSIBLE_LOG_PROB
-    assert log_posteriors_bc[1, Call.READ_ORIENTATION].item() > -50
+    assert model.log_relative_posteriors_bc(batch)[0, Call.SEQ_ERROR].item() == constants.IMPOSSIBLE_LOG_PROB
 
 
-def test_learning_fits_the_read_orientation_artifact_overlap_and_leaves_the_read_orientation_model_unchanged():
+def test_learning_leaves_the_read_orientation_model_unchanged():
     read_orientation_model = make_read_orientation_model()
     model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=read_orientation_model)
     before = {name: buffer.clone() for name, buffer in read_orientation_model.named_buffers()}
-    # read orientation artifacts whose reads look like artifacts' to the artifact model
     loader = [make_snv_batch([("ACG", "T", 6, 0)] * 4, SNV_VALUES | {Data.CACHED_ARTIFACT_LOGIT: 3})]
     model.learn_priors_and_spectra(loader, num_iterations=2, ignored_to_non_ignored_ratio=10, learning_rate=0.1)
-    assert model.read_orientation_artifact_overlap.item() > 0.5
     assert all(torch.equal(before[name], buffer) for name, buffer in read_orientation_model.named_buffers())
 
 

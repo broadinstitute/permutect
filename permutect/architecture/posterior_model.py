@@ -1,14 +1,11 @@
 import torch
 from matplotlib import pyplot as plt
 from torch import Tensor
-from torch.nn import Parameter
-from torch.nn.utils import parametrize
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.autonotebook import tqdm
 from tqdm.autonotebook import trange
 
 from permutect import constants
-from permutect.architecture.parameterizations import BoundedNumber
 from permutect.architecture.posterior_model_priors import PosteriorModelPriors
 from permutect.architecture.spectra.posterior_model_spectra import PosteriorModelSpectra
 from permutect.data.batch import Batch
@@ -78,8 +75,8 @@ class PosteriorModel(torch.nn.Module):
         """
         :param germline_model: from segment_pileups, for germline likelihoods.  Without one, the MAF is 1/2
         everywhere and the germline likelihoods have default parameters.
-        :param read_orientation_model: from learn_read_orientation_model, for the priors and likelihoods of read
-        orientation artifacts.  Without one, read orientation artifacts are impossible.
+        :param read_orientation_model: from learn_read_orientation_model, for the likelihood of an SNV's alt reads from
+        damage, which is part of SEQ_ERROR's likelihood.  Without one, SEQ_ERROR's likelihood is Mutect2's alone.
         :param slippage_model: which variants can be slippage and their likelihoods, by default as in FilterMutectCalls
         """
         super(PosteriorModel, self).__init__()
@@ -95,14 +92,8 @@ class PosteriorModel(torch.nn.Module):
             artifact_log_prior,
             no_germline_mode,
             self._device,
-            read_orientation_model,
             slippage_model,
         )
-
-        # The probability that the reads of a read orientation artifact look like an artifact's to the artifact model,
-        # rather than like a non-artifact's.  It's learned with the spectra.
-        self.read_orientation_artifact_overlap = Parameter(torch.tensor(0.5))
-        parametrize.register_parametrization(self, "read_orientation_artifact_overlap", BoundedNumber(0.0, 1.0))
 
         self.to(device=self._device, dtype=self._dtype)
 
@@ -155,10 +146,9 @@ class PosteriorModel(torch.nn.Module):
         artifact_logits_b = torch.where(known_artifacts_b, 0, artifact_logits_b)
         log_posteriors_bc[:, Call.ARTIFACT] += artifact_logits_b
         log_posteriors_bc[:, Call.NORMAL_ARTIFACT] += artifact_logits_b
-        log_posteriors_bc[:, Call.READ_ORIENTATION] += self.read_orientation_reads_log_likelihoods_b(artifact_logits_b)
         # slippage, like any sequencing error, gets no artifact logit: its reads look like a non-artifact's
 
-        # a known artifact can only be an artifact or a normal artifact, not even a read orientation artifact
+        # a known artifact can only be an artifact or a normal artifact
         for call in set(Call) - {Call.ARTIFACT, Call.NORMAL_ARTIFACT}:
             log_posteriors_bc[:, call] = torch.where(
                 known_artifacts_b, constants.IMPOSSIBLE_LOG_PROB, log_posteriors_bc[:, call]
@@ -173,17 +163,6 @@ class PosteriorModel(torch.nn.Module):
         # TODO: END OF HACK / EXPERIMENT
 
         return log_priors_bc, spectra_log_lks_bc, normal_log_lks_bc, log_posteriors_bc
-
-    def read_orientation_reads_log_likelihoods_b(self, artifact_logits_b: Tensor) -> Tensor:
-        """
-        The log likelihood of each variant's reads given a read orientation artifact, relative to their likelihood given
-        a non-artifact, as the artifact logits are relative.  The reads look like an artifact's to the artifact model
-        with probability read_orientation_artifact_overlap and like a non-artifact's otherwise, so their likelihood
-        is a mixture of the relative likelihoods exp(artifact logit) and 1.
-        """
-        overlap = self.read_orientation_artifact_overlap
-        artifact_b, non_artifact_b = torch.log(overlap) + artifact_logits_b, torch.log1p(-overlap)
-        return torch.logaddexp(artifact_b, non_artifact_b)
 
     def log_relative_posteriors_bc(self, batch: Batch) -> Tensor:
         return self.log_posterior_and_ingredients(batch)[-1]
@@ -208,7 +187,6 @@ class PosteriorModel(torch.nn.Module):
         # the loss is the negative log evidence.  Prior parameters are adjusted in the M steo.
         # the germline model's parameters are frozen
         trainable_parameters = [parameter for parameter in self.spectra.parameters() if parameter.requires_grad]
-        trainable_parameters += list(self.parametrizations.read_orientation_artifact_overlap.parameters())
         optimizer = torch.optim.Adam(trainable_parameters, lr=learning_rate)
 
         # we begin learning with context-dependent priors turned off
@@ -260,9 +238,6 @@ class PosteriorModel(torch.nn.Module):
 
             if summary_writer is not None:
                 summary_writer.add_scalar("spectrum negative log evidence", epoch_loss.get(), epoch)
-                if self.spectra.read_orientation_model is not None:
-                    overlap = self.read_orientation_artifact_overlap.item()
-                    summary_writer.add_scalar("read orientation artifact overlap", overlap, epoch)
 
                 for depth in [9, 19, 30, 50, 100]:
                     art_spectra_fig, art_spectra_axs = self.spectra.artifact_spectra.plot_artifact_spectra(depth)

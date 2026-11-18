@@ -64,6 +64,9 @@ SPECTRA_LOG_LIKELIHOOD_INFO_KEY = "SPECLL"
 NORMAL_LOG_LIKELIHOOD_INFO_KEY = "NORMLL"
 
 FILTER_NAMES = [call_type.name.lower() for call_type in Call]
+# the filter of a variant that is SEQ_ERROR only because of damage, given a read orientation model: without damage in
+# SEQ_ERROR's likelihood, it would pass or be another call
+ORIENTATION_FILTER = "read_orientation"
 
 
 def parse_arguments(argv=None):
@@ -130,8 +133,10 @@ def parse_arguments(argv=None):
     )
     parser.add_argument(
         "--" + constants.READ_ORIENTATION_MODEL_NAME,
-        help="ReadOrientationModel of the tumor from learn_read_orientation_model, which gives the priors and "
-        "likelihoods of read orientation artifacts.  Without it, there are no read orientation artifacts.",
+        help="ReadOrientationModel of the tumor from learn_read_orientation_model, whose likelihood of an SNV's alt "
+        "reads from damage to one strand is part of the likelihood of a sequencing error.  A variant that is a "
+        f"sequencing error only because of it is filtered as {ORIENTATION_FILTER}.  Without it, sequencing errors have "
+        "Mutect2's likelihoods alone.",
     )
 
     parser.add_argument(
@@ -423,6 +428,23 @@ def make_posterior_data_loader(
     return posterior_dataset.make_data_loader(batch_size, pin_memory=pin_memory, num_workers=num_workers)
 
 
+def most_likely_error_call(posterior_probabilities, passing_call_type: Call) -> Call:
+    """the call of greatest posterior probability other than the passing call"""
+    highest_prob_indices = torch.topk(torch.tensor(posterior_probabilities), 2).indices.tolist()
+    return Call(highest_prob_indices[1] if highest_prob_indices[0] == passing_call_type else highest_prob_indices[0])
+
+
+def is_error_only_because_of_damage(posterior_result: PosteriorResult, threshold: float, passing_call_type: Call):
+    """
+    Whether a variant called as SEQ_ERROR would pass, or be another call, if SEQ_ERROR had Mutect2's likelihood alone,
+    without damage from the read orientation model, at the same threshold of the error probability
+    """
+    if posterior_result.without_damage is None:
+        return False
+    probabilities, error_probability = posterior_result.without_damage
+    return error_probability <= threshold or most_likely_error_call(probabilities, passing_call_type) != Call.SEQ_ERROR
+
+
 # error probability thresholds is a dict from Variant type to error probability threshold (float)
 @torch.inference_mode()
 def apply_filtering_to_vcf(
@@ -454,6 +476,19 @@ def apply_filtering_to_vcf(
 
         posterior_probs_bc = torch.nn.functional.softmax(log_posteriors_bc, dim=1)
         error_probs_b = posterior_model.error_probabilities_from_posteriors_b(posterior_probs_bc, germline_mode)
+        # and as if SEQ_ERROR had Mutect2's likelihood alone, without damage, to tell which variants are SEQ_ERROR only
+        # because of it
+        probs_without_damage_bc, error_probs_without_damage_b = None, None
+        if posterior_model.spectra.read_orientation_model is not None:
+            without_damage_bc = log_posteriors_bc.clone()
+            without_damage_bc[:, Call.SEQ_ERROR] += (
+                posterior_model.spectra.seq_error_log_likelihoods_b(batch, with_damage=False)
+                - spectra_log_lks_bc[:, Call.SEQ_ERROR]
+            )
+            probs_without_damage_bc = torch.nn.functional.softmax(without_damage_bc, dim=1)
+            error_probs_without_damage_b = posterior_model.error_probabilities_from_posteriors_b(
+                probs_without_damage_bc, germline_mode
+            )
         error_logits_b = torch.logit(error_probs_b, eps=LOGIT_EPS)
         # this does nothing if the test dataset was generated without a truth VCF and thus has no labels
         # note that here we use error logits, not artifact logits
@@ -481,6 +516,9 @@ def apply_filtering_to_vcf(
         # NOTE: for posterior data, batch.get_info_be actually gets the embedding arrays!!!!!
         # TODO: perhaps make this safer
         embeddings_be, simulated_be, simulated_components_b = split_posterior_info_be(batch.get_info_be().cpu())
+        without_damage = [None] * batch.size()
+        if probs_without_damage_bc is not None:
+            without_damage = list(zip(probs_without_damage_bc.tolist(), error_probs_without_damage_b.tolist()))
         for (
             datum,
             post_probs,
@@ -492,6 +530,7 @@ def apply_filtering_to_vcf(
             embedding,
             simulated_embedding,
             simulated_component,
+            probs_and_error_prob_without_damage,
         ) in zip(
             data,
             posterior_probs_bc.tolist(),
@@ -503,6 +542,7 @@ def apply_filtering_to_vcf(
             embeddings_be,
             simulated_be,
             simulated_components_b.tolist(),
+            without_damage,
         ):
             encoding = encode_datum(datum, contig_index_to_name_map)
             encoding_to_posterior_results[encoding] = PosteriorResult(
@@ -519,6 +559,7 @@ def apply_filtering_to_vcf(
                 embedding=embedding,
                 simulated_embedding=simulated_embedding,
                 simulated_source=component_name(simulated_component),
+                without_damage=probs_and_error_prob_without_damage,
             )
 
     print("Applying threshold")
@@ -537,6 +578,8 @@ def apply_filtering_to_vcf(
     # INFO values to 3 decimal places, separated by commas
     format_values = lambda values: ",".join(f"{value:.3f}" for value in values)
     filter_descriptions = {name: name for n, name in enumerate(FILTER_NAMES) if n != passing_call_type}
+    if posterior_model.spectra.read_orientation_model is not None:
+        filter_descriptions[ORIENTATION_FILTER] = "sequencing error only because of damage to one strand"
     editor = VcfEditor(input_vcf, output_vcf, info_fields, filter_descriptions)
 
     labeled_truth = False
@@ -562,16 +605,14 @@ def apply_filtering_to_vcf(
             variant_type = find_variant_type(v)
             called_as_error = posterior_result.error_probability > error_probability_thresholds[variant_type]
 
-            error_call = None
+            error_call, orientation = None, False
 
             if called_as_error:
-                # get the error type with the largest posterior probability
-                highest_prob_indices = torch.topk(torch.tensor(post_probs), 2).indices.tolist()
-                highest_prob_index = (
-                    highest_prob_indices[1] if highest_prob_indices[0] == passing_call_type else highest_prob_indices[0]
+                error_call = most_likely_error_call(post_probs, passing_call_type)
+                orientation = error_call == Call.SEQ_ERROR and is_error_only_because_of_damage(
+                    posterior_result, error_probability_thresholds[variant_type], passing_call_type
                 )
-                error_call = list(Call)[highest_prob_index]
-                filters.add(FILTER_NAMES[highest_prob_index])
+                filters.add(ORIENTATION_FILTER if orientation else FILTER_NAMES[error_call])
 
             correctness_label = EmbeddingMetrics.UNKNOWN
             if label != Label.UNLABELED:
@@ -588,7 +629,7 @@ def apply_filtering_to_vcf(
                     correctness_label = (
                         EmbeddingMetrics.FALSE_POSITIVE if should_be_filtered else EmbeddingMetrics.TRUE_POSITIVE
                     )
-                elif error_call in (Call.ARTIFACT, Call.NORMAL_ARTIFACT, Call.READ_ORIENTATION):
+                elif orientation or error_call in (Call.ARTIFACT, Call.NORMAL_ARTIFACT):
                     correctness_label = (
                         EmbeddingMetrics.TRUE_NEGATIVE_ARTIFACT
                         if should_be_filtered

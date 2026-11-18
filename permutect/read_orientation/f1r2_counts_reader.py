@@ -17,9 +17,10 @@ table is its ref count plus its alt count, exactly.
 
 All three become the same thing here: for each sample and reference context, the counts of distinct Sites.  Given a
 segmentation of the sample by minor allele fraction (MAF), the positions of the alt tables' sites and the blocks of the
-histograms give each site its MAF mixture (see permutect.read_orientation.maf_mixtures).  The F1R2 counts of the ref
-reads at the alt tables' sites are kept too, for the sample's baseline orientation (see
-permutect.read_orientation.baseline_orientation), and each alt table site keeps its own, for its own orientation.
+histograms give each site its MAF mixture (see permutect.read_orientation.maf_mixtures).  Each alt table site keeps the
+F1R2 count of its ref reads, so that its number of F1R2 reads, ref and alt, is known, and the alt tables' sites' depths
+and numbers of F1R2 reads are kept together too, for the sample's capture bias (see
+permutect.read_orientation.capture_bias).
 """
 
 import io
@@ -58,7 +59,7 @@ ALT_HISTOGRAM_KEY_COLUMNS = (*REF_HISTOGRAM_KEY_COLUMNS, "alt", "orientation")
 # rows of a histogram table read at once, which bounds memory: a genome has about 1.3 million if Mutect2 isn't scattered
 HISTOGRAM_CHUNK_ROWS = 100_000
 # columns of an alt table that the read orientation model uses, with the ref count for the depth and the ref F1R2 count
-# for the baseline orientation, and the columns of a site's position, which a segmentation needs
+# for the number of F1R2 reads, and the columns of a site's position, which a segmentation needs
 ALT_TABLE_COLUMNS = ("ref_count", "alt_count", "ref_f1r2", "alt_f1r2", "alt")
 ALT_TABLE_POSITION_COLUMNS = ("contig", "position")
 
@@ -140,36 +141,24 @@ class Sites:
         """the number of sites, or of the selected ones"""
         return int(self.counts_n.sum() if selected_n is None else self.counts_n[selected_n].sum())
 
-    def reverse_complement(self) -> "Sites":
-        """
-        Sites of the reverse complement of a context in the orientation of the context: their alt bases are
-        complementary, and the F1R2 reads of one are the F2R1 reads of the other
-        """
-        alt_bases_n, alt_counts_n, alt_f1r2_counts_n, depths_n = self.keys_n4.unbind(dim=-1)
-        keys_n4 = torch.stack([3 - alt_bases_n, alt_counts_n, alt_counts_n - alt_f1r2_counts_n, depths_n], dim=-1)
-        known_n = self.ref_f1r2_counts_n != UNKNOWN_REF_F1R2
-        ref_f1r2_counts_n = torch.where(known_n, depths_n - alt_counts_n - self.ref_f1r2_counts_n, UNKNOWN_REF_F1R2)
-        return Sites.of(keys_n4, self.counts_n, self.maf_mixtures_n, ref_f1r2_counts_n)
-
 
 @dataclass(frozen=True)
-class RefOrientations:
+class CaptureCounts:
     """
-    The F1R2 counts of the ref reads at the sites of the alt tables, as the distinct combinations of ref count and count
-    of ref reads in F1R2 orientation, with the number of sites of each.  Sites without ref reads tell nothing about
-    orientation and are left out.
+    The depths and numbers of F1R2 reads, ref and alt, of the sites of the alt tables, as their distinct combinations,
+    with the number of sites of each
     """
 
-    ref_counts_j: Tensor
-    ref_f1r2_counts_j: Tensor
+    depths_j: Tensor
+    f1r2_counts_j: Tensor
     num_sites_j: Tensor
 
     @staticmethod
-    def empty() -> "RefOrientations":
-        return RefOrientations(*(torch.zeros(0, dtype=torch.int64) for _ in range(3)))
+    def empty() -> "CaptureCounts":
+        return CaptureCounts(*(torch.zeros(0, dtype=torch.int64) for _ in range(3)))
 
     def tensors(self) -> tuple[Tensor, Tensor, Tensor]:
-        return self.ref_counts_j, self.ref_f1r2_counts_j, self.num_sites_j
+        return self.depths_j, self.f1r2_counts_j, self.num_sites_j
 
     def num_sites(self) -> int:
         return int(self.num_sites_j.sum())
@@ -179,15 +168,15 @@ class RefOrientations:
 class F1R2Counts:
     """
     The F1R2 counts of one sample, summed over the inputs: the sites of each reference context, the weight of each grid
-    MAF in each of the sites' MAF mixtures, and the F1R2 counts of the ref reads at the alt tables' sites.  Sites from
-    the histograms have the depths of their columns, and those that are deeper than max_depth count as max_depth.
+    MAF in each of the sites' MAF mixtures, and the depths and F1R2 counts of the reads at the alt tables' sites.  Sites
+    from the histograms have the depths of their columns, and those that are deeper than max_depth count as max_depth.
     """
 
     sample: str
     max_depth: int
     sites: dict[str, Sites]
     maf_mixtures_mg: Tensor = field(default_factory=balanced_mixtures_mg)
-    ref_orientations: RefOrientations = field(default_factory=RefOrientations.empty)
+    capture_counts: CaptureCounts = field(default_factory=CaptureCounts.empty)
 
 
 def histogram_sites(rows: pd.DataFrame, alt: bool, maf_mixtures: MafMixtures) -> pd.DataFrame:
@@ -238,11 +227,12 @@ def alt_table_sites(rows: pd.DataFrame, context: str, maf_mixtures: MafMixtures)
     return pd.DataFrame({"context": context, **dict(zip(SITE_COLUMNS[1:], distinct_m6.T)), "count": counts_m})
 
 
-def alt_table_ref_orientations(rows: pd.DataFrame) -> pd.DataFrame:
-    """the distinct (ref count, ref F1R2 count) of the sites of an alt table with ref reads, and the number of each"""
-    pairs = rows[["ref_count", "ref_f1r2"]].to_numpy(dtype=np.int64)
-    distinct, counts = np.unique(pairs[pairs[:, 0] > 0], axis=0, return_counts=True)
-    return pd.DataFrame({"ref_count": distinct[:, 0], "ref_f1r2": distinct[:, 1], "count": counts})
+def alt_table_capture_counts(rows: pd.DataFrame) -> pd.DataFrame:
+    """the distinct (depth, number of F1R2 reads) of the sites of an alt table, and the number of each"""
+    depths = (rows["ref_count"] + rows["alt_count"]).to_numpy(dtype=np.int64)
+    f1r2_counts = (rows["ref_f1r2"] + rows["alt_f1r2"]).to_numpy(dtype=np.int64)
+    distinct, counts = np.unique(np.column_stack([depths, f1r2_counts]), axis=0, return_counts=True)
+    return pd.DataFrame({"depth": distinct[:, 0], "f1r2": distinct[:, 1], "count": counts})
 
 
 def alt_table_context(name: str) -> str:
@@ -279,7 +269,7 @@ def read_f1r2_counts(tar_gz_paths, segmentation: SampleSegmentation = None) -> d
     maf_mixtures = MafMixtures(segmentation)
     alt_table_columns = [*ALT_TABLE_COLUMNS, *(ALT_TABLE_POSITION_COLUMNS if maf_mixtures.has_segments() else ())]
     sites = defaultdict(list)  # by sample, DataFrames of the distinct sites of each table
-    ref_orientations = defaultdict(list)  # by sample, DataFrames of the ref reads' F1R2 counts of each alt table
+    capture_counts = defaultdict(list)  # by sample, DataFrames of the depths and F1R2 counts of each alt table
     num_histogram_tables = Counter()  # by sample and extension
     depths = defaultdict(set)  # by sample, the depths of its histogram tables
     for path in tar_gz_paths:
@@ -290,7 +280,7 @@ def read_f1r2_counts(tar_gz_paths, segmentation: SampleSegmentation = None) -> d
                 table = read_gatk_table(file, usecols=alt_table_columns, dtype={"alt": str, "contig": str})
                 sample = _sample(table, name, path)
                 sites[sample].append(alt_table_sites(table.rows, context, maf_mixtures))
-                ref_orientations[sample].append(alt_table_ref_orientations(table.rows))
+                capture_counts[sample].append(alt_table_capture_counts(table.rows))
             elif extension in (REF_HISTOGRAM_EXTENSION, ALT_HISTOGRAM_EXTENSION):
                 alt = extension == ALT_HISTOGRAM_EXTENSION
                 key_columns = ALT_HISTOGRAM_KEY_COLUMNS if alt else REF_HISTOGRAM_KEY_COLUMNS
@@ -324,16 +314,14 @@ def read_f1r2_counts(tar_gz_paths, segmentation: SampleSegmentation = None) -> d
             keys = torch.tensor(context_counts.index.droplevel("context").to_frame().to_numpy(dtype=np.int64))
             counts_n = torch.tensor(context_counts.to_numpy(dtype=np.int64))
             sites_by_context[context] = Sites(keys[:, :4], counts_n, keys[:, 4], keys[:, 5])
-        orientations = RefOrientations.empty()
-        if ref_orientations[sample]:
-            summed = pd.concat(ref_orientations[sample]).groupby(["ref_count", "ref_f1r2"])["count"].sum()
-            orientations = RefOrientations(
+        capture = CaptureCounts.empty()
+        if capture_counts[sample]:
+            summed = pd.concat(capture_counts[sample]).groupby(["depth", "f1r2"])["count"].sum()
+            capture = CaptureCounts(
                 *(torch.tensor(summed.index.get_level_values(level).to_numpy(dtype=np.int64)) for level in (0, 1)),
                 torch.tensor(summed.to_numpy(dtype=np.int64)),
             )
-        result[sample] = F1R2Counts(
-            sample, sample_depths[-1], sites_by_context, maf_mixtures.weights_mg(), orientations
-        )
+        result[sample] = F1R2Counts(sample, sample_depths[-1], sites_by_context, maf_mixtures.weights_mg(), capture)
     if maf_mixtures.has_segments():
         print(f"MAF mixtures of the F1R2 counts' sites: {maf_mixtures.summary()}")
     return result

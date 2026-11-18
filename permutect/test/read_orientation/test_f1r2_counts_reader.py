@@ -71,16 +71,12 @@ def test_sites():
     assert rows(sites + sites) == [(A, 2, 1, 30, 2), (T, 2, 0, 30, 2), (T, 2, 1, 30, 6)]
     assert rows(Sites.concatenate([])) == []
 
-    # in the reverse complement's orientation, the alt bases are complementary and F1R2 and F2R1 reads swap
-    assert rows(sites.reverse_complement()) == [(A, 2, 1, 30, 3), (A, 2, 2, 30, 1), (T, 2, 1, 30, 1)]
-
 
 def test_sites_with_maf_mixtures():
     # the same keys with different MAF mixtures are different sites, and sites without MAF mixtures have MAF 1/2
     sites = Sites.of([[T, 2, 1, 30], [T, 2, 1, 30], [T, 2, 1, 30]], [1, 2, 4], [0, 3, 0])
     assert sites.counts_n.tolist() == [5, 2] and sites.maf_mixtures_n.tolist() == [0, 3]
     assert (sites + sites).counts_n.tolist() == [10, 4]
-    assert sites.reverse_complement().maf_mixtures_n.tolist() == [0, 3]
     assert Sites.of([[T, 2, 1, 30]], [1]).maf_mixtures_n.tolist() == [BALANCED_MIXTURE]
 
 
@@ -89,11 +85,6 @@ def test_sites_with_ref_f1r2_counts():
     sites = Sites.of([[T, 2, 1, 30]] * 3, [1, 2, 4], ref_f1r2_counts_n=[10, 3, 10])
     assert sites.counts_n.tolist() == [2, 5] and sites.ref_f1r2_counts_n.tolist() == [3, 10]
     assert Sites.of([[T, 2, 1, 30]], [1]).ref_f1r2_counts_n.tolist() == [UNKNOWN_REF_F1R2]
-    # in the reverse complement's orientation, the F1R2 and F2R1 ref reads, 28 of them, swap too, unless unknown
-    reversed_sites = Sites.of(
-        [[T, 2, 1, 30]] * 2, [1, 1], ref_f1r2_counts_n=[10, UNKNOWN_REF_F1R2]
-    ).reverse_complement()
-    assert sorted(reversed_sites.ref_f1r2_counts_n.tolist()) == [UNKNOWN_REF_F1R2, 18]
 
 
 def test_maf_mixtures_of_sites(tmp_path):
@@ -163,18 +154,24 @@ def test_inputs_are_summed(tmp_path):
     assert rows(counts_by_sample["OTHER"].sites["ACG"]) == [(C, 0, 0, depth, depth) for depth in range(1, 5)]
 
 
-def test_ref_orientations_of_alt_tables(tmp_path):
+def test_capture_counts_of_alt_tables(tmp_path):
     depths = [1, 2]
     ref_rows = [("chr1", 1, "ACG", [1, 1])]
-    # alt-table sites (ref count, alt count, ref F1R2 count, alt F1R2 count, alt base), one without ref reads
+    # alt-table sites (ref count, alt count, ref F1R2 count, alt F1R2 count, alt base), one without ref reads, which counts too
     alt_tables_1 = {"ACG": [(20, 3, 5, 1, "T"), (0, 4, 0, 2, "T")], "TTT": [(20, 2, 5, 1, "G")]}
     alt_tables_2 = {"ACG": [(20, 3, 5, 0, "A"), (8, 3, 8, 0, "A")]}
     write_tar_gz(tmp_path / "1.tar.gz", f1r2_files("S", depths, ref_rows, [], alt_tables_1))
     write_tar_gz(tmp_path / "2.tar.gz", f1r2_files("S", depths, ref_rows, [], alt_tables_2))
-    orientations = read_f1r2_counts([tmp_path / "1.tar.gz", tmp_path / "2.tar.gz"])["S"].ref_orientations
-    # by (ref count, ref F1R2 count), summed over contexts and inputs, without the site lacking ref reads
-    assert sorted(zip(*(x.tolist() for x in orientations.tensors()))) == [(8, 8, 1), (20, 5, 3)]
-    assert orientations.num_sites() == 4
+    capture = read_f1r2_counts([tmp_path / "1.tar.gz", tmp_path / "2.tar.gz"])["S"].capture_counts
+    # by (depth, F1R2 count), ref and alt reads both, summed over contexts and inputs
+    assert sorted(zip(*(x.tolist() for x in capture.tensors()))) == [
+        (4, 2, 1),
+        (11, 8, 1),
+        (22, 6, 1),
+        (23, 5, 1),
+        (23, 6, 1),
+    ]
+    assert capture.num_sites() == 5
 
 
 def test_rounded_depths(tmp_path):

@@ -3,7 +3,11 @@ import math
 import numpy as np
 import pytest
 import torch
+from scipy.integrate import quad
+from scipy.stats import beta as beta_distribution
 from scipy.stats import betabinom
+from scipy.stats import binom
+from scipy.stats import hypergeom
 
 from permutect.read_orientation.f1r2_counts_reader import BASES
 from permutect.read_orientation.f1r2_counts_reader import CONTEXTS
@@ -11,41 +15,95 @@ from permutect.read_orientation.f1r2_counts_reader import UNKNOWN_REF_F1R2
 from permutect.read_orientation.f1r2_counts_reader import F1R2Counts
 from permutect.read_orientation.f1r2_counts_reader import Sites
 from permutect.read_orientation.maf_mixtures import MAF_GRID
-from permutect.read_orientation.read_orientation_model import ALLELE_FRACTION_PSEUDOCOUNTS_K2
-from permutect.read_orientation.read_orientation_model import ARTIFACT_STATES
-from permutect.read_orientation.read_orientation_model import CANONICAL_CONTEXTS
-from permutect.read_orientation.read_orientation_model import F1R2_FRACTION_PSEUDOCOUNTS_K2
+from permutect.read_orientation.read_orientation_model import CONTEXT_INDICES
+from permutect.read_orientation.read_orientation_model import FLAT_PRIOR
 from permutect.read_orientation.read_orientation_model import GERMLINE_HET
-from permutect.read_orientation.read_orientation_model import HOM_REF
-from permutect.read_orientation.read_orientation_model import NUM_ARTIFACT_STATES
-from permutect.read_orientation.read_orientation_model import NUM_STATES
-from permutect.read_orientation.read_orientation_model import REVERSE_COMPLEMENT_STATES_K
+from permutect.read_orientation.read_orientation_model import NUM_BASES
+from permutect.read_orientation.read_orientation_model import NUM_CONTEXTS
+from permutect.read_orientation.read_orientation_model import NUM_GENOTYPES
+from permutect.read_orientation.read_orientation_model import OTHER_STRAND_PROCESSES_P
+from permutect.read_orientation.read_orientation_model import PAIR_CONTEXTS
+from permutect.read_orientation.read_orientation_model import PAIRS_C
+from permutect.read_orientation.read_orientation_model import POSSIBLE_PROCESSES_P
 from permutect.read_orientation.read_orientation_model import SOMATIC_HET
-from permutect.read_orientation.read_orientation_model import STATES
-from permutect.read_orientation.read_orientation_model import ContextPrior
+from permutect.read_orientation.read_orientation_model import VARIANT_ALLELE_FRACTION_PSEUDOCOUNTS_V2
 from permutect.read_orientation.read_orientation_model import GermlineHetLikelihoods
+from permutect.read_orientation.read_orientation_model import HistogramMarginals
+from permutect.read_orientation.read_orientation_model import OrientationEM
 from permutect.read_orientation.read_orientation_model import ReadOrientationModel
-from permutect.read_orientation.read_orientation_model import artifact_states_bo
-from permutect.read_orientation.read_orientation_model import canonical_sites
-from permutect.read_orientation.read_orientation_model import flat_prior
-from permutect.read_orientation.read_orientation_model import learn_prior
-from permutect.read_orientation.read_orientation_model import learn_priors
-from permutect.read_orientation.read_orientation_model import log_likelihoods
-from permutect.read_orientation.read_orientation_model import non_artifact_f1r2_pseudocounts_k2
-from permutect.read_orientation.read_orientation_model import posteriors
+from permutect.read_orientation.read_orientation_model import SiteTable
+from permutect.read_orientation.read_orientation_model import damage_pseudocounts
+from permutect.read_orientation.read_orientation_model import fit_read_orientation_model
+from permutect.read_orientation.read_orientation_model import learned_pairs_w
+from permutect.read_orientation.read_orientation_model import log_hypergeometric
+from permutect.read_orientation.read_orientation_model import process_name
 from permutect.read_orientation.read_orientation_model import reverse_complement
+from permutect.read_orientation.read_orientation_model import unconstrained_damage
+from permutect.read_orientation.read_orientation_model import variant_log_likelihoods_nv
 from permutect.segmentation.emissions import EmissionModel
 
 A, C, G, T = range(4)
+
+
+def process(context: str, base: str) -> int:
+    return NUM_BASES * CONTEXT_INDICES[context] + BASES.index(base)
 
 
 def empty_counts() -> F1R2Counts:
     return F1R2Counts("SAMPLE", max_depth=1000, sites={context: Sites.empty() for context in CONTEXTS})
 
 
-def add_sites(counts: F1R2Counts, context: str, alt_bases_n, alt_counts_n, alt_f1r2_counts_n, depths_n):
-    keys_n4 = np.column_stack([alt_bases_n, alt_counts_n, alt_f1r2_counts_n, depths_n])
-    counts.sites[context] += Sites.of(keys_n4, np.ones(len(keys_n4)))
+def table_of(keys, ref_f1r2_counts=None, maf_mixtures=None, context="ACG") -> SiteTable:
+    """a SiteTable of sites of one context, each with its (alt base, alt count, alt F1R2 count, depth)"""
+    return SiteTable.of({context: Sites.of(keys, [1] * len(keys), maf_mixtures, ref_f1r2_counts)})
+
+
+def test_contexts_pairs_and_processes():
+    assert reverse_complement("ACG") == "CGT"
+    assert len(PAIR_CONTEXTS) == 32
+    for context in CONTEXTS:
+        assert PAIRS_C[CONTEXT_INDICES[context]] == PAIRS_C[CONTEXT_INDICES[reverse_complement(context)]]
+    # the other strand's process of each process, which is an involution that keeps whether a process can happen
+    assert torch.equal(OTHER_STRAND_PROCESSES_P[OTHER_STRAND_PROCESSES_P], torch.arange(len(OTHER_STRAND_PROCESSES_P)))
+    assert torch.equal(POSSIBLE_PROCESSES_P[OTHER_STRAND_PROCESSES_P], POSSIBLE_PROCESSES_P)
+    assert POSSIBLE_PROCESSES_P.sum() == 192
+    # at a site of ACG with alt T, damage to the + strand is ACG -> ATG, and to the - strand CGT -> CAT
+    assert process_name(process("ACG", "T")) == "ACG -> ATG"
+    assert process_name(OTHER_STRAND_PROCESSES_P[process("ACG", "T")].item()) == "CGT -> CAT"
+    # at a site of CGT with alt A, damage to the - strand, which reads ACG, is ACG -> ATG
+    assert OTHER_STRAND_PROCESSES_P[process("CGT", "A")] == process("ACG", "T")
+
+
+def test_log_hypergeometric():
+    for a1, a2, n1, n2 in [(3, 2, 20, 30), (0, 5, 10, 40), (6, 0, 53, 47), (1, 0, 1, 0)]:
+        result = log_hypergeometric(*(torch.tensor(x, dtype=torch.float64) for x in (a1, a2, n1, n2))).item()
+        assert result == pytest.approx(hypergeom.logpmf(a1, n1 + n2, n1, a1 + a2), rel=1e-9)
+
+
+def test_variant_likelihoods_share_one_allele_fraction():
+    # given n1, a real variant's likelihood is that of one allele fraction for the reads of both strands
+    capture = (3.0, 17.0)
+    a1, a2, n1, n2 = 4, 1, 15, 45
+    sites = table_of([[T, a1 + a2, a1, n1 + n2]], ref_f1r2_counts=[n1 - a1])
+    result_v = variant_log_likelihoods_nv(sites, capture)[0]
+    alpha, beta = VARIANT_ALLELE_FRACTION_PSEUDOCOUNTS_V2[SOMATIC_HET - 1].tolist()
+
+    def integrand(f):
+        return beta_distribution.pdf(f, alpha, beta) * binom.pmf(a1, n1, f) * binom.pmf(a2, n2, f)
+
+    expected = math.log(quad(integrand, 0, 1, epsabs=1e-14)[0])
+    assert result_v[SOMATIC_HET - 1].item() == pytest.approx(expected, rel=1e-6)
+
+    # without n1, it's the marginal over n1 under the capture bias
+    unknown = table_of([[T, a1 + a2, a1, n1 + n2]])
+    marginal = sum(
+        betabinom.pmf(m, n1 + n2, *capture)
+        * math.exp(variant_log_likelihoods_nv(table_of([[T, a1 + a2, a1, n1 + n2]], [m - a1]), capture)[0, 1])
+        for m in range(a1, n1 + n2 - a2 + 1)
+    )
+    assert variant_log_likelihoods_nv(unknown, capture)[0, SOMATIC_HET - 1].item() == pytest.approx(
+        math.log(marginal), rel=1e-6
+    )
 
 
 def emission_het_log_likelihood(emission_model: EmissionModel, alt_count: int, depth: int, maf: float) -> float:
@@ -65,13 +123,10 @@ def test_germline_het_likelihoods():
     germline_het = GermlineHetLikelihoods(
         emission_model, torch.cat([torch.eye(len(MAF_GRID), dtype=torch.float64), mixture])
     )
-    keys = [[C, 0, 0, 30], [T, 3, 1, 30], [T, 15, 8, 30], [T, 3, 1, 30]]
-    sites = Sites.of(
-        keys, [1] * len(keys), [MAF_GRID.index(0.01), MAF_GRID.index(0.1), MAF_GRID.index(0.5), len(MAF_GRID)]
-    )
-
-    for (_, alt_count, _, depth), mixture_index, result in zip(
-        sites.keys_n4.tolist(), sites.maf_mixtures_n.tolist(), germline_het(sites).tolist()
+    alt_counts, depths = torch.tensor([0, 3, 15, 3]), torch.tensor([30, 30, 30, 30])
+    mixtures = torch.tensor([MAF_GRID.index(0.01), MAF_GRID.index(0.1), MAF_GRID.index(0.5), len(MAF_GRID)])
+    for alt_count, depth, mixture_index, result in zip(
+        alt_counts.tolist(), depths.tolist(), mixtures.tolist(), germline_het(alt_counts, depths, mixtures).tolist()
     ):
         if mixture_index < len(MAF_GRID):
             expected = emission_het_log_likelihood(emission_model, alt_count, depth, MAF_GRID[mixture_index])
@@ -90,202 +145,206 @@ def test_germline_het_likelihoods():
 
 
 def test_germline_het_likelihoods_replace_only_the_germline_het_allele_fraction():
-    sites = Sites.of([[C, 0, 0, 40], [T, 5, 5, 50], [G, 30, 2, 60]], [1, 1, 1], [0, 13, 7])
+    sites = table_of([[C, 0, 0, 40], [T, 5, 5, 50], [G, 30, 2, 60]], maf_mixtures=[0, 13, 7])
     germline_het = GermlineHetLikelihoods(EmissionModel(), torch.eye(len(MAF_GRID), dtype=torch.float64))
-    without_nk = log_likelihoods(sites, ref_base=C)
-    with_nk = log_likelihoods(sites, ref_base=C, germline_het=germline_het)
-    others = [k for k in range(NUM_STATES) if k != GERMLINE_HET]
-    assert torch.equal(with_nk[:, others], without_nk[:, others])
-    # GATK's beta-binomial allele fraction gives way, and the F1R2 term stays
-    alpha, beta = ALLELE_FRACTION_PSEUDOCOUNTS_K2[GERMLINE_HET].tolist()
+    without_nv = variant_log_likelihoods_nv(sites, (10.0, 10.0))
+    with_nv = variant_log_likelihoods_nv(sites, (10.0, 10.0), germline_het)
+    assert torch.equal(with_nv[:, 1:], without_nv[:, 1:])
+    alpha, beta = VARIANT_ALLELE_FRACTION_PSEUDOCOUNTS_V2[GERMLINE_HET - 1].tolist()
     gatk_n = torch.tensor(betabinom.logpmf(sites.alt_counts_n.numpy(), sites.depths_n.numpy(), alpha, beta))
-    assert torch.allclose(with_nk[:, GERMLINE_HET], without_nk[:, GERMLINE_HET] - gatk_n + germline_het(sites))
+    expected_n = germline_het(sites.alt_counts_n, sites.depths_n, sites.maf_mixtures_n)
+    assert torch.allclose(with_nv[:, 0], without_nv[:, 0] - gatk_n + expected_n)
 
 
-def test_non_artifact_f1r2_pseudocounts(tmp_path):
-    pseudocounts_k2 = non_artifact_f1r2_pseudocounts_k2(3.0, 17.0)
-    assert torch.equal(pseudocounts_k2[:NUM_ARTIFACT_STATES], F1R2_FRACTION_PSEUDOCOUNTS_K2[:NUM_ARTIFACT_STATES])
-    assert pseudocounts_k2[NUM_ARTIFACT_STATES:].tolist() == [[3.0, 17.0]] * (NUM_STATES - NUM_ARTIFACT_STATES)
-
-    # a model saves them, and gives every non-artifact variant their likelihoods
-    path = tmp_path / "model.pt"
-    ReadOrientationModel("SAMPLE", learn_priors(empty_counts()), f1r2_fraction_pseudocounts_k2=pseudocounts_k2).save(
-        path
-    )
-    alt_counts_b, alt_f1r2_counts_b = torch.tensor([10, 10, 3]), torch.tensor([1, 5, 3])
-    result_b = ReadOrientationModel.load(path).non_artifact_f1r2_log_likelihoods_b(alt_counts_b, alt_f1r2_counts_b)
-    assert np.allclose(result_b.numpy(), betabinom.logpmf(alt_f1r2_counts_b.numpy(), alt_counts_b.numpy(), 3.0, 17.0))
-
-
-def test_log_likelihoods_conditioned_on_ref_reads():
-    # alt T sites in a context with ref C: with 40 ref reads, 36 of them F1R2, then without known ref F1R2 counts
-    pseudocounts_k2 = non_artifact_f1r2_pseudocounts_k2(3.0, 17.0)
-    sites = Sites.of([[T, 6, 6, 46], [T, 6, 6, 46]], [1, 1], ref_f1r2_counts_n=[36, UNKNOWN_REF_F1R2])
-    unconditioned_nk = log_likelihoods(sites, C, f1r2_fraction_pseudocounts_k2=pseudocounts_k2)
-    conditioned_nk = log_likelihoods(
-        sites, C, f1r2_fraction_pseudocounts_k2=pseudocounts_k2, condition_on_ref_reads=True
-    )
-    # artifacts and the site of unknown ref F1R2 count are unchanged
-    assert torch.equal(conditioned_nk[:, :NUM_ARTIFACT_STATES], unconditioned_nk[:, :NUM_ARTIFACT_STATES])
-    (unknown,) = (sites.ref_f1r2_counts_n == UNKNOWN_REF_F1R2).nonzero().flatten().tolist()
-    assert torch.equal(conditioned_nk[unknown], unconditioned_nk[unknown])
-    # the non-artifact states' F1R2 fraction of the other is Beta(3 + 36, 17 + 4), under which 6 F1R2 alt reads are
-    # likely
-    known = 1 - unknown
-    af_alpha_k, af_beta_k = ALLELE_FRACTION_PSEUDOCOUNTS_K2[NUM_ARTIFACT_STATES:].numpy().T
-    expected_k = betabinom.logpmf(6, 46, af_alpha_k, af_beta_k) + betabinom.logpmf(6, 6, 39.0, 21.0)
-    assert np.allclose(conditioned_nk[known, NUM_ARTIFACT_STATES:].numpy(), expected_k)
-    assert torch.all(conditioned_nk[known, NUM_ARTIFACT_STATES:] > unconditioned_nk[known, NUM_ARTIFACT_STATES:] + 2)
+def test_histogram_marginals_are_sums_over_n1():
+    capture = (2.0, 8.0)
+    depths = torch.tensor([1, 7, 30])
+    plus, minus = (0.5, 40.0), (0.2, 300.0)
+    marginals = HistogramMarginals(depths, capture)
+    result_tqd = marginals.log_likelihoods_tqd(*(torch.tensor([x], dtype=torch.float64) for x in (*plus, *minus)))
+    for t, (k1, k2) in enumerate(HistogramMarginals.PATTERNS):
+        for d_index, d in enumerate(depths.tolist()):
+            expected = sum(
+                betabinom.pmf(n1, d, *capture) * betabinom.pmf(k1, n1, *plus) * betabinom.pmf(k2, d - n1, *minus)
+                for n1 in range(d + 1)
+            )
+            assert result_tqd[t, 0, d_index].item() == pytest.approx(math.log(expected), rel=1e-9)
 
 
-def test_non_artifact_f1r2_likelihoods_conditioned_on_ref_reads():
-    model = ReadOrientationModel(
-        "SAMPLE",
-        learn_priors(empty_counts()),
-        f1r2_fraction_pseudocounts_k2=non_artifact_f1r2_pseudocounts_k2(3.0, 17.0),
-    )
-    alt_counts_b, alt_f1r2_counts_b = torch.tensor([6.0, 6.0]), torch.tensor([6.0, 6.0])
-    # 40 ref reads, 36 of them F1R2, then unknown ref counts
-    ref_counts_b, ref_f1r2_counts_b = torch.tensor([40.0, math.nan]), torch.tensor([36.0, math.nan])
-    result_b = model.non_artifact_f1r2_log_likelihoods_b(
-        alt_counts_b, alt_f1r2_counts_b, ref_counts_b, ref_f1r2_counts_b
-    )
-    expected = [betabinom.logpmf(6, 6, 39.0, 21.0), betabinom.logpmf(6, 6, 3.0, 17.0)]
-    assert result_b.tolist() == pytest.approx(expected, rel=1e-5)  # float32
+# genotypes of simulated sites: HOM_REF, GERMLINE_HET, SOMATIC_HET, HOM_VAR
+SIMULATED_GENOTYPE_PRIORS = (0.985, 0.01, 0.004, 0.001)
+SIMULATED_ALLELE_FRACTIONS = tuple(map(tuple, VARIANT_ALLELE_FRACTION_PSEUDOCOUNTS_V2.tolist()))  # the model's
 
 
-def test_canonical_contexts():
-    assert len(CANONICAL_CONTEXTS) == 32
-    assert all(context < reverse_complement(context) for context in CANONICAL_CONTEXTS)
-    assert set(CANONICAL_CONTEXTS) | {reverse_complement(context) for context in CANONICAL_CONTEXTS} == set(CONTEXTS)
-    assert reverse_complement("ACG") == "CGT"
+def simulate_sites(rng, context: str, num_sites: int, depth: int, capture, damage: dict, background) -> Sites:
+    """
+    Sites of a context drawn from the generative model, as Mutect2 would count them: n1 from the capture bias
+    (alpha, beta); a genotype; at a real variant, alt reads of the context's first other base at its allele fraction; and
+    damage, in every genotype, reads of each other base from the rates of the + strand process on the F1R2 reads and the
+    - strand process on the F2R1 reads, Beta(mean, concentration) of the processes in damage, or of background.  A site
+    without alt reads goes to the ref histogram, a site with one read of its most common alt base to the alt histogram,
+    and others to an alt table, with that base's counts.
+    """
+    ref = BASES.index(context[1])
+    others = [b for b in range(NUM_BASES) if b != ref]
+    n1 = rng.binomial(depth, rng.beta(*capture, size=num_sites))
+    n2 = depth - n1
+    genotypes = rng.choice(NUM_GENOTYPES, size=num_sites, p=SIMULATED_GENOTYPE_PRIORS)
+    variant_af = np.zeros(num_sites)
+    for g, pseudocounts in enumerate(SIMULATED_ALLELE_FRACTIONS, start=1):
+        variant_af[genotypes == g] = rng.beta(*pseudocounts, size=(genotypes == g).sum())
+    reads1, reads2 = np.zeros((num_sites, NUM_BASES), dtype=int), np.zeros((num_sites, NUM_BASES), dtype=int)
+    reads1[:, others[0]] = rng.binomial(n1, variant_af)
+    reads2[:, others[0]] = rng.binomial(n2, variant_af)
+    rc_context = reverse_complement(context)
+    for base in others:
+        for reads, strand_context, strand_base, n in (
+            (reads1, context, BASES[base], n1),
+            (reads2, rc_context, BASES[NUM_BASES - 1 - base], n2),
+        ):
+            mean, concentration = damage.get((strand_context, strand_base), background)
+            rates = rng.beta(mean * concentration, (1 - mean) * concentration, size=num_sites)
+            reads[:, base] += rng.binomial(
+                n - reads1.sum(1) * (reads is reads1) - reads2.sum(1) * (reads is reads2), rates
+            )
+    totals = reads1 + reads2
+    alt_bases = totals.argmax(axis=1)
+    alt_counts = totals[np.arange(num_sites), alt_bases]
+    alt_f1r2 = reads1[np.arange(num_sites), alt_bases]
+    alt_bases = np.where(alt_counts == 0, ref, alt_bases)
+    # an alt table site's depth is its ref reads plus those of its alt base
+    other_reads1 = reads1.sum(1) - alt_f1r2
+    other_reads2 = reads2.sum(1) - (alt_counts - alt_f1r2)
+    in_table = alt_counts >= 2
+    depths = np.where(in_table, depth - other_reads1 - other_reads2, depth)
+    ref_f1r2 = np.where(in_table, n1 - reads1.sum(1), UNKNOWN_REF_F1R2)
+    keys = np.column_stack([alt_bases, alt_counts, alt_f1r2, depths])
+    return Sites.of(keys, np.ones(num_sites), None, ref_f1r2)
 
 
-def test_reverse_complement_states():
-    assert torch.equal(REVERSE_COMPLEMENT_STATES_K[REVERSE_COMPLEMENT_STATES_K], torch.arange(NUM_STATES))
-    assert STATES[REVERSE_COMPLEMENT_STATES_K[STATES.index("F1R2_A")]] == "F2R1_T"
-    assert STATES[REVERSE_COMPLEMENT_STATES_K[STATES.index("F2R1_G")]] == "F1R2_C"
-    assert all(REVERSE_COMPLEMENT_STATES_K[k] == k for k in range(HOM_REF, NUM_STATES))
-
-
-def test_log_likelihoods_are_beta_binomial():
-    # a site without alt reads, then sites with alt T, T, A and G in a context with ref C
-    keys = [[C, 0, 0, 40], [T, 5, 5, 50], [T, 1, 0, 7], [A, 12, 6, 100], [G, 30, 2, 60]]
-    sites = Sites.of(keys, [1] * len(keys))
-    result_nk = log_likelihoods(sites, ref_base=C)
-
-    af_alpha_k, af_beta_k = ALLELE_FRACTION_PSEUDOCOUNTS_K2.numpy().T
-    f1r2_alpha_k, f1r2_beta_k = F1R2_FRACTION_PSEUDOCOUNTS_K2.numpy().T
-    for (alt_base, alt_count, alt_f1r2_count, depth), result_k in zip(sites.keys_n4.tolist(), result_nk):
-        expected_k = betabinom.logpmf(alt_count, depth, af_alpha_k, af_beta_k)
-        expected_k += betabinom.logpmf(alt_f1r2_count, alt_count, f1r2_alpha_k, f1r2_beta_k)
-        # artifact states are possible only for their alt base, which can't be the ref base
-        possible_k = torch.tensor(
-            [state not in ARTIFACT_STATES or (state[-1] == BASES[alt_base] and alt_base != C) for state in STATES]
-        )
-        assert torch.all(torch.isinf(result_k[~possible_k]))
-        assert np.allclose(result_k[possible_k].numpy(), expected_k[possible_k.numpy()], rtol=1e-9)
-
-
-def test_posteriors():
-    log_likelihoods_nk = torch.log(torch.rand(5, NUM_STATES, dtype=torch.float64))
-    result_nk = posteriors(log_likelihoods_nk, flat_prior(A))
-    assert torch.allclose(result_nk.sum(dim=-1), torch.ones(5, dtype=torch.float64))
-    # the impossible ref-to-ref artifact states, F1R2_A and F2R1_A for ref base A
-    assert torch.all(result_nk[:, [STATES.index("F1R2_A"), STATES.index("F2R1_A")]] == 0)
-
-
-def test_flat_prior():
-    prior_k = flat_prior(G)
-    assert prior_k[STATES.index("F1R2_G")] == prior_k[STATES.index("F2R1_G")] == 0
-    assert torch.allclose(prior_k[prior_k > 0], torch.full((10,), 0.1, dtype=torch.float64))
-
-
-def test_canonical_sites():
-    # ACA's reverse complement is TGT, whose alt C reads in F1R2 orientation are alt G reads of ACA in F2R1 orientation.
-    # Sites without alt reads get ACA's ref base C as their alt base.
+def simulated_counts(rng, contexts, num_sites: int, depth: int, capture, damage: dict, background) -> F1R2Counts:
     counts = empty_counts()
-    add_sites(counts, "TGT", [G, C, C], [0, 1, 5], [0, 1, 4], [30, 30, 40])
-    add_sites(counts, "ACA", [C, G], [0, 5], [0, 1], [30, 40])
-    sites = canonical_sites(counts, "ACA")
-    assert sites.keys_n4.tolist() == [[C, 0, 0, 30], [G, 1, 0, 30], [G, 5, 1, 40]]
-    assert sites.counts_n.tolist() == [2, 1, 2]
+    for context in contexts:
+        counts.sites[context] = simulate_sites(rng, context, num_sites, depth, capture, damage, background)
+    return counts
 
 
-def simulate(counts: F1R2Counts, context: str, prior_k: np.ndarray, num_sites: int, depth: int, rng):
-    """
-    Add sites of a context, drawn from the model with the given prior, at the given depth.  The data fit the model
-    only approximately.  Its likelihoods don't depend on the alt base of a non-artifact state, as if it were certain, so
-    every alt read here has the same base, T, and the prior must give no other artifact states.  And its artifacts have
-    at least one alt read, since an artifact's alt base can't be the ref base, which is the alt base of a site without
-    alt reads.  An artifact's allele fraction distribution, Beta(1, 9), gives none at depth d with probability
-    9 / (9 + d), which biases its prior down that much: 8% at depth 100 and 1% at depth 1000.
-    """
-    assert context[1] != "T" and not any(p > 0 and state[-1] != "T" for state, p in zip(ARTIFACT_STATES, prior_k))
-    states_n = rng.choice(NUM_STATES, size=num_sites, p=prior_k)
-    af_alpha_n, af_beta_n = ALLELE_FRACTION_PSEUDOCOUNTS_K2.numpy()[states_n].T
-    alt_counts_n = rng.binomial(depth, rng.beta(af_alpha_n, af_beta_n))
-    f1r2_alpha_n, f1r2_beta_n = F1R2_FRACTION_PSEUDOCOUNTS_K2.numpy()[states_n].T
-    alt_f1r2_counts_n = rng.binomial(alt_counts_n, rng.beta(f1r2_alpha_n, f1r2_beta_n))
-    # sites without alt reads have the ref base as their alt base
-    alt_bases_n = np.where(alt_counts_n > 0, T, BASES.index(context[1]))
-    add_sites(counts, context, alt_bases_n, alt_counts_n, alt_f1r2_counts_n, np.full(num_sites, depth))
+def damage_means_and_concentrations(model: ReadOrientationModel):
+    alpha_ca, beta_ca = model.damage_pseudocounts_ca2.unbind(-1)
+    return alpha_ca / (alpha_ca + beta_ca), alpha_ca + beta_ca
 
 
-def test_em_recovers_the_prior_of_simulated_data():
-    # At depth 1000, where the bias is small, the largest relative error in 10 simulations of a million sites was 7%
+def mean_of(model: ReadOrientationModel, context: str, base: str) -> float:
+    means_ca, _ = damage_means_and_concentrations(model)
+    return means_ca[CONTEXT_INDICES[context], BASES.index(base)].item()
+
+
+# FFPE-like capture bias and deamination of the C of ACG, at rates of mean 0.01, on a background of mean 1e-4
+CAPTURE = (0.2 * 30, 0.8 * 30)
+DAMAGE = {("ACG", "T"): (0.01, 30.0)}
+BACKGROUND = (1e-4, 1000.0)
+
+
+def test_em_recovers_simulated_damage():
     rng = np.random.default_rng(42)
-    true_prior_k = np.zeros(NUM_STATES)
-    states = ("F1R2_T", "F2R1_T", "GERMLINE_HET", "SOMATIC_HET", "HOM_VAR")
-    true_prior_k[[STATES.index(s) for s in states]] = [0.01, 0.003, 0.01, 0.002, 0.005]
-    true_prior_k[HOM_REF] = 1 - true_prior_k.sum()
-    counts = empty_counts()
-    simulate(counts, "ACG", true_prior_k, num_sites=1_000_000, depth=1000, rng=rng)
+    counts = simulated_counts(rng, ("ACG", "CGT", "ACA", "TGT"), 100_000, 100, CAPTURE, DAMAGE, BACKGROUND)
+    model = fit_read_orientation_model(counts, CAPTURE, convergence_threshold=1e-6, max_iterations=50)
+    means_ca, concentrations_ca = damage_means_and_concentrations(model)
+    # ACG -> ATG, which damages + strands at sites of ACG and - strands at sites of CGT
+    assert mean_of(model, "ACG", "T") == pytest.approx(0.01, rel=0.2)
+    assert concentrations_ca[CONTEXT_INDICES["ACG"], T].item() == pytest.approx(30, rel=0.5)
+    # its reverse complement, a different process, and the other processes are background
+    for context, base in (("CGT", "A"), ("ACG", "A"), ("CGT", "G"), ("ACA", "T"), ("TGT", "A")):
+        assert mean_of(model, context, base) == pytest.approx(1e-4, rel=0.5), (context, base)
+    # the genotype priors of the learned pairs
+    for context in ("ACG", "ACA"):
+        priors_s = model.genotype_priors_cs[CONTEXT_INDICES[context]]
+        assert priors_s.tolist() == pytest.approx(SIMULATED_GENOTYPE_PRIORS, rel=0.25, abs=3e-4), context
 
-    em = learn_prior(canonical_sites(counts, "ACG"), ref_base=C, convergence_threshold=1e-8, max_iterations=500)
-    assert em.converged
-    for state in states:
-        k = STATES.index(state)
-        assert em.prior_k[k].item() == pytest.approx(true_prior_k[k], rel=0.15), state
-    for state in ("F1R2_A", "F1R2_G", "F2R1_A", "F2R1_G"):
-        assert em.prior_k[STATES.index(state)].item() < 1e-5, state
+
+def mirrored(counts: F1R2Counts) -> F1R2Counts:
+    """
+    The counts as if the reference were the other strand: each site of c is a site of rc(c), its alt base the
+    complement, and its F1R2 reads its F2R1 reads
+    """
+    result = empty_counts()
+    for context, sites in counts.sites.items():
+        alt_bases_n, alt_counts_n, alt_f1r2_n, depths_n = sites.keys_n4.unbind(-1)
+        keys_n4 = torch.stack([NUM_BASES - 1 - alt_bases_n, alt_counts_n, alt_counts_n - alt_f1r2_n, depths_n], -1)
+        known_n = sites.ref_f1r2_counts_n != UNKNOWN_REF_F1R2
+        ref_f1r2_n = torch.where(known_n, depths_n - alt_counts_n - sites.ref_f1r2_counts_n, UNKNOWN_REF_F1R2)
+        result.sites[reverse_complement(context)] = Sites.of(keys_n4, sites.counts_n, sites.maf_mixtures_n, ref_f1r2_n)
+    return result
 
 
-def test_contexts_without_enough_data_keep_the_flat_prior():
-    counts = empty_counts()
+def test_physical_processes_do_not_depend_on_which_strand_is_the_reference():
+    # the regression test of reverse complements: a process's parameters come from its damage on + strands at sites
+    # of its context and on - strands at sites of the reverse complement, whichever strand the reference is
+    rng = np.random.default_rng(7)
+    counts = simulated_counts(rng, ("ACG", "CGT"), 50_000, 60, CAPTURE, DAMAGE, BACKGROUND)
+    model = fit_read_orientation_model(counts, CAPTURE, convergence_threshold=1e-8, max_iterations=100)
+    mirrored_model = fit_read_orientation_model(
+        mirrored(counts), CAPTURE[::-1], convergence_threshold=1e-8, max_iterations=100
+    )
+    # Every process's mean rate, and the concentration of the one with damage, to within EM's tolerance.  The
+    # concentrations of the background processes, whose rates are near 0, barely change their likelihoods, and EM
+    # leaves them where it stops.
+    (means_ca, concentrations_ca), (mirrored_means_ca, mirrored_concentrations_ca) = (
+        damage_means_and_concentrations(m) for m in (model, mirrored_model)
+    )
+    assert torch.allclose(means_ca, mirrored_means_ca, rtol=1e-2)
+    acg = CONTEXT_INDICES["ACG"]
+    assert concentrations_ca[acg, T].item() == pytest.approx(mirrored_concentrations_ca[acg, T].item(), rel=1e-2)
+    assert torch.allclose(model.genotype_priors_cs, mirrored_model.genotype_priors_cs, rtol=1e-3, atol=1e-6)
+    # each context's sites are its reverse complement's in the mirror
+    assert torch.equal(model.num_sites_c, mirrored_model.num_sites_c[REVERSE_COMPLEMENTS])
+
+
+REVERSE_COMPLEMENTS = [CONTEXT_INDICES[reverse_complement(context)] for context in CONTEXTS]
+
+
+def test_capture_bias_alone_is_not_damage():
+    # strong capture bias, as in FFPE exomes, puts most alt reads of real variants in F2R1 orientation, but in both
+    # strands' damage the same, background
+    rng = np.random.default_rng(3)
+    capture = (0.15 * 30, 0.85 * 30)
+    counts = simulated_counts(rng, ("ACG", "CGT"), 50_000, 100, capture, {}, BACKGROUND)
+    model = fit_read_orientation_model(counts, capture, convergence_threshold=1e-6, max_iterations=50)
+    means_ca, _ = damage_means_and_concentrations(model)
+    learned = [process("ACG", b) for b in "ATG"] + [process("CGT", b) for b in "ACT"]
+    assert torch.all(means_ca.flatten()[learned] < 3e-4)
+
+
+def test_pairs_without_enough_data_keep_the_flat_prior():
     rng = np.random.default_rng(0)
-    prior_k = np.zeros(NUM_STATES)
-    prior_k[[STATES.index(s) for s in ("F1R2_T", "GERMLINE_HET", "HOM_VAR")]] = 0.01
-    prior_k[HOM_REF] = 1 - prior_k.sum()
-    simulate(counts, "ACG", prior_k, num_sites=20000, depth=60, rng=rng)
-    # the canonical GGA has sites without alt reads but none with two or more
+    counts = simulated_counts(rng, ("ACG",), 20_000, 60, CAPTURE, DAMAGE, BACKGROUND)
+    # the pair of GGA has sites without alt reads but none with two or more
     counts.sites["GGA"] = Sites.of([[G, 0, 0, 51]], [1000])
-
-    priors = learn_priors(counts)
-    assert set(priors) == set(CONTEXTS)
+    model = fit_read_orientation_model(counts, CAPTURE)
+    _, concentrations_ca = damage_means_and_concentrations(model)
     for context in ("TCC", "GGA", "AAA", "TTT"):
-        assert torch.equal(priors[context].prior_k, flat_prior(BASES.index(context[1])))
-        assert priors[context].num_sites == priors[context].num_alt_sites == 0
-    # the prior of a reverse complement context has the equivalent states
-    acg, cgt = priors["ACG"], priors["CGT"]
-    assert acg.num_sites == cgt.num_sites == 20000
-    assert acg.prior_k[STATES.index("F1R2_T")] == cgt.prior_k[STATES.index("F2R1_A")]
-    assert torch.equal(acg.prior_k[HOM_REF:], cgt.prior_k[HOM_REF:])
+        c = CONTEXT_INDICES[context]
+        assert torch.all(model.genotype_priors_cs[c] == FLAT_PRIOR)
+        assert model.num_sites_c[c] == model.num_alt_sites_c[c] == 0
+        # the damage distribution of the hierarchical prior's mean, the same for every process without data
+        assert torch.equal(model.damage_pseudocounts_ca2[c], model.damage_pseudocounts_ca2[CONTEXT_INDICES["AAA"]])
+    acg, cgt = CONTEXT_INDICES["ACG"], CONTEXT_INDICES["CGT"]
+    assert model.num_sites_c[acg] == 20_000 and model.num_sites_c[cgt] == 0
+    assert torch.equal(model.genotype_priors_cs[acg], model.genotype_priors_cs[cgt])
+    assert not torch.all(model.genotype_priors_cs[acg] == FLAT_PRIOR)
 
 
-def random_priors(rng) -> dict[str, ContextPrior]:
-    """a random prior of each canonical context, and the equivalent prior of its reverse complement"""
-    priors = {}
-    for context in CANONICAL_CONTEXTS:
-        prior_k = flat_prior(BASES.index(context[1])) * torch.from_numpy(rng.uniform(0.1, 1.0, NUM_STATES))
-        num_sites, num_alt_sites = rng.integers(1000), rng.integers(100)
-        prior = ContextPrior(context, prior_k / prior_k.sum(), int(num_sites), int(num_alt_sites))
-        priors[context], priors[reverse_complement(context)] = prior, prior.reverse_complement()
-    return priors
+def random_model(rng, sample: str = "TUMOR") -> ReadOrientationModel:
+    means = rng.uniform(1e-5, 0.2, size=(NUM_CONTEXTS, NUM_BASES))
+    concentrations = rng.uniform(5, 500, size=(NUM_CONTEXTS, NUM_BASES))
+    pseudocounts_ca2 = torch.tensor(np.stack([means * concentrations, (1 - means) * concentrations], -1))
+    priors_cs = torch.tensor(rng.dirichlet(np.ones(NUM_GENOTYPES), size=NUM_CONTEXTS))
+    capture = torch.tensor([3.0, 7.0])
+    return ReadOrientationModel(sample, pseudocounts_ca2, priors_cs, capture, torch.tensor(rng.integers(1000, size=64)))
 
 
 def test_model_save_and_load(tmp_path):
-    model = ReadOrientationModel("TUMOR", random_priors(np.random.default_rng(0)))
+    model = random_model(np.random.default_rng(0))
     model.save(tmp_path / "model.pt")
     loaded = ReadOrientationModel.load(tmp_path / "model.pt")
     assert loaded.sample == "TUMOR"
@@ -293,41 +352,68 @@ def test_model_save_and_load(tmp_path):
         assert torch.equal(buffer, loaded.get_buffer(name)), name
 
 
-def test_model_needs_the_priors_of_every_context():
-    priors = random_priors(np.random.default_rng(0))
-    del priors["ACG"]
-    with pytest.raises(ValueError, match="all 64 contexts"):
-        ReadOrientationModel("TUMOR", priors)
+def test_model_needs_the_damage_of_every_process():
+    with pytest.raises(ValueError, match="damage pseudocounts have shape"):
+        ReadOrientationModel("TUMOR", torch.ones(NUM_CONTEXTS - 1, NUM_BASES, 2))
 
 
-def test_model_log_priors():
-    priors = random_priors(np.random.default_rng(1))
-    model = ReadOrientationModel("TUMOR", priors)
-    # ACG with alt T, then its reverse complement CGT with alt A, whose F1R2 artifacts are ACG's F2R1 artifacts and vice
-    # versa, then ACG with alt C, its ref base, and a deletion, neither of which can be a read orientation artifact
+def test_model_processes():
+    # ACG with alt T, then its reverse complement CGT with alt A, then ACG with alt C, its ref base, and a deletion
     left_b, ref_b, right_b, alt_b = torch.tensor([[A, C, G, T], [C, G, T, A], [A, C, G, C], [A, C, G, 4]]).T
-    result_bo = model.log_priors_bo(left_b, ref_b, right_b, alt_b)
-    expected_o = priors["ACG"].prior_k[[STATES.index("F1R2_T"), STATES.index("F2R1_T")]].log()
-    assert torch.allclose(result_bo[0], expected_o)
-    assert torch.allclose(result_bo[1], expected_o.flip(0))
-    assert torch.all(result_bo[2:] == -math.inf)
+    processes_bo, snvs_b = ReadOrientationModel.processes_bo(left_b, ref_b, right_b, alt_b)
+    acg_atg, cgt_cat = process("ACG", "T"), process("CGT", "A")
+    assert processes_bo[:2].tolist() == [[acg_atg, cgt_cat], [cgt_cat, acg_atg]]
+    assert snvs_b.tolist() == [True, True, False, False]
 
 
-def test_model_likelihoods_are_those_of_the_em():
-    # the log likelihoods of an artifact state are the sum of the model's spectrum and F1R2 log likelihoods, and those of
-    # a somatic het include its non-artifact F1R2 log likelihoods
-    keys = [[T, 5, 5, 50], [T, 1, 0, 7], [A, 12, 6, 100], [G, 30, 2, 60]]
-    sites = Sites.of(keys, [1] * len(keys))
-    em_nk = log_likelihoods(sites, ref_base=C)
-    model = ReadOrientationModel("TUMOR", random_priors(np.random.default_rng(2)))
-    alt_counts_n, alt_f1r2_counts_n, depths_n = (
-        x.double() for x in (sites.alt_counts_n, sites.alt_f1r2_counts_n, sites.depths_n)
+def test_model_damage_likelihoods_are_those_of_the_em():
+    # a model's likelihood of a variant's reads from damage, plus the hypergeometric factor it leaves out, is the EM's
+    # likelihood of an alt table site's reads given HOM_REF, with the same damage distributions
+    rng = np.random.default_rng(5)
+    keys = [[T, 5, 5, 50], [T, 3, 0, 70], [A, 12, 6, 100], [G, 30, 2, 60]]
+    sites = table_of(keys, ref_f1r2_counts=[20, 30, 44, 10])
+    learned_w = learned_pairs_w(sites) | True
+    em = OrientationEM(sites, learned_w, (10.0, 10.0))
+    u_q2 = torch.tensor(rng.normal(size=(len(em.learned_processes_q), 2)))
+    _, _, em_n = em.damage_log_likelihoods(u_q2)
+    u_p2 = torch.zeros(NUM_CONTEXTS * NUM_BASES, 2, dtype=torch.float64)
+    u_p2[em.learned_processes_q] = u_q2
+    alpha_p, beta_p = damage_pseudocounts(u_p2)
+    model = ReadOrientationModel("TUMOR", torch.stack([alpha_p, beta_p], -1).reshape(NUM_CONTEXTS, NUM_BASES, 2))
+    a = em.alt_table
+    context = torch.tensor([BASES.index(b) for b in "ACG"]).unsqueeze(-1).expand(3, len(a))
+    counts = [x.double() for x in (a.alt_f1r2_counts_n, a.alt_f2r1_counts_n, a.f1r2_depths_n, a.f2r1_depths_n)]
+    model_n, snvs_n = model.damage_log_likelihoods_b(*context, a.alt_bases_n, *counts)
+    assert torch.all(snvs_n)
+    assert torch.allclose(model_n + log_hypergeometric(*counts), em_n)
+
+
+def test_model_damage_likelihoods_of_reads_of_unknown_orientation():
+    # ACG -> ATG of mean rate 0.1, every other process 1e-5, and balanced capture
+    pseudocounts_ca2 = torch.tensor([1e-5, 1 - 1e-5], dtype=torch.float64).expand(NUM_CONTEXTS, NUM_BASES, 2) * 1000
+    pseudocounts_ca2 = pseudocounts_ca2.clone()
+    pseudocounts_ca2[CONTEXT_INDICES["ACG"], T] = torch.tensor([2.0, 18.0])
+    model = ReadOrientationModel("TUMOR", pseudocounts_ca2, capture_pseudocounts_2=torch.tensor([10.0, 10.0]))
+    context = [torch.tensor([b] * 4) for b in (A, C, G)]
+    alt = torch.tensor([T] * 4)
+    # a1, a2, n1, n2, then depth and alt count: all reads oriented; 6 alt reads of 100, 4 of them F1R2 among 60
+    # oriented reads; and 6 alt reads none of them oriented
+    a1, a2, n1, n2 = (
+        torch.tensor(x, dtype=torch.float64) for x in ([6, 4, 0, 0], [0, 0, 0, 0], [53, 30, 30, 30], [47, 30, 30, 30])
     )
-    artifact_no = model.artifact_spectrum_log_likelihoods_bo(sites.alt_bases_n, depths_n, alt_counts_n)
-    artifact_no += model.artifact_f1r2_log_likelihoods_bo(sites.alt_bases_n, alt_counts_n, alt_f1r2_counts_n)
-    assert torch.allclose(artifact_no, em_nk.gather(1, artifact_states_bo(sites.alt_bases_n)))
+    depths, alt_counts = torch.tensor([100.0, 100, 100, 60]), torch.tensor([6.0, 6, 6, 0])
+    oriented_b, _ = model.damage_log_likelihoods_b(*context, alt, a1, a2, n1, n2)
+    with_totals_b, _ = model.damage_log_likelihoods_b(*context, alt, a1, a2, n1, n2, depths, alt_counts)
+    # without unoriented reads, the same
+    assert with_totals_b[0].item() == pytest.approx(oriented_b[0].item())
+    assert with_totals_b[3].item() == pytest.approx(oriented_b[3].item())
+    # unoriented alt reads aren't free: 6 of 40, at the rate 0.02 expected of ACG -> ATG given that none of the
+    # 60 oriented reads is damaged, cost about 3 nats, and are likelier where 4 of 30 F1R2 reads are
+    assert with_totals_b[2] < oriented_b[2] - 3
+    assert with_totals_b[1] > with_totals_b[2] + 3
 
-    non_artifact_f1r2_n = model.non_artifact_f1r2_log_likelihoods_b(alt_counts_n, alt_f1r2_counts_n)
-    alpha, beta = ALLELE_FRACTION_PSEUDOCOUNTS_K2[SOMATIC_HET].tolist()
-    somatic_spectrum_n = betabinom.logpmf(alt_counts_n.numpy(), depths_n.numpy(), alpha, beta)
-    assert np.allclose(em_nk[:, SOMATIC_HET].numpy(), somatic_spectrum_n + non_artifact_f1r2_n.numpy())
+
+def test_unconstrained_damage_round_trip():
+    u = unconstrained_damage(0.01, 30.0)
+    alpha, beta = damage_pseudocounts(u.unsqueeze(0))
+    assert (alpha / (alpha + beta)).item() == pytest.approx(0.01) and (alpha + beta).item() == pytest.approx(30.0)

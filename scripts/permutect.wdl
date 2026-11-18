@@ -696,8 +696,8 @@ task SegmentPileups {
     }
 }
 
-# learn the tumor's read orientation artifact model from the F1R2 counts of Mutect2's scatters, with priors learned as
-# GATK LearnReadOrientationModel learns them, given segment_pileups' GermlineModel if there is one
+# learn the tumor's read orientation artifact model from the F1R2 counts of Mutect2's scatters, given segment_pileups'
+# GermlineModel if there is one
 task LearnReadOrientationModel {
     input {
         Array[File]+ f1r2_counts
