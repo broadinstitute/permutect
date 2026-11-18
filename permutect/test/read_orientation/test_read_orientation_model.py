@@ -16,6 +16,7 @@ from permutect.read_orientation.read_orientation_model import CANONICAL_CONTEXTS
 from permutect.read_orientation.read_orientation_model import F1R2_FRACTION_PSEUDOCOUNTS_K2
 from permutect.read_orientation.read_orientation_model import GERMLINE_HET
 from permutect.read_orientation.read_orientation_model import HOM_REF
+from permutect.read_orientation.read_orientation_model import NUM_ARTIFACT_STATES
 from permutect.read_orientation.read_orientation_model import NUM_STATES
 from permutect.read_orientation.read_orientation_model import REVERSE_COMPLEMENT_STATES_K
 from permutect.read_orientation.read_orientation_model import SOMATIC_HET
@@ -29,6 +30,7 @@ from permutect.read_orientation.read_orientation_model import flat_prior
 from permutect.read_orientation.read_orientation_model import learn_prior
 from permutect.read_orientation.read_orientation_model import learn_priors
 from permutect.read_orientation.read_orientation_model import log_likelihoods
+from permutect.read_orientation.read_orientation_model import non_artifact_f1r2_pseudocounts_k2
 from permutect.read_orientation.read_orientation_model import posteriors
 from permutect.read_orientation.read_orientation_model import reverse_complement
 from permutect.segmentation.emissions import EmissionModel
@@ -97,6 +99,21 @@ def test_germline_het_likelihoods_replace_only_the_germline_het_allele_fraction(
     alpha, beta = ALLELE_FRACTION_PSEUDOCOUNTS_K2[GERMLINE_HET].tolist()
     gatk_n = torch.tensor(betabinom.logpmf(sites.alt_counts_n.numpy(), sites.depths_n.numpy(), alpha, beta))
     assert torch.allclose(with_nk[:, GERMLINE_HET], without_nk[:, GERMLINE_HET] - gatk_n + germline_het(sites))
+
+
+def test_non_artifact_f1r2_pseudocounts(tmp_path):
+    pseudocounts_k2 = non_artifact_f1r2_pseudocounts_k2(3.0, 17.0)
+    assert torch.equal(pseudocounts_k2[:NUM_ARTIFACT_STATES], F1R2_FRACTION_PSEUDOCOUNTS_K2[:NUM_ARTIFACT_STATES])
+    assert pseudocounts_k2[NUM_ARTIFACT_STATES:].tolist() == [[3.0, 17.0]] * (NUM_STATES - NUM_ARTIFACT_STATES)
+
+    # a model saves them, and gives every non-artifact variant their likelihoods
+    path = tmp_path / "model.pt"
+    ReadOrientationModel("SAMPLE", learn_priors(empty_counts()), f1r2_fraction_pseudocounts_k2=pseudocounts_k2).save(
+        path
+    )
+    alt_counts_b, alt_f1r2_counts_b = torch.tensor([10, 10, 3]), torch.tensor([1, 5, 3])
+    result_b = ReadOrientationModel.load(path).non_artifact_f1r2_log_likelihoods_b(alt_counts_b, alt_f1r2_counts_b)
+    assert np.allclose(result_b.numpy(), betabinom.logpmf(alt_f1r2_counts_b.numpy(), alt_counts_b.numpy(), 3.0, 17.0))
 
 
 def test_canonical_contexts():

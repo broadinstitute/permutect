@@ -8,10 +8,11 @@ prior probabilities of 12 states of a site:
 - 4 non-artifact states: HOM_REF, GERMLINE_HET, SOMATIC_HET and HOM_VAR.
 
 Given its state, a site's alt count is beta-binomial in its depth, and its count of alt reads in F1R2 orientation is
-beta-binomial in its alt count, with fixed pseudocounts.  An artifact state also fixes the alt base.  A context and
-its reverse complement share their priors, with each F1R2 artifact state of one equivalent to the F2R1 state of the
-other with the complementary alt base, eg F1R2_T of ACG to F2R1_A of CGT.  The data of each pair go to the
-lexicographically smaller, canonical context.
+beta-binomial in its alt count, with fixed pseudocounts, GATK's or, for the non-artifact states' F1R2 counts, those of
+the sample's baseline orientation (see permutect.read_orientation.baseline_orientation).  An artifact state also fixes
+the alt base.  A context and its reverse complement share their priors, with each F1R2 artifact state of one
+equivalent to the F2R1 state of the other with the complementary alt base, eg F1R2_T of ACG to F2R1_A of CGT.  The data
+of each pair go to the lexicographically smaller, canonical context.
 
 Given segment_pileups' model of the sample, a germline het's alt count instead has the likelihood of that model's
 emissions, at the minor allele fraction (MAF) of the site's segment, or the mixture of MAFs of its block (see
@@ -124,6 +125,13 @@ class GermlineHetLikelihoods:
         return torch.logsumexp(het_ng + self.log_weights_mg[sites.maf_mixtures_n], dim=-1)
 
 
+def non_artifact_f1r2_pseudocounts_k2(alpha: float, beta: float) -> Tensor:
+    """GATK's pseudocounts of each state's F1R2 fraction, but with the given ones for the non-artifact states"""
+    result_k2 = F1R2_FRACTION_PSEUDOCOUNTS_K2.clone()
+    result_k2[NUM_ARTIFACT_STATES:] = torch.tensor([alpha, beta], dtype=torch.float64)
+    return result_k2
+
+
 def log_likelihoods(
     sites: Sites,
     ref_base: int,
@@ -167,14 +175,18 @@ def learn_prior(
     convergence_threshold: float = 1e-4,
     max_iterations: int = 20,
     germline_het: GermlineHetLikelihoods = None,
+    f1r2_fraction_pseudocounts_k2: Tensor = F1R2_FRACTION_PSEUDOCOUNTS_K2,
 ) -> EMResult:
     """
     The maximum a posteriori prior of the states of sites of a context with the given ref base, by EM as in GATK: the
     prior starts flat and is updated until it changes by at most the convergence threshold (Euclidean distance), or for
     at most max_iterations.  Each update adds the flat prior to the expected numbers of sites in each state as
-    pseudocounts.  Given germline_het, germline hets have its likelihoods (see log_likelihoods).
+    pseudocounts.  Given germline_het, germline hets have its likelihoods (see log_likelihoods), and the states' F1R2
+    fractions have the given pseudocounts.
     """
-    log_likelihoods_nk = log_likelihoods(sites, ref_base, germline_het=germline_het)
+    log_likelihoods_nk = log_likelihoods(
+        sites, ref_base, f1r2_fraction_pseudocounts_k2=f1r2_fraction_pseudocounts_k2, germline_het=germline_het
+    )
     pseudocounts_k = flat_prior(ref_base)
     prior_k = pseudocounts_k
     for iteration in range(1, max_iterations + 1):
@@ -214,12 +226,13 @@ def learn_priors(
     convergence_threshold: float = 1e-4,
     max_iterations: int = 20,
     emission_model: EmissionModel = None,
+    f1r2_fraction_pseudocounts_k2: Tensor = F1R2_FRACTION_PSEUDOCOUNTS_K2,
 ) -> dict[str, ContextPrior]:
     """
     The prior of every context of a sample, by context.  As in GATK, a canonical context and its reverse complement keep
     the flat prior unless they have sites without alt reads and sites with two or more, which are in GATK's alt tables.
     Given segment_pileups' emission model of the sample, germline hets have its likelihoods at the MAFs of the counts'
-    MAF mixtures.
+    MAF mixtures.  The states' F1R2 fractions have the given pseudocounts, by default GATK's.
     """
     germline_het = None if emission_model is None else GermlineHetLikelihoods(emission_model, counts.maf_mixtures_mg)
     result = {}
@@ -232,7 +245,9 @@ def learn_priors(
             print(f"{description}, too few to learn from.  Using the flat prior.")
             prior = ContextPrior(context, flat_prior(ref_base), 0, 0)
         else:
-            em = learn_prior(sites, ref_base, convergence_threshold, max_iterations, germline_het)
+            em = learn_prior(
+                sites, ref_base, convergence_threshold, max_iterations, germline_het, f1r2_fraction_pseudocounts_k2
+            )
             outcome = f"converged in {em.num_iterations}" if em.converged else f"did not converge in {max_iterations}"
             print(f"{description}, EM {outcome} iterations")
             prior = ContextPrior(context, em.prior_k, sites.num_sites(), num_alt_sites)
@@ -268,7 +283,8 @@ class ReadOrientationModel(nn.Module):
     """
     A sample's read orientation artifact model, which learn_read_orientation_model learns: the prior of each state in
     every context, and the pseudocounts of the beta-binomial distributions of each state's alt count and alt F1R2 count.
-    The pseudocounts are GATK's fixed ones for now.
+    The pseudocounts are GATK's, except those of the non-artifact states' F1R2 fraction, which are fit to the sample's
+    baseline orientation.
 
     The methods are batched over variants.  Bases are indices into BASES, so that A, C, G, T are 0 to 3, as in
     Permutect's haplotypes, where 4 is a deletion.
@@ -330,8 +346,8 @@ class ReadOrientationModel(nn.Module):
     def non_artifact_f1r2_log_likelihoods_b(self, alt_counts_b: Tensor, alt_f1r2_counts_b: Tensor):
         """
         The log likelihoods of each variant's count of alt reads in F1R2 orientation if it isn't an artifact, a 1D
-        tensor.  These are the likelihoods of a somatic het, whose alt reads are equally likely in each orientation, as
-        are those of every non-artifact state.
+        tensor.  These are the likelihoods of a somatic het, whose alt reads have the sample's baseline orientation, as
+        do those of every non-artifact state.
         """
         alpha, beta = self.f1r2_fraction_pseudocounts_k2[SOMATIC_HET]
         return beta_binomial_log_lk(alt_counts_b, alt_f1r2_counts_b, alpha, beta)

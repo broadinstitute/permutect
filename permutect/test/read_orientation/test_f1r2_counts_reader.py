@@ -146,6 +146,20 @@ def test_inputs_are_summed(tmp_path):
     assert rows(counts_by_sample["OTHER"].sites["ACG"]) == [(C, 0, 0, depth, depth) for depth in range(1, 5)]
 
 
+def test_ref_orientations_of_alt_tables(tmp_path):
+    depths = [1, 2]
+    ref_rows = [("chr1", 1, "ACG", [1, 1])]
+    # alt-table sites (ref count, alt count, ref F1R2 count, alt F1R2 count, alt base), one without ref reads
+    alt_tables_1 = {"ACG": [(20, 3, 5, 1, "T"), (0, 4, 0, 2, "T")], "TTT": [(20, 2, 5, 1, "G")]}
+    alt_tables_2 = {"ACG": [(20, 3, 5, 0, "A"), (8, 3, 8, 0, "A")]}
+    write_tar_gz(tmp_path / "1.tar.gz", f1r2_files("S", depths, ref_rows, [], alt_tables_1))
+    write_tar_gz(tmp_path / "2.tar.gz", f1r2_files("S", depths, ref_rows, [], alt_tables_2))
+    orientations = read_f1r2_counts([tmp_path / "1.tar.gz", tmp_path / "2.tar.gz"])["S"].ref_orientations
+    # by (ref count, ref F1R2 count), summed over contexts and inputs, without the site lacking ref reads
+    assert sorted(zip(*(x.tolist() for x in orientations.tensors()))) == [(8, 8, 1), (20, 5, 3)]
+    assert orientations.num_sites() == 4
+
+
 def test_rounded_depths(tmp_path):
     # Mutect2's depths are exact up to 24 and rounded above
     def counts(depth, count):

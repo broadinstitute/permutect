@@ -6,7 +6,13 @@ import pytest
 import torch
 
 from permutect import constants
+from permutect.read_orientation.baseline_orientation import fit_baseline_orientation
+from permutect.read_orientation.f1r2_counts_reader import read_f1r2_counts
+from permutect.read_orientation.read_orientation_model import F1R2_FRACTION_PSEUDOCOUNTS_K2
+from permutect.read_orientation.read_orientation_model import NUM_ARTIFACT_STATES
 from permutect.read_orientation.read_orientation_model import ReadOrientationModel
+from permutect.read_orientation.read_orientation_model import learn_priors
+from permutect.read_orientation.read_orientation_model import non_artifact_f1r2_pseudocounts_k2
 from permutect.read_orientation.read_orientation_model import reverse_complement
 from permutect.segmentation.germline_model import GermlineModel
 from permutect.segmentation.germline_model import SampleSegmentation
@@ -35,17 +41,13 @@ def read_gatk_priors(tar_gz) -> tuple[str, dict[str, list[str]]]:
         (HAPMAP_F1R2_SCATTERS, HAPMAP_GATK_ORIENTATION_PRIORS),
     ],
 )
-def test_priors_match_gatk(tmp_path, f1r2_counts, gatk_priors):
-    # the priors of GATK LearnReadOrientationModel from the same counts, including the flat priors of contexts with too
-    # few sites of the hapmap counts
-    output = str(tmp_path / "model.pt")
-    learn_read_orientation_model.main_without_parsing(
-        learn_read_orientation_model.parse_arguments(["--input", *f1r2_counts, "--output", output])
-    )
-    model = ReadOrientationModel.load(output)
+def test_priors_match_gatk(f1r2_counts, gatk_priors):
+    # the priors of GATK LearnReadOrientationModel from the same counts and with its likelihoods, including the flat
+    # priors of contexts with too few sites of the hapmap counts
+    ((sample, counts),) = read_f1r2_counts(f1r2_counts).items()
+    priors = learn_priors(counts)
     gatk_sample, gatk_rows = read_gatk_priors(gatk_priors)
-    assert model.sample == gatk_sample
-    priors = model.context_priors()
+    assert sample == gatk_sample
     assert priors.keys() == gatk_rows.keys() and len(priors) == 64
     for context, fields in gatk_rows.items():
         # context, reverse complement, 12 probabilities, number of sites and of alt sites
@@ -136,3 +138,16 @@ def test_germline_model_of_another_sample_is_an_error(tmp_path):
     arguments += ["--" + constants.GERMLINE_MODEL_NAME, germline_model]
     with pytest.raises(ValueError, match="germline model is of sample ANOTHER_SAMPLE"):
         learn_read_orientation_model.main_without_parsing(learn_read_orientation_model.parse_arguments(arguments))
+
+
+def test_baseline_orientation_is_fit_and_saved(tmp_path):
+    output = str(tmp_path / "model.pt")
+    learn_read_orientation_model.main_without_parsing(
+        learn_read_orientation_model.parse_arguments(["--input", *DREAM_TUMOR_4_F1R2_SCATTERS, "--output", output])
+    )
+    # the non-artifact states' F1R2 pseudocounts are the fit to the ref reads of the alt tables, rather than GATK's
+    ((_, counts),) = read_f1r2_counts(DREAM_TUMOR_4_F1R2_SCATTERS).items()
+    expected_k2 = non_artifact_f1r2_pseudocounts_k2(*fit_baseline_orientation(counts.ref_orientations).pseudocounts())
+    saved_k2 = ReadOrientationModel.load(output).f1r2_fraction_pseudocounts_k2
+    assert torch.allclose(saved_k2, expected_k2)
+    assert not torch.allclose(saved_k2[NUM_ARTIFACT_STATES:], F1R2_FRACTION_PSEUDOCOUNTS_K2[NUM_ARTIFACT_STATES:])
