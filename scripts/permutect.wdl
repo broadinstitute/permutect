@@ -387,7 +387,7 @@ workflow Permutect {
 
     runtime {
         docker: permutect_docker
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + select_first([disk_space, 100]) + " SSD"
         preemptible: select_first([preemptible, 0])
@@ -441,7 +441,7 @@ task SplitMultiallelics {
 
     runtime {
         docker: gatk_docker
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + disk_space + " SSD"
         preemptible: select_first([preemptible, 0])
@@ -519,7 +519,7 @@ task Concordance {
 
     runtime {
         memory: "5 GB"
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         docker: "${gatk_docker}"
         disks: "local-disk " + 100 + " HDD"
         preemptible: select_first([preemptible, 2])
@@ -575,7 +575,7 @@ task SegmentPileups {
 
     runtime {
         docker: permutect_docker
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + disk_space + " SSD"
         preemptible: select_first([preemptible, 0])
@@ -618,7 +618,7 @@ task LearnReadOrientationModel {
 
     runtime {
         docker: permutect_docker
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + disk_space + " SSD"
         preemptible: select_first([preemptible, 0])
@@ -685,7 +685,7 @@ task ArchiveM2Outputs {
 
     runtime {
         docker: permutect_docker
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: "2 GB"
         disks: "local-disk " + disk_space + " SSD"
         preemptible: select_first([preemptible, 0])
@@ -717,7 +717,7 @@ task ExtractM2Outputs {
 
     runtime {
         docker: permutect_docker
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: "2 GB"
         disks: "local-disk " + disk_space + " SSD"
         preemptible: select_first([preemptible, 0])
