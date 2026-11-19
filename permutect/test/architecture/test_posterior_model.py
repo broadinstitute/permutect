@@ -277,6 +277,21 @@ def test_posterior_passes_read_no_values_for_each_batch(monkeypatch, posterior_p
     assert num_copies(1) == num_copies(3)
 
 
+def test_calculating_thresholds_keeps_no_autograd_graphs(monkeypatch):
+    # the error probabilities of every batch are kept until the thresholds are found, and with gradients each would keep
+    # its batch's autograd graph
+    model = make_posterior_model(torch.device("cpu"))
+    error_probabilities_b, error_probs = model.error_probabilities_b, []
+
+    def recording_error_probabilities_b(batch, germline_mode=False):
+        error_probs.append(error_probabilities_b(batch, germline_mode))
+        return error_probs[-1]
+
+    monkeypatch.setattr(model, "error_probabilities_b", recording_error_probabilities_b)
+    model.calculate_probability_thresholds(posterior_loader(3))
+    assert len(error_probs) == 3 and not any(probs.requires_grad for probs in error_probs)
+
+
 def test_learning_leaves_the_germline_model_unchanged():
     # the germline model was fit to the pileups of common SNPs, so fitting the spectra to the variants mustn't change it
     germline_model = GermlineModel(sample_segmentation("tumor"), sample_segmentation("normal"), 0.03, 0.002)
