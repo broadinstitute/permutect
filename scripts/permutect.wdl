@@ -347,13 +347,24 @@ workflow Permutect {
         Int? max_retries
         Int? disk_space
         Int? cpu
+        # memory in GB, which overrides the estimate below
         Int? mem
     }
 
-    # Mem is in units of GB but our command and memory runtime values are in MB
-    Int machine_mem = if defined(mem) then mem * 1000 else 16000
-    Int command_mem = machine_mem - 500
     Int num_cpus = select_first([cpu, 4])
+
+    # Without mem, an estimate of the peak memory from measurements in November 2026, plus 1.5 GB of margin:
+    # - preprocessing the test dataset, in a spawned process per CPU that imports torch and permutect, takes about 1.8 GB
+    #   plus 0.62 GB per process, whatever the dataset's size
+    # - afterwards memory peaks at about 3.75 GB plus 0.64 GB per GB of test dataset.  The data loader's chunks are at most
+    #   an eighth of the free memory, so this overestimates for a smaller machine.
+    # - each DataLoader worker adds up to about 0.5 GB.  The batch size and the number of GPUs don't matter.
+    Float preprocessing_gb = 1.8 + 0.62 * num_cpus
+    Float filtering_gb = 3.75 + 0.64 * size(test_dataset, "GB")
+    Float peak_gb = (if preprocessing_gb > filtering_gb then preprocessing_gb else filtering_gb) + 0.5 * num_workers
+    # in MB as Cromwell counts them, 2^20 bytes, so a little more than the estimate
+    Int machine_mem = if defined(mem) then mem * 1000 else ceil((peak_gb + 1.5) * 1000)
+    Int command_mem = machine_mem - 500
 
     command <<<
         set -euo pipefail
