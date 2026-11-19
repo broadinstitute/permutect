@@ -264,6 +264,9 @@ class PosteriorModel(torch.nn.Module):
 
     # map of Variant type to probability threshold that maximizes F1 score
     # loader is a Dataloader whose collate_fn is the PosteriorBatch constructor
+    # in inference mode: each batch's error probabilities are kept until the end, and with gradients they would keep
+    # their autograd graphs, about 7 GB per million variants
+    @torch.inference_mode()
     def calculate_probability_thresholds(
         self,
         posterior_loader,
