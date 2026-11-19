@@ -52,7 +52,7 @@ workflow Permutect {
         Int? gpu_count
         String? concordance_header
         # split each multi-nucleotide variant (MNV) into its constituent SNVs, eg to compare with a truth VCF that represents
-        # MNVs that way.  Concordance then evaluates the split VCFs; output_vcf keeps the MNVs.
+        # MNVs that way.  Concordance then evaluates the split VCF; output_vcf keeps the MNVs.
         Boolean split_mnvs = false
 
         # Mutect2's outputs from an earlier run, ie the m2_outputs output of that run: an uncompressed tar archive of
@@ -284,14 +284,6 @@ workflow Permutect {
     }
 
     if (defined(test_dataset_truth_vcf_hack)){
-        if (split_mnvs) {
-            call SplitMNVs as SplitM2MNVs {
-                input:
-                    input_vcf = select_first([Mutect2.output_vcf, ExtractM2Outputs.mutect2_vcf]),
-                    permutect_docker = permutect_docker
-            }
-        }
-
         call Concordance as PermutectConcordance {
             input:
                 intervals = intervals_hack,
@@ -302,18 +294,6 @@ workflow Permutect {
                 eval_vcf_idx = select_first([SplitPermutectMNVs.output_vcf_idx, PermutectFiltering.output_vcf_idx]),
                 gatk_docker = permutect_docker,
                 concordance_header = concordance_header,
-        }
-
-        call Concordance as M2Concordance {
-            input:
-                intervals = intervals_hack,
-                masks = masks_hack,
-                truth_vcf = select_first([test_dataset_truth_vcf_hack]),
-                truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_or_conventional]),
-                eval_vcf = select_first([SplitM2MNVs.output_vcf, Mutect2.output_vcf, ExtractM2Outputs.mutect2_vcf]),
-                eval_vcf_idx = select_first([SplitM2MNVs.output_vcf_idx, Mutect2.output_vcf_idx, ExtractM2Outputs.mutect2_vcf_idx]),
-                gatk_docker = permutect_docker,
-                concordance_header = concordance_header
         }
     }
 
@@ -346,8 +326,6 @@ workflow Permutect {
         File? ftn_idx = PermutectConcordance.ftn_idx
         File? concordance_summary = PermutectConcordance.summary
         File? filter_analysis = PermutectConcordance.filter_analysis
-
-        File? m2_concordance_summary = M2Concordance.summary
 
         # segment_pileups' outputs, if there were common variants
         File? germline_model = SegmentPileups.germline_model
