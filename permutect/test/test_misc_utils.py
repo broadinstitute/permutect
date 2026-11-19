@@ -1,3 +1,4 @@
+import itertools
 import math
 import time
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from permutect.data.batch import BatchIndexedTensor
 from permutect.data.datum import DEFAULT_CPU_FLOAT
 from permutect.data.datum import DEFAULT_GPU_FLOAT
 from permutect.data.datum import RAW_READS_ARRAY_DTYPE
+from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.metrics.loss_metrics import AccuracyMetrics
@@ -24,6 +26,7 @@ from permutect.misc_utils import ConsistentValue
 from permutect.misc_utils import StreamingAverage
 from permutect.misc_utils import Timer
 from permutect.misc_utils import VcfEditor
+from permutect.misc_utils import allele_key
 from permutect.misc_utils import encode
 from permutect.misc_utils import encode_datum
 from permutect.misc_utils import encode_variant
@@ -31,12 +34,14 @@ from permutect.misc_utils import float_dtype
 from permutect.misc_utils import get_first_numeric_element
 from permutect.misc_utils import get_tumor_sample_index
 from permutect.misc_utils import overlapping_filters
+from permutect.misc_utils import position_key
 from permutect.misc_utils import report_device
 from permutect.misc_utils import resolve_device
 from permutect.misc_utils import str_repeat_count_change
 from permutect.misc_utils import tumor_alt_orientation_counts
 from permutect.misc_utils import tumor_depths
 from permutect.misc_utils import tumor_ref_orientation_counts
+from permutect.misc_utils import vcf_contig_ranks
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
@@ -397,38 +402,89 @@ def test_encode_variant_edge_cases(tmp_path):
     assert encode_variant(first_base) == "chr1:1:A:T"
 
 
+# variants whose records in a VCF and data in a dataset must match, in the order of a sorted VCF
+MATCHED_VARIANTS = [
+    ("chr1", 100, "C", "T"),
+    ("chr1", 200, "CAG", "C"),
+    ("chr1", 300, "C", "CTT"),
+    ("chr1", 400, "CGG", "TGG"),
+    ("chr1", 500, "C", "C" + "AGT" * 6),
+    ("chr1", 600, "CG", "C" + "A" * 11 + "GTG"),  # the datum must also trim before truncating
+    ("chr1", 700, "CAG", "C"),  # two deletions at one position, eg from a split multiallelic site
+    ("chr1", 700, "CA", "C"),
+    ("chr1", 800, "C" + "AGT" * 6, "C"),  # the datum truncates the ref allele of a long deletion
+    ("chr1", 900, "AT", "GC"),  # an MNV
+    ("chr1", 900, "AT", "GT"),  # an SNV at the MNV's first base, padded as at a split multiallelic site
+    ("chr1", 901, "T", "C"),  # an SNV at the MNV's second base
+    ("chrX", 150_000_000, "C", "T"),
+]
+
+
 def test_vcf_and_dataset_encodings_agree(tmp_path):
     # filter_variants and memory_mapped_data match dataset variants to VCF variants by encoding, so these must agree
-    variants = [
-        ("chr1", 100, "C", "T"),
-        ("chr1", 200, "CAG", "C"),
-        ("chr1", 300, "C", "CTT"),
-        ("chr1", 400, "CGG", "TGG"),
-        ("chr1", 500, "C", "C" + "AGT" * 6),
-        ("chr1", 600, "CG", "C" + "A" * 11 + "GTG"),  # the datum must also trim before truncating
-        ("chr1", 700, "CAG", "C"),  # two deletions at one position, eg from a split multiallelic site
-        ("chr1", 700, "CA", "C"),
-        ("chr1", 800, "C" + "AGT" * 6, "C"),  # the datum truncates the ref allele of a long deletion
-        ("chr1", 900, "AT", "GC"),  # an MNV
-        ("chr1", 900, "AT", "GT"),  # an SNV at the MNV's first base, padded as at a split multiallelic site
-        ("chr1", 901, "T", "C"),  # an SNV at the MNV's second base
-        ("chrX", 150_000_000, "C", "T"),
-    ]
     contig_names = {0: "chr1", 1: "chrX"}
     contig_indices = {name: index for index, name in contig_names.items()}
 
     vcf_variants = read_variants(
-        tmp_path, *[vcf_line(ref, alt, pos=pos, chrom=chrom) for chrom, pos, ref, alt in variants]
+        tmp_path, *[vcf_line(ref, alt, pos=pos, chrom=chrom) for chrom, pos, ref, alt in MATCHED_VARIANTS]
     )
-    assert len(vcf_variants) == len(variants)
+    assert len(vcf_variants) == len(MATCHED_VARIANTS)
     encodings = []
-    for (chrom, pos, ref, alt), v in zip(variants, vcf_variants):
+    for (chrom, pos, ref, alt), v in zip(MATCHED_VARIANTS, vcf_variants):
         datum = make_datum(contig_indices[chrom], pos, ref, alt)
         assert encode_variant(v) == encode_datum(datum, contig_names)
         encodings.append(encode_datum(datum, contig_names))
 
     # different variants must not share an encoding, or one's allele frequency, filters and posterior go to the other
-    assert len(set(encodings)) == len(variants)
+    assert len(set(encodings)) == len(MATCHED_VARIANTS)
+
+
+def test_vcf_and_dataset_keys_agree(tmp_path):
+    # filter_variants matches the results of dataset variants to VCF variants by position and allele keys, so these must
+    # agree like the encodings, distinct variants must have distinct keys, and the keys must sort like the VCF
+    contig_names = {0: "chr1", 1: "chrX"}
+    contig_indices = {name: index for index, name in contig_names.items()}
+    vcf_variants = read_variants(
+        tmp_path, *[vcf_line(ref, alt, pos=pos, chrom=chrom) for chrom, pos, ref, alt in MATCHED_VARIANTS]
+    )
+    keys = []
+    for (chrom, pos, ref, alt), v in zip(MATCHED_VARIANTS, vcf_variants, strict=True):
+        datum = make_datum(contig_indices[chrom], pos, ref, alt)
+        rank = contig_indices[chrom]
+        vcf_key = (position_key(rank, v.POS), allele_key(v.REF, v.ALT[0]))
+        datum_alleles = allele_key(datum.get_ref_allele(), datum.get_alt_allele())
+        assert vcf_key == (position_key(rank, datum.get(Data.POSITION)), datum_alleles)
+        keys.append(vcf_key)
+    assert len(set(keys)) == len(MATCHED_VARIANTS)
+    assert [key for key, _ in keys] == sorted(key for key, _ in keys)
+
+
+def test_allele_keys_match_like_encodings():
+    # two variants have the same allele key if and only if encode gives them the same alleles
+    alleles = [(ref, alt) for _, _, ref, alt in MATCHED_VARIANTS] + [("A", "AC" * 7), ("A", "AC" * 8), ("ATT", "AT")]
+    for (ref1, alt1), (ref2, alt2) in itertools.product(alleles, repeat=2):
+        same_encoding = encode("chr1", 1, ref1, alt1) == encode("chr1", 1, ref2, alt2)
+        assert (allele_key(ref1, alt1) == allele_key(ref2, alt2)) == same_encoding, (ref1, alt1, ref2, alt2)
+
+    # alleles with a base other than A, C, G or T, which no datum has, have no key
+    assert allele_key("N", "A") is None and allele_key("A", "AN") is None
+
+
+def test_vcf_contig_ranks(tmp_path):
+    # the order of the header's contig lines, or of the contigs table for a header without them
+    contig_names = {0: "chrX", 1: "chr1"}
+    with_contigs = tmp_path / "with_contigs.vcf"
+    with_contigs.write_text(VCF_HEADER)
+    assert vcf_contig_ranks(str(with_contigs), contig_names) == {"chr1": 0, "chrX": 1}
+
+    without_contigs = tmp_path / "without_contigs.vcf"
+    without_contigs.write_text(
+        "".join(line + "\n" for line in VCF_HEADER.splitlines() if not line.startswith("##contig"))
+    )
+    assert vcf_contig_ranks(str(without_contigs), contig_names) == {"chrX": 0, "chr1": 1}
+
+    # a position key sorts by contig, then by position
+    assert position_key(0, 2**32 - 1) < position_key(1, 1)
 
 
 def test_overlapping_filters(tmp_path):

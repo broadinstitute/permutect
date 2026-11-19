@@ -18,23 +18,27 @@ from permutect.data.batches_on_device import batches_on_device
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
+from permutect.data.datum import get_data_field
 from permutect.data.memory_mapped_data import MemoryMappedData
 from permutect.data.reads_dataset import ReadsDataset
 from permutect.metrics.evaluation_metrics import EmbeddingMetrics
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.metrics.posterior_result import PosteriorResult
+from permutect.metrics.posterior_result import PosteriorResultTable
 from permutect.misc_utils import Timer
 from permutect.misc_utils import VcfEditor
-from permutect.misc_utils import encode_datum
+from permutect.misc_utils import allele_key
 from permutect.misc_utils import encode_variant
 from permutect.misc_utils import get_tumor_sample_index
 from permutect.misc_utils import gpu_if_available
 from permutect.misc_utils import overlapping_filters
+from permutect.misc_utils import position_key
 from permutect.misc_utils import report_device
 from permutect.misc_utils import report_memory_usage
 from permutect.misc_utils import seed_random_number_generators
 from permutect.misc_utils import tumor_depths
+from permutect.misc_utils import vcf_contig_ranks
 from permutect.parameters import TrainingParameters
 from permutect.parameters import add_num_processes_to_parser
 from permutect.parameters import add_training_params_to_parser
@@ -44,6 +48,7 @@ from permutect.segmentation.germline_model import GermlineModel
 from permutect.tools.pre_permutect_filtering import HAIRPIN_FILTER
 from permutect.tools.pre_permutect_filtering import MULTIALLELIC_INDEL_FILTER
 from permutect.training.model_training import train_artifact_model
+from permutect.utils.allele_utils import bases5_as_base_string
 from permutect.utils.allele_utils import find_variant_type
 from permutect.utils.enums import Call
 from permutect.utils.enums import Epoch
@@ -448,6 +453,32 @@ def is_error_only_because_of_damage(posterior_result: PosteriorResult, threshold
     return error_probability <= threshold or most_likely_error_call(probabilities, passing_call_type) != Call.SEQ_ERROR
 
 
+def posterior_result_from_row(row, has_read_orientation_model: bool) -> PosteriorResult:
+    """
+    The PosteriorResult of a row of a PosteriorResultTable, with the values for the VCF as plain Python numbers and lists
+    and the embeddings as tensors
+    """
+    without_damage = None
+    if has_read_orientation_model:
+        without_damage = (row["probabilities_without_damage"].tolist(), float(row["error_probability_without_damage"]))
+    return PosteriorResult(
+        artifact_logit=float(row["artifact_logit"]),
+        posterior_probabilities=row["posterior_probabilities"].tolist(),
+        error_probability=float(row["error_probability"]),
+        log_priors=row["log_priors"].tolist(),
+        spectra_lls=row["spectra_lls"].tolist(),
+        normal_lls=row["normal_lls"].tolist(),
+        label=int(row["label"]),
+        alt_count=int(row["alt_count"]),
+        depth=int(row["depth"]),
+        var_type=int(row["variant_type"]),
+        embedding=torch.from_numpy(row["embedding"].copy()),
+        simulated_embedding=torch.from_numpy(row["simulated_embedding"].copy()),
+        simulated_source=component_name(int(row["simulated_component"])),
+        without_damage=without_damage,
+    )
+
+
 # error probability thresholds is a dict from Variant type to error probability threshold (float)
 @torch.inference_mode()
 def apply_filtering_to_vcf(
@@ -467,7 +498,16 @@ def apply_filtering_to_vcf(
 
     # Note: using BatchIndexedTotals in a hacky way, with Call replacing Source!
     artifact_logit_metrics = AccuracyMetrics.create(num_sources=len(Call), device=device)
-    encoding_to_posterior_results = {}
+    has_read_orientation_model = posterior_model.spectra.read_orientation_model is not None
+
+    # each variant's results go to a table in a temporary file, which is sorted like the VCF and read alongside it, rather
+    # than to memory, so that memory doesn't grow with the number of variants.  Contigs absent from the VCF sort after
+    # its contigs, and their data have no VCF records.
+    contig_ranks = vcf_contig_ranks(input_vcf, contig_index_to_name_map)
+    contig_ranks_by_index = {
+        index: contig_ranks.get(name, len(contig_ranks)) for index, name in contig_index_to_name_map.items()
+    }
+    results_table = None
 
     batch: Batch
     batches = batches_on_device(posterior_loader, device=device)
@@ -482,7 +522,7 @@ def apply_filtering_to_vcf(
         # and as if SEQ_ERROR had Mutect2's likelihood alone, without damage, to tell which variants are SEQ_ERROR only
         # because of it
         probs_without_damage_bc, error_probs_without_damage_b = None, None
-        if posterior_model.spectra.read_orientation_model is not None:
+        if has_read_orientation_model:
             without_damage_bc = log_posteriors_bc.clone()
             without_damage_bc[:, Call.SEQ_ERROR] += (
                 posterior_model.spectra.seq_error_log_likelihoods_b(batch, with_damage=False)
@@ -509,61 +549,55 @@ def apply_filtering_to_vcf(
             use_original_counts=True,
         )
 
-        artifact_logits = batch.get(Data.CACHED_ARTIFACT_LOGIT).cpu().tolist()
-        data = [
-            Datum(int_array, float_array)
-            for (int_array, float_array) in zip(batch.get_int_array_be(), batch.get_float_array_be())
-        ]
-        # copy the results to the CPU once per batch.  Rows of device tensors are read one number at a time for each
-        # variant, which makes the CPU wait for the GPU each time, and they keep every batch in GPU memory until the end.
+        # copy the results to the CPU once per batch and append them to the table.  Rows of device tensors were read one
+        # number at a time for each variant, which made the CPU wait for the GPU each time.
         # NOTE: for posterior data, batch.get_info_be actually gets the embedding arrays!!!!!
         # TODO: perhaps make this safer
         embeddings_be, simulated_be, simulated_components_b = split_posterior_info_be(batch.get_info_be().cpu())
-        without_damage = [None] * batch.size()
-        if probs_without_damage_bc is not None:
-            without_damage = list(zip(probs_without_damage_bc.tolist(), error_probs_without_damage_b.tolist()))
-        for (
-            datum,
-            post_probs,
-            error_prob,
-            logit,
-            log_prior,
-            log_spec,
-            log_normal,
-            embedding,
-            simulated_embedding,
-            simulated_component,
-            probs_and_error_prob_without_damage,
-        ) in zip(
-            data,
-            posterior_probs_bc.tolist(),
-            error_probs_b.tolist(),
-            artifact_logits,
-            log_priors_bc.tolist(),
-            spectra_log_lks_bc.tolist(),
-            normal_log_lks_bc.tolist(),
-            embeddings_be,
-            simulated_be,
-            simulated_components_b.tolist(),
-            without_damage,
+        if results_table is None:
+            results_table = PosteriorResultTable(embedding_dimension=embeddings_be.shape[-1])
+        rows = results_table.new_rows(batch.size())
+        int_array_be = batch.get_int_array_be()
+        contigs_b, positions_b = (get_data_field(int_array_be, None, field) for field in (Data.CONTIG, Data.POSITION))
+        rows["position_key"] = [
+            position_key(contig_ranks_by_index[contig], position)
+            for contig, position in zip(contigs_b.tolist(), positions_b.tolist())
+        ]
+        refs_b, alts_b = (
+            get_data_field(int_array_be, None, field)
+            for field in (Data.REF_ALLELE_AS_BASE_5, Data.ALT_ALLELE_AS_BASE_5)
+        )
+        rows["allele_key"] = [
+            allele_key(bases5_as_base_string(ref), bases5_as_base_string(alt))
+            for ref, alt in zip(refs_b.tolist(), alts_b.tolist())
+        ]
+        for field, values in (
+            ("posterior_probabilities", posterior_probs_bc),
+            ("log_priors", log_priors_bc),
+            ("spectra_lls", spectra_log_lks_bc),
+            ("normal_lls", normal_log_lks_bc),
+            ("error_probability", error_probs_b),
+            ("artifact_logit", batch.get(Data.CACHED_ARTIFACT_LOGIT)),
+            ("probabilities_without_damage", probs_without_damage_bc),
+            ("error_probability_without_damage", error_probs_without_damage_b),
+            ("embedding", embeddings_be),
+            ("simulated_embedding", simulated_be),
+            ("simulated_component", simulated_components_b),
         ):
-            encoding = encode_datum(datum, contig_index_to_name_map)
-            encoding_to_posterior_results[encoding] = PosteriorResult(
-                artifact_logit=logit,
-                posterior_probabilities=post_probs,
-                error_probability=error_prob,
-                log_priors=log_prior,
-                spectra_lls=log_spec,
-                normal_lls=log_normal,
-                label=datum.get(Data.LABEL),
-                alt_count=datum.get(Data.ORIGINAL_ALT_COUNT),
-                depth=datum.get(Data.ORIGINAL_DEPTH),
-                var_type=datum.get(Data.VARIANT_TYPE),
-                embedding=embedding,
-                simulated_embedding=simulated_embedding,
-                simulated_source=component_name(simulated_component),
-                without_damage=probs_and_error_prob_without_damage,
-            )
+            if values is not None:
+                rows[field] = values.cpu().numpy()
+        for field, data_field in (
+            ("label", Data.LABEL),
+            ("alt_count", Data.ORIGINAL_ALT_COUNT),
+            ("depth", Data.ORIGINAL_DEPTH),
+            ("variant_type", Data.VARIANT_TYPE),
+        ):
+            rows[field] = get_data_field(int_array_be, None, data_field)
+        results_table.append(rows)
+
+    if results_table is None:  # no data
+        results_table = PosteriorResultTable(embedding_dimension=0)
+    results_table.sort()
 
     print("Applying threshold")
     all_types = [call_type.name for call_type in Call]
@@ -588,13 +622,16 @@ def apply_filtering_to_vcf(
     labeled_truth = False
     embedding_metrics = EmbeddingMetrics()  # only if there is labeled truth for evaluation
 
-    missing_encodings = []
+    num_missing, missing_examples = 0, []
     for v in editor:
         filters = overlapping_filters(v, TRUSTED_ARTIFACT_FILTERS)
 
-        encoding = encode_variant(v)
-        if encoding in encoding_to_posterior_results:
-            posterior_result = encoding_to_posterior_results[encoding]
+        # the variant's row of the table, which is read in the order of the VCF
+        contig_rank, row = contig_ranks.get(v.CHROM), None
+        if contig_rank is not None:
+            row = results_table.find_in_order(position_key(contig_rank, v.POS), allele_key(v.REF, v.ALT[0]))
+        if row is not None:
+            posterior_result = posterior_result_from_row(row, has_read_orientation_model)
             post_probs = posterior_result.posterior_probabilities
             v.INFO[POST_PROB_INFO_KEY] = format_values(post_probs)
             v.INFO[LOG_PRIOR_INFO_KEY] = format_values(posterior_result.log_priors)
@@ -660,13 +697,16 @@ def apply_filtering_to_vcf(
             # without a posterior Permutect has no call to make, so keep the input's filters rather than writing PASS
             if v.FILTER is not None:
                 filters.update(v.FILTER.split(";"))
-            missing_encodings.append(encoding)
+            num_missing += 1
+            if len(missing_examples) < 5:
+                missing_examples.append(encode_variant(v))
         # sorted, since the order of a set of strings changes from run to run with Python's hash randomization
         v.FILTER = ";".join(sorted(filters)) if filters else "PASS"
-    if missing_encodings:
+    results_table.close()
+    if num_missing > 0:
         print(
-            f"{len(missing_encodings)} variants in the input VCF had no Permutect posterior, for example because they "
-            f"are missing from the dataset, and keep their input filters.  Examples: {', '.join(missing_encodings[:5])}"
+            f"{num_missing} variants in the input VCF had no Permutect posterior, for example because they "
+            f"are missing from the dataset, and keep their input filters.  Examples: {', '.join(missing_examples)}"
         )
 
     embedding_metrics.output_to_summary_writer(summary_writer, is_filter_variants=True)

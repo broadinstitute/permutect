@@ -19,6 +19,7 @@ from permutect.data.datum import DEFAULT_CPU_FLOAT
 from permutect.data.datum import DEFAULT_GPU_FLOAT
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
+from permutect.utils.allele_utils import bases_as_base5_int
 from permutect.utils.allele_utils import trim_alleles_on_right
 from permutect.utils.allele_utils import truncate_bases_if_necessary
 
@@ -250,6 +251,39 @@ def encode_variant(v: cyvcf2.Variant):
     alt = v.ALT[0]  # TODO: we're assuming biallelic
     ref = v.REF
     return encode(v.CHROM, v.POS, ref, alt)
+
+
+def allele_key(ref: str, alt: str) -> int | None:
+    """
+    A variant's alleles as one integer, for sorting and matching variants by position and alleles: two variants have
+    the same key if and only if encode gives them the same alleles.  The key is the base-5 integers of the ref and alt
+    alleles, trimmed on the right and truncated as in encode, side by side.  It is None for an allele with a base other
+    than A, C, G or T, such as N, which a Datum's alleles, decoded from base 5, never have.
+    """
+    trimmed_ref, trimmed_alt = trim_alleles_on_right(ref, alt)
+    ref_bases, alt_bases = truncate_bases_if_necessary(trimmed_ref), truncate_bases_if_necessary(trimmed_alt)
+    if not set(ref_bases + alt_bases) <= set("ACGT"):
+        return None
+    # at most 13 bases, whose base-5 digits are 1 to 4, make an integer below 5^13 < 2^31
+    return (bases_as_base5_int(ref_bases) << 32) | bases_as_base5_int(alt_bases)
+
+
+def vcf_contig_ranks(input_vcf, contig_index_to_name_map) -> dict[str, int]:
+    """
+    The rank of each contig in the order of a VCF's records: that of the header's contig lines, or, for a header without
+    them, that of the contigs table's indices
+    """
+    vcf = cyvcf2.VCF(input_vcf)
+    names = list(vcf.seqnames) or [name for _, name in sorted(contig_index_to_name_map.items())]
+    vcf.close()
+    return {name: rank for rank, name in enumerate(names)}
+
+
+def position_key(contig_rank: int, position: int) -> int:
+    """
+    A variant's contig rank and position as one integer, which sorts like the records of a VCF sorted by position
+    """
+    return (contig_rank << 32) | position
 
 
 def overlapping_filters(v: cyvcf2.Variant, filters_set: Set[str]) -> Set[str]:
