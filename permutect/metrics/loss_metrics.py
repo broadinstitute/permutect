@@ -308,6 +308,7 @@ class AccuracyMetrics(BatchIndexedTensor):
         plotting.simple_plot_on_axis(axis, x_y_lab_tuples, None, None)
 
     def make_logit_histograms(self):
+        # 100 dpi rather than 200: drawing filter_variants' 7 figures of 5 x 6 subplots at 200 dpi took about 0.4 GB
         fig, axes = plt.subplots(
             len(Variation),
             NUM_ALT_COUNT_BINS,
@@ -315,7 +316,7 @@ class AccuracyMetrics(BatchIndexedTensor):
             sharey="all",
             squeeze=False,
             figsize=(2.5 * NUM_ALT_COUNT_BINS, 2.5 * len(Variation)),
-            dpi=200,
+            dpi=100,
         )
         x_axis_logits = logits_from_bin_indices(torch.tensor(range(NUM_LOGIT_BINS)))
 
