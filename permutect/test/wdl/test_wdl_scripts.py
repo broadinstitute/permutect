@@ -432,6 +432,24 @@ def test_permutect_filtering_stops_when_a_tool_fails(tmp_path, failing_tool, exp
     assert calls == expected_calls
 
 
+@pytest.mark.parametrize("split_mnvs", [True, False])
+def test_concordance_evaluates_the_mnv_split_vcf_if_asked(tmp_path, split_mnvs):
+    # Concordance evaluates Permutect's VCF with each MNV split into SNVs if split_mnvs, and the VCF as is otherwise
+    inputs = {"eval_vcf": "permutect.vcf.gz", "truth_vcf": "truth.vcf", "split_mnvs": str(split_mnvs).lower()}
+    command = fill_placeholders(task_command(PERMUTECT_WDL, "Concordance"), defaultdict(lambda: None, inputs))
+    recorder = '#!/bin/bash\necho "$(basename "$0") $*" >> calls.txt\n'
+    run_bash(command, tmp_path, {"bcftools": recorder, "gatk": recorder})
+    calls = (tmp_path / "calls.txt").read_text().splitlines()
+
+    split_command = "bcftools norm -m -any --atomize permutect.vcf.gz -Oz -o mnvs-split.vcf.gz"
+    assert [call for call in calls if call.startswith("bcftools")] == ([split_command] if split_mnvs else [])
+    evaluated = "mnvs-split.vcf.gz" if split_mnvs else "permutect.vcf.gz"
+    assert "gatk IndexFeatureFile -I " + evaluated in calls
+    concordance_calls = [call.split() for call in calls if " Concordance " in call]
+    assert len(concordance_calls) == 1
+    assert concordance_calls[0][concordance_calls[0].index("-eval") + 1] == evaluated
+
+
 @pytest.mark.parametrize("with_pileups", [True, False])
 @pytest.mark.parametrize("num_scatters_with_f1r2_counts", [2, 0])
 def test_archive_and_extract_m2_outputs(tmp_path, with_pileups, num_scatters_with_f1r2_counts):

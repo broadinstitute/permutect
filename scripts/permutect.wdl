@@ -268,14 +268,6 @@ workflow Permutect {
             permutect_docker = permutect_docker,
     }
 
-    if (split_mnvs) {
-        call SplitMNVs as SplitPermutectMNVs {
-            input:
-                input_vcf = PermutectFiltering.output_vcf,
-                permutect_docker = permutect_docker
-        }
-    }
-
     if (defined(test_dataset_truth_vcf_hack)){
         call Concordance as PermutectConcordance {
             input:
@@ -283,8 +275,9 @@ workflow Permutect {
                 masks = masks_hack,
                 truth_vcf = select_first([test_dataset_truth_vcf_hack]),
                 truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_or_conventional]),
-                eval_vcf = select_first([SplitPermutectMNVs.output_vcf, PermutectFiltering.output_vcf]),
-                eval_vcf_idx = select_first([SplitPermutectMNVs.output_vcf_idx, PermutectFiltering.output_vcf_idx]),
+                eval_vcf = PermutectFiltering.output_vcf,
+                eval_vcf_idx = PermutectFiltering.output_vcf_idx,
+                split_mnvs = split_mnvs,
                 gatk_docker = permutect_docker,
                 concordance_header = concordance_header,
         }
@@ -296,9 +289,6 @@ workflow Permutect {
         File? output_vcf_idx = if tumor_only_mode then NONE else PermutectFiltering.output_vcf_idx
         File? tumor_only_output_vcf = if tumor_only_mode then PermutectFiltering.output_vcf else NONE
         File? tumor_only_output_vcf_idx = if tumor_only_mode then PermutectFiltering.output_vcf_idx else NONE
-        # output_vcf with each MNV split into SNVs, if split_mnvs is true
-        File? mnv_split_vcf = SplitPermutectMNVs.output_vcf
-        File? mnv_split_vcf_idx = SplitPermutectMNVs.output_vcf_idx
         File tensorboard_report = PermutectFiltering.tensorboard_report
         # Mutect2's outputs, for use as cached_m2_outputs in later runs: the archive of this run's Mutect2 outputs, or
         # else the given cached_m2_outputs, passed through as a String for the reason given where it is declared.
@@ -465,45 +455,6 @@ task SplitMultiallelics {
     }
 }
 
-# decompose each multi-nucleotide variant (MNV) into its constituent SNVs, each of which keeps the MNV's FILTER, INFO and
-# FORMAT fields.  Multiallelic records are split first, because atomizing a multiallelic record with an MNV allele gives
-# star alleles.  Other variants are unchanged.
-task SplitMNVs {
-    input {
-        File input_vcf
-        String permutect_docker
-        Int? preemptible
-        Int max_retries = 0
-        Int disk_space = 20
-        Int cpu = 1
-        Int mem = 2
-    }
-
-    # Mem is in units of GB but our command and memory runtime values are in MB
-    Int machine_mem = mem * 1000
-
-    command <<<
-        set -euo pipefail
-        bcftools norm -m -any --atomize ~{input_vcf} -Oz -o mnvs-split.vcf.gz
-        bcftools index -t mnvs-split.vcf.gz
-    >>>
-
-    runtime {
-        docker: permutect_docker
-        bootDiskSizeGb: 12
-        memory: machine_mem + " MB"
-        disks: "local-disk " + disk_space + " SSD"
-        preemptible: select_first([preemptible, 0])
-        maxRetries: max_retries
-        cpu: cpu
-    }
-
-    output {
-        File output_vcf = "mnvs-split.vcf.gz"
-        File output_vcf_idx = "mnvs-split.vcf.gz.tbi"
-    }
-}
-
 task Concordance {
     input {
     	File? intervals
@@ -513,6 +464,8 @@ task Concordance {
     	File eval_vcf
     	File eval_vcf_idx
         String? concordance_header
+        # split each multi-nucleotide variant (MNV) of eval_vcf into its constituent SNVs, which needs bcftools
+        Boolean split_mnvs = false
 
     	# runtime
     	String gatk_docker = "us.gcr.io/broad-gatk/gatk"
@@ -520,14 +473,23 @@ task Concordance {
 	}
 
     command <<<
+        eval_vcf="~{eval_vcf}"
+        # decompose each MNV into its constituent SNVs, each of which keeps the MNV's FILTER, INFO and FORMAT fields.
+        # Multiallelic records are split first, because atomizing a multiallelic record with an MNV allele gives star
+        # alleles.  Other variants are unchanged.  The rest of this script runs without set -e, so stop here explicitly.
+        if [ "~{split_mnvs}" = "true" ]; then
+            bcftools norm -m -any --atomize "$eval_vcf" -Oz -o mnvs-split.vcf.gz || exit 1
+            eval_vcf=mnvs-split.vcf.gz
+        fi
+
         # this shouldn't be necessary but the Terra hacks on top of Terra hacks to deal with all the bugs recently
         # have reached a breaking point
-        gatk IndexFeatureFile -I ~{eval_vcf}
+        gatk IndexFeatureFile -I "$eval_vcf"
 
         gatk --java-options "-Xmx2g" Concordance \
             ~{"-L " + intervals} \
             ~{"-XL " + masks} \
-            -truth ~{truth_vcf} -eval ~{eval_vcf} \
+            -truth ~{truth_vcf} -eval "$eval_vcf" \
             -tpfn "tpfn.vcf" \
             -tpfp "tpfp.vcf" \
             -ftnfn "ftnfn.vcf" \
