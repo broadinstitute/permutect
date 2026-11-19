@@ -1,3 +1,4 @@
+import random
 import re
 
 import numpy as np
@@ -26,12 +27,13 @@ from permutect.utils.enums import Variation
 def make_embedding_metrics(variant_types) -> EmbeddingMetrics:
     metrics = EmbeddingMetrics()
     num_data = len(variant_types)
-    metrics.label_metadata.extend(["artifact"] * num_data)
-    metrics.correct_metadata.extend(["unknown"] * num_data)
-    metrics.type_metadata.extend([variant_type.name for variant_type in variant_types])
-    metrics.truncated_count_metadata.extend(["2"] * num_data)
-    metrics.features.append(torch.randn(num_data, 4))
-    metrics.ref_features.append(torch.randn(num_data, 4))
+    metrics.record_batch(
+        [Label.ARTIFACT] * num_data,
+        variant_types,
+        [2] * num_data,
+        torch.randn(num_data, 4),
+        ref_features_be=torch.randn(num_data, 4),
+    )
     return metrics
 
 
@@ -141,12 +143,70 @@ def test_record_batch_metadata():
         [Label.VARIANT], [Variation.SNV], [2], torch.randn(4), correctness=[EmbeddingMetrics.FALSE_POSITIVE]
     )
 
-    assert metrics.label_metadata == ["ARTIFACT", "VARIANT", "UNLABELED", "VARIANT"]
-    assert metrics.correct_metadata == [EmbeddingMetrics.UNKNOWN] * 3 + [EmbeddingMetrics.FALSE_POSITIVE]
-    assert metrics.type_metadata == ["SNV", "INSERTION", "DELETION", "SNV"]
+    summary_writer = EmbeddingRecorder()
+    metrics.output_to_summary_writer(summary_writer)
     bin_names = [alt_count_bin_name(bin_idx) for bin_idx in range(NUM_ALT_COUNT_BINS)]
-    assert metrics.truncated_count_metadata == [bin_names[0], bin_names[1], bin_names[-1], bin_names[0]]
-    assert torch.vstack(metrics.features).shape == (4, 4)
+    expected_rows = [
+        ("ARTIFACT", EmbeddingMetrics.UNKNOWN, "SNV", bin_names[0], EmbeddingMetrics.DATA_SOURCE),
+        ("VARIANT", EmbeddingMetrics.UNKNOWN, "INSERTION", bin_names[1], EmbeddingMetrics.DATA_SOURCE),
+        ("UNLABELED", EmbeddingMetrics.UNKNOWN, "DELETION", bin_names[-1], EmbeddingMetrics.DATA_SOURCE),
+        ("VARIANT", EmbeddingMetrics.FALSE_POSITIVE, "SNV", bin_names[0], EmbeddingMetrics.DATA_SOURCE),
+    ]
+    # each datum is in the projection of its variant type and in that of its alt count
+    for prefix in ("embedding for variant type", "embedding for alt count"):
+        rows = [row for tag, rows in summary_writer.metadata_by_tag.items() if tag.startswith(prefix) for row in rows]
+        assert sorted(rows) == sorted(expected_rows), prefix
+    assert all(features.shape[1] == 4 for features in summary_writer.features_by_tag.values())
+
+
+def test_projections_keep_a_bounded_uniform_sample():
+    # memory doesn't grow with the number of data: each group keeps at most sample_size of its boring data and of its
+    # interesting data, uniformly from all those recorded
+    random.seed(0)
+    np.random.seed(0)
+    metrics = EmbeddingMetrics(sample_size=50)
+    num_data = 2000
+    indices = torch.arange(num_data, dtype=torch.float32).unsqueeze(1)
+    for start in range(0, num_data, 100):
+        metrics.record_batch([Label.ARTIFACT] * 100, [Variation.SNV] * 100, [5] * 100, indices[start : start + 100])
+    assert metrics.counts["variant type SNV"] == [num_data, 0]
+    assert all(len(sample) <= 50 for samples in metrics.samples.values() for sample in samples)
+
+    summary_writer = EmbeddingRecorder()
+    metrics.output_to_summary_writer(summary_writer)
+    projected_indices = summary_writer.features_by_tag["embedding for variant type SNV"][:, 0]
+    assert len(set(projected_indices.tolist())) == 50
+    # from throughout the data, not only the first ones: the mean of 50 uniform indices is 1000 +- 82
+    assert 700 < projected_indices.mean().item() < 1300
+
+
+@pytest.mark.parametrize("sample_size", [10000, 50])
+def test_filter_variants_projections_keep_interesting_data_and_some_boring_ones(sample_size):
+    # every interesting datum and a third as many boring ones, but at least 100, up to the sample size in all
+    random.seed(0)
+    np.random.seed(0)
+    metrics = EmbeddingMetrics(sample_size=sample_size)
+    num_interesting, num_boring = (6, 300) if sample_size == 10000 else (600, 3000)
+    correctness = [EmbeddingMetrics.TRUE_POSITIVE] * num_interesting + [EmbeddingMetrics.UNKNOWN] * num_boring
+    num_data = num_interesting + num_boring
+    metrics.record_batch(
+        [Label.VARIANT] * num_data,
+        [Variation.SNV] * num_data,
+        [5] * num_data,
+        torch.randn(num_data, 4),
+        None,
+        correctness,
+    )
+    summary_writer = EmbeddingRecorder()
+    metrics.output_to_summary_writer(summary_writer, is_filter_variants=True)
+    statuses = [row[1] for row in summary_writer.metadata_by_tag["embedding for variant type SNV"]]
+    if sample_size == 10000:
+        assert statuses.count(EmbeddingMetrics.TRUE_POSITIVE) == num_interesting
+        assert statuses.count(EmbeddingMetrics.UNKNOWN) == 100
+    else:
+        # 50 of the 600 interesting and 200 boring data, of which about 3 in 4 are interesting
+        assert len(statuses) == 50
+        assert 25 < statuses.count(EmbeddingMetrics.TRUE_POSITIVE) < 50
 
 
 class EmbeddingRecorder:
