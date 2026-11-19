@@ -205,17 +205,11 @@ def check_cached_m2_outputs(
         assert ReadOrientationModel.load(read_orientation_model).sample == tumor_sample(MUTECT2_SEQC2_WES_VCF)
 
 
-def output_vcf_records(metadata: dict, tumor_only_mode: bool) -> list[cyvcf2.Variant]:
-    # the calls go to the output VCF for the run's mode, and the other mode's output VCF is unset
+def output_vcf_records(metadata: dict) -> list[cyvcf2.Variant]:
     outputs = metadata["outputs"]
-    vcf, other_vcf = (
-        ("tumor_only_output_vcf", "output_vcf") if tumor_only_mode else ("output_vcf", "tumor_only_output_vcf")
-    )
-    for suffix in ("", "_idx"):
-        assert os.path.exists(outputs["Permutect." + vcf + suffix])
-        assert outputs["Permutect." + other_vcf + suffix] is None
-    assert os.path.exists(outputs["Permutect.tensorboard_report"])
-    return list(cyvcf2.VCF(outputs["Permutect." + vcf]))
+    for output in ("output_vcf", "output_vcf_idx", "tensorboard_report"):
+        assert os.path.exists(outputs["Permutect." + output])
+    return list(cyvcf2.VCF(outputs["Permutect.output_vcf"]))
 
 
 def has_filter(v: cyvcf2.Variant, filter_name: str) -> bool:
@@ -261,7 +255,7 @@ def test_permutect_wdl_with_pcr_error_filtering(metadata_with_pcr_error_filterin
     assert filtering_inputs["hairpin_filter"]
     # the empty truth VCF counts as no truth VCF
     assert "Permutect.PermutectConcordance" not in metadata_with_pcr_error_filtering["calls"]
-    records = output_vcf_records(metadata_with_pcr_error_filtering, tumor_only_mode=False)
+    records = output_vcf_records(metadata_with_pcr_error_filtering)
     assert any(v.INFO.get(POST_PROB_INFO_KEY) is not None for v in records)
 
     target_records = [v for v in records if v.CHROM == "chr20" and v.POS == 4932703]
@@ -274,7 +268,7 @@ def test_permutect_wdl_without_pcr_error_filtering(metadata_without_pcr_error_fi
     # pre_permutect_filtering runs regardless, for its multiallelic indel filter, but without its hairpin filter
     filtering_inputs = metadata_without_pcr_error_filtering["calls"]["Permutect.PermutectFiltering"][0]["inputs"]
     assert not filtering_inputs["hairpin_filter"]
-    records = output_vcf_records(metadata_without_pcr_error_filtering, tumor_only_mode=True)
+    records = output_vcf_records(metadata_without_pcr_error_filtering)
     assert any(v.INFO.get(POST_PROB_INFO_KEY) is not None for v in records)
     assert not any(has_filter(v, HAIRPIN_FILTER) for v in records)
     assert any(has_filter(v, MULTIALLELIC_INDEL_FILTER) for v in records)
@@ -282,5 +276,5 @@ def test_permutect_wdl_without_pcr_error_filtering(metadata_without_pcr_error_fi
 
 def test_permutect_wdl_without_normal(metadata_without_normal):
     check_cached_m2_outputs(metadata_without_normal, with_pileups=False, tumor_only_mode=True)
-    records = output_vcf_records(metadata_without_normal, tumor_only_mode=True)
+    records = output_vcf_records(metadata_without_normal)
     assert any(v.INFO.get(POST_PROB_INFO_KEY) is not None for v in records)

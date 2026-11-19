@@ -284,11 +284,9 @@ workflow Permutect {
     }
 
     output {
-        # Permutect's calls go to output_vcf in a matched-normal run and to tumor_only_output_vcf in a tumor-only run
-        File? output_vcf = if tumor_only_mode then NONE else PermutectFiltering.output_vcf
-        File? output_vcf_idx = if tumor_only_mode then NONE else PermutectFiltering.output_vcf_idx
-        File? tumor_only_output_vcf = if tumor_only_mode then PermutectFiltering.output_vcf else NONE
-        File? tumor_only_output_vcf_idx = if tumor_only_mode then PermutectFiltering.output_vcf_idx else NONE
+        # Permutect's calls, in both matched-normal and tumor-only runs
+        File output_vcf = PermutectFiltering.output_vcf
+        File output_vcf_idx = PermutectFiltering.output_vcf_idx
         File tensorboard_report = PermutectFiltering.tensorboard_report
         # Mutect2's outputs, for use as cached_m2_outputs in later runs: the archive of this run's Mutect2 outputs, or
         # else the given cached_m2_outputs, passed through as a String for the reason given where it is declared.
