@@ -28,16 +28,18 @@ from permutect.data.datum import INTEGER_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.data.datum import get_data_field
+from permutect.data.position_table import PositionTable
 from permutect.misc_utils import Timer
-from permutect.misc_utils import encode_datum
-from permutect.misc_utils import encode_variant
+from permutect.misc_utils import allele_key
 from permutect.misc_utils import get_first_numeric_element
 from permutect.misc_utils import get_tumor_sample_index
 from permutect.misc_utils import overlapping_filters
+from permutect.misc_utils import position_key
 from permutect.misc_utils import str_repeat_count_change
 from permutect.misc_utils import str_repeat_lengths
 from permutect.misc_utils import tumor_alt_orientation_counts
 from permutect.misc_utils import tumor_ref_orientation_counts
+from permutect.misc_utils import vcf_contig_ranks
 
 # numpy.save appends .npy if the extension doesn't already include it.  We preempt this behavior.
 SUFFIX_FOR_INT_MMAP = ".int_mmap.npy"
@@ -47,6 +49,21 @@ SUFFIX_FOR_METADATA = ".metadata.npy"
 
 # the most bytes of an array that save_to_tarfile copies into memory at once
 NPY_WRITE_BLOCK_BYTES = 2**24
+
+# the values from each record of a VCF that annotate its data, in the order of the fields of the table of them
+VCF_ANNOTATION_FIELDS = [
+    ("log_allele_frequency", np.float64),
+    ("repeat_unit_length", np.float64),
+    ("repeat_length", np.float64),
+    ("repeat_count_change", np.float64),
+    ("alt_f1r2_count", np.float64),
+    ("alt_f2r1_count", np.float64),
+    ("ref_f1r2_count", np.float64),
+    ("ref_f2r1_count", np.float64),
+    ("known_artifact", np.bool_),  # whether the record has one of the given artifact filters
+]
+# the VCF records whose annotations are appended to the table at once
+VCF_RECORDS_PER_BATCH = 10000
 
 
 class BytesChunksReader(io.RawIOBase):
@@ -318,34 +335,69 @@ class MemoryMappedData:
         segmentation = defaultdict(IntervalTree) if segmentation is None else segmentation
         normal_segmentation = defaultdict(IntervalTree) if normal_segmentation is None else normal_segmentation
 
-        log_allele_frequencies = {}
-        repeat_lengths = {}
-        repeat_count_changes = {}
-        alt_orientation_counts = {}
-        ref_orientation_counts = {}
-        artifact_encodings = set()
-
         print("recording filters, allele frequencies, repeat lengths and alt orientation counts from input VCF")
+        # the annotations of each record go to a table in a temporary file rather than to memory, so that memory doesn't
+        # grow with the number of records, and each datum's are found in it by binary search
+        contig_ranks = vcf_contig_ranks(input_vcf, contig_index_to_name_map)
+        annotations = PositionTable(VCF_ANNOTATION_FIELDS)
         vcf = cyvcf2.VCF(input_vcf)
         tumor_sample_index = get_tumor_sample_index(vcf)
-        pbar = tqdm(enumerate(vcf), mininterval=60)
-        for n, v in pbar:
-            encoding = encode_variant(v)
+        pending_rows = []
+        for v in tqdm(vcf, mininterval=60):
             # POPAF is -log10(AF); we convert to natural log without exponentiating to avoid underflow
-            log_allele_frequencies[encoding] = -math.log(10) * get_first_numeric_element(v, "POPAF")
-            repeat_lengths[encoding] = str_repeat_lengths(v)
-            repeat_count_changes[encoding] = str_repeat_count_change(v)
-            alt_orientation_counts[encoding] = tumor_alt_orientation_counts(v, tumor_sample_index)
-            ref_orientation_counts[encoding] = tumor_ref_orientation_counts(v, tumor_sample_index)
-            if overlapping_filters(v, artifact_filters):
-                artifact_encodings.add(encoding)
+            log_allele_frequency = -math.log(10) * get_first_numeric_element(v, "POPAF")
+            contig_rank, alleles = contig_ranks.get(v.CHROM), allele_key(v.REF, v.ALT[0])
+            if contig_rank is None or alleles is None:
+                continue  # no datum has this record's contig or alleles
+            repeat_unit_length, repeat_length = str_repeat_lengths(v)
+            pending_rows.append(
+                (
+                    position_key(contig_rank, v.POS),
+                    alleles,
+                    0,  # the sequence, which the table sets
+                    log_allele_frequency,
+                    repeat_unit_length,
+                    repeat_length,
+                    str_repeat_count_change(v),
+                    *tumor_alt_orientation_counts(v, tumor_sample_index),
+                    *tumor_ref_orientation_counts(v, tumor_sample_index),
+                    bool(overlapping_filters(v, artifact_filters)),
+                )
+            )
+            if len(pending_rows) == VCF_RECORDS_PER_BATCH:
+                annotations.append(np.array(pending_rows, dtype=annotations.dtype))
+                pending_rows = []
+        annotations.append(np.array(pending_rows, dtype=annotations.dtype))
+        annotations.sort()
+        try:
+            yield from self._annotated_data(
+                annotations, contig_ranks, contig_index_to_name_map, segmentation, normal_segmentation
+            )
+        finally:
+            annotations.close()
 
+    def _annotated_data(
+        self,
+        annotations: PositionTable,
+        contig_ranks: dict,
+        contig_index_to_name_map,
+        segmentation,
+        normal_segmentation,
+    ) -> Generator[Datum, None, None]:
+        """the data that have records in the table of VCF annotations, annotated"""
         for datum in self.generate():
             contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
             position = datum.get(Data.POSITION)
-            encoding = encode_datum(datum, contig_index_to_name_map)
+            # contigs absent from the VCF sort after its contigs, and so have no records
+            records = annotations.rows_of(
+                position_key(contig_ranks.get(contig_name, len(contig_ranks)), position),
+                allele_key(datum.get_ref_allele(), datum.get_alt_allele()),
+            )
 
-            if encoding in log_allele_frequencies:
+            if len(records) > 0:
+                # of several records with the datum's keys, eg long insertions that differ only after 13 bases, the
+                # values of the last, and a known artifact if any is one, as when the annotations were in dicts
+                record = records[-1]
                 # NOTE: we copy the float array because it needs to be modified
                 new_datum = Datum(
                     int_array=datum.int_array,
@@ -356,7 +408,7 @@ class MemoryMappedData:
 
                 # these are default dicts, so if there's no segmentation for the contig we will get no overlaps but not an error
                 # For a general IntervalTree there is a list of potentially multiple overlaps but here there is either one or zero
-                log_allele_frequency = log_allele_frequencies[encoding]
+                log_allele_frequency = record["log_allele_frequency"]
                 segmentation_overlaps = segmentation[contig_name][position]
                 normal_segmentation_overlaps = normal_segmentation[contig_name][position]
                 maf = list(segmentation_overlaps)[0].data if segmentation_overlaps else 0.5
@@ -365,17 +417,17 @@ class MemoryMappedData:
                 new_datum.set(Data.LOG_ALLELE_FREQUENCY, log_allele_frequency)
                 new_datum.set(Data.MAF, maf)
                 new_datum.set(Data.NORMAL_MAF, normal_maf)
-                repeat_unit_length, repeat_length = repeat_lengths[encoding]
-                new_datum.set(Data.REPEAT_UNIT_LENGTH, repeat_unit_length)
-                new_datum.set(Data.REPEAT_LENGTH, repeat_length)
-                new_datum.set(Data.REPEAT_COUNT_CHANGE, repeat_count_changes[encoding])
-                alt_f1r2_count, alt_f2r1_count = alt_orientation_counts[encoding]
-                new_datum.set(Data.ALT_F1R2_COUNT, alt_f1r2_count)
-                new_datum.set(Data.ALT_F2R1_COUNT, alt_f2r1_count)
-                ref_f1r2_count, ref_f2r1_count = ref_orientation_counts[encoding]
-                new_datum.set(Data.REF_F1R2_COUNT, ref_f1r2_count)
-                new_datum.set(Data.REF_F2R1_COUNT, ref_f2r1_count)
-                if encoding in artifact_encodings:
+                for data_field, field in (
+                    (Data.REPEAT_UNIT_LENGTH, "repeat_unit_length"),
+                    (Data.REPEAT_LENGTH, "repeat_length"),
+                    (Data.REPEAT_COUNT_CHANGE, "repeat_count_change"),
+                    (Data.ALT_F1R2_COUNT, "alt_f1r2_count"),
+                    (Data.ALT_F2R1_COUNT, "alt_f2r1_count"),
+                    (Data.REF_F1R2_COUNT, "ref_f1r2_count"),
+                    (Data.REF_F2R1_COUNT, "ref_f2r1_count"),
+                ):
+                    new_datum.set(data_field, record[field])
+                if records["known_artifact"].any():
                     new_datum.set(Data.CACHED_ARTIFACT_LOGIT, np.inf)
                 yield new_datum
 

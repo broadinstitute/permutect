@@ -52,8 +52,33 @@ def test_rows_must_be_found_in_order_of_position():
     table.close()
 
 
+def test_rows_are_found_by_binary_search_in_any_order():
+    table = sorted_table([(30, 1), (10, 2), (20, 5), (10, 1), (20, 3), (10, 1)])
+    assert table.rows_of(20, 3)["value"].tolist() == [4]
+    assert table.rows_of(10, 1)["value"].tolist() == [3, 5]  # in the order in which they were appended
+    assert table.rows_of(30, 1)["value"].tolist() == [0]
+    assert table.rows_of(10, 2)["value"].tolist() == [1]
+    for position, alleles in ((20, 4), (5, 1), (40, 1)):
+        assert len(table.rows_of(position, alleles)) == 0
+    table.close()
+
+
+def test_columns_are_aligned_for_binary_search():
+    # a row of three uint64 keys and a bool would be 25 bytes, and numpy copies the unaligned keys of such rows to search
+    # them, which made each binary search take as long as reading every key
+    table = PositionTable([("flag", np.bool_)])
+    rows = table.new_rows(3)
+    rows["position_key"] = [10, 20, 30]
+    table.append(rows)
+    table.sort()
+    assert table.dtype.itemsize % 8 == 0
+    assert table._position_keys.flags.aligned
+    table.close()
+
+
 def test_a_table_without_rows_finds_nothing():
     table = PositionTable([("value", np.int64)])
     table.sort()
     assert table.find_in_order(10, 1) is None
+    assert len(table.rows_of(10, 1)) == 0
     table.close()

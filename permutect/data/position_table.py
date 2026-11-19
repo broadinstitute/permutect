@@ -13,7 +13,8 @@ class PositionTable:
     Rows of values for variants, keyed by their positions and alleles (see misc_utils.position_key and allele_key), in a
     temporary file rather than in memory, so that memory doesn't grow with the number of rows.  Rows are appended in
     batches, in any order.  Then they are sorted in place by position, alleles, and the order in which they were
-    appended, and a variant's rows are found by its position and alleles.
+    appended, and a variant's rows are found by its position and alleles, either in one pass for variants in order of
+    position or by binary search for variants in any order.
 
     Variants whose alleles are the same once truncated, such as two long insertions that differ only after 13 bases,
     have the same keys, and their rows stay in the order in which they were appended.
@@ -24,7 +25,9 @@ class PositionTable:
         :param value_fields: the fields of the values in each row, as in a numpy structured dtype
         """
         key_fields = [("position_key", np.uint64), ("allele_key", np.uint64), ("sequence", np.uint64)]
-        self.dtype = np.dtype(key_fields + value_fields)
+        # aligned, so that every column is: numpy copies an unaligned column, such as the keys of rows of 89 bytes, to
+        # search it, which made each binary search take as long as reading every key
+        self.dtype = np.dtype(key_fields + value_fields, align=True)
         self._file = tempfile.NamedTemporaryFile(suffix=".position_table")
         self._num_rows = 0
         self._rows = None  # the sorted rows, memory-mapped, once they have all been appended
@@ -74,6 +77,20 @@ class PositionTable:
                 found = row
             row += 1
         return None if found is None else self._rows[found]
+
+    def rows_of(self, position_key: int, allele_key: int) -> np.ndarray:
+        """
+        A variant's rows, in the order in which they were appended, found by binary search, so that variants may be
+        looked up in any order
+        """
+        assert self._rows is not None, "rows can only be found after sorting"
+        start = int(np.searchsorted(self._position_keys, np.uint64(position_key)))
+        # the rows at this position, usually one, or a few at the site of a split multiallelic variant
+        end = start
+        while end < len(self._rows) and self._position_keys[end] == position_key:
+            end += 1
+        rows = self._rows[start:end]
+        return rows[rows["allele_key"] == allele_key]
 
     def close(self):
         """delete the temporary file"""
