@@ -213,15 +213,6 @@ workflow Permutect {
             gatk_docker = permutect_docker
     }
 
-    call PrePermutectFiltering {
-        input:
-            input_vcf = SplitMultiallelics.output_vcf,
-            ref_fasta = ref_fasta,
-            ref_fai = ref_fai,
-            hairpin_filter = filter_pcr_errors,
-            permutect_docker = permutect_docker
-    }
-
     # Mutect2's pileups at the common variants if Mutect2 ran, otherwise the cached pileups.  Unlike select_first, this
     # allows them to be absent, as they are without common variants.
     File? tumor_pileups = if defined(Mutect2.tumor_pileups) then Mutect2.tumor_pileups else ExtractM2Outputs.tumor_pileups
@@ -258,8 +249,10 @@ workflow Permutect {
 
     call PermutectFiltering {
         input:
-            mutect2_vcf = PrePermutectFiltering.output_vcf,
-            mutect2_vcf_idx = PrePermutectFiltering.output_vcf_idx,
+            mutect2_vcf = SplitMultiallelics.output_vcf,
+            ref_fasta = ref_fasta,
+            ref_fai = ref_fai,
+            hairpin_filter = filter_pcr_errors,
             artifact_model = artifact_model,
             test_dataset = select_first([Mutect2.permutect_test_dataset, ExtractM2Outputs.test_dataset]),
             contigs_table = select_first([Mutect2.permutect_contigs_table, ExtractM2Outputs.contigs_table]),
@@ -345,8 +338,12 @@ workflow Permutect {
         File artifact_model
         File test_dataset
         File contigs_table
+        # Mutect2's VCF with its multiallelic records split, which pre_permutect_filtering filters for filter_variants
         File mutect2_vcf
-        File mutect2_vcf_idx
+        File ref_fasta
+        File ref_fai
+        # whether pre_permutect_filtering applies its hairpin filter as well as its multiallelic indel filter
+        Boolean hairpin_filter
         File? germline_model
         File? read_orientation_model
         File mutect_stats
@@ -374,8 +371,11 @@ workflow Permutect {
         set -euo pipefail
         genomic_span=`grep "callable" ~{mutect_stats} | while read name value; do echo $value; done`
 
+        pre_permutect_filtering --input ~{mutect2_vcf} --reference ~{ref_fasta} --output pre-filtered.vcf \
+            ~{if hairpin_filter then "" else "--no_hairpin_filter"}
+
         # one process per CPU reads and normalizes chunks of the test dataset
-        filter_variants --input ~{mutect2_vcf} --test_dataset ~{test_dataset} \
+        filter_variants --input pre-filtered.vcf --test_dataset ~{test_dataset} \
             --artifact_model ~{artifact_model} \
             --contigs_table ~{contigs_table} \
             --output permutect-filtered.vcf \
@@ -415,49 +415,6 @@ workflow Permutect {
         File output_vcf = "permutect-filtered.vcf.gz"
         File output_vcf_idx = "permutect-filtered.vcf.gz.tbi"
         File tensorboard_report = "tensorboard.tar"
-    }
-}
-
-task PrePermutectFiltering {
-    input {
-        File input_vcf
-        File ref_fasta
-        File ref_fai
-        Boolean hairpin_filter
-        String permutect_docker
-        Int? preemptible
-        Int max_retries = 0
-        Int disk_space = 100
-        Int cpu = 1
-        Int mem = 4
-    }
-
-    # Mem is in units of GB but our command and memory runtime values are in MB
-    Int machine_mem = mem * 1000
-    Int command_mem = machine_mem - 500
-
-    command <<<
-        set -e
-
-        pre_permutect_filtering --input ~{input_vcf} --reference ~{ref_fasta} --output pre-filtered.vcf \
-            ~{if hairpin_filter then "" else "--no_hairpin_filter"}
-
-        gatk --java-options "-Xmx~{command_mem}m" IndexFeatureFile -I pre-filtered.vcf
-    >>>
-
-    runtime {
-        docker: permutect_docker
-        bootDiskSizeGb: 12
-        memory: machine_mem + " MB"
-        disks: "local-disk " + disk_space + " SSD"
-        preemptible: select_first([preemptible, 0])
-        maxRetries: max_retries
-        cpu: cpu
-    }
-
-    output {
-        File output_vcf = "pre-filtered.vcf"
-        File output_vcf_idx = "pre-filtered.vcf.idx"
     }
 }
 

@@ -205,10 +205,17 @@ def task_output_globs(wdl_path: str, task_name: str) -> dict:
 
 def fill_placeholders(command: str, inputs: dict) -> str:
     """
-    Replace the WDL placeholders ~{name}, ~{default="..." name}, ~{"prefix" + name} and ~{sep=" " name}, as Cromwell
-    would.  An undefined (None) input gives its default, or nothing, and an array input given a separator its elements
-    joined by the separator.
+    Replace the WDL placeholders ~{name}, ~{default="..." name}, ~{"prefix" + name}, ~{sep=" " name} and
+    ~{if name then "..." else "..."}, as Cromwell would.  An undefined (None) input gives its default, or nothing, an
+    array input given a separator its elements joined by the separator, and a Boolean input in a conditional the string
+    for its value.
     """
+
+    def fill_conditional(match):
+        name, if_true, if_false = match.groups()
+        return if_true if inputs[name] else if_false
+
+    command = re.sub(r'~\{if\s+(\w+)\s+then\s+"([^"]*)"\s+else\s+"([^"]*)"\}', fill_conditional, command)
 
     def fill(match):
         _, separator, default, prefix, name = match.groups()
@@ -391,14 +398,20 @@ def test_split_multiallelics_stops_when_bcftools_fails(tmp_path, bcftools_exit_c
 
 
 @pytest.mark.parametrize(
-    "filter_variants_exit_code, expected_calls",
-    [(0, ["filter_variants", "tar", "bcftools", "bcftools"]), (1, ["filter_variants"])],
+    "failing_tool, expected_calls",
+    [
+        (None, ["pre_permutect_filtering", "filter_variants", "tar", "bcftools", "bcftools"]),
+        ("pre_permutect_filtering", ["pre_permutect_filtering"]),
+        ("filter_variants", ["pre_permutect_filtering", "filter_variants"]),
+    ],
 )
-def test_permutect_filtering_stops_when_filter_variants_fails(tmp_path, filter_variants_exit_code, expected_calls):
+def test_permutect_filtering_stops_when_a_tool_fails(tmp_path, failing_tool, expected_calls):
     (tmp_path / "mutect.stats").write_text("statistic\tvalue\ncallable\t60000000\n")
     inputs = {
         "mutect_stats": "mutect.stats",
         "mutect2_vcf": "mutect2.vcf",
+        "ref_fasta": "ref.fasta",
+        "hairpin_filter": False,
         "test_dataset": "test.dataset",
         "artifact_model": "model.pt",
         "contigs_table": "contigs.table",
@@ -412,9 +425,10 @@ def test_permutect_filtering_stops_when_filter_variants_fails(tmp_path, filter_v
         "permutect_filtering_extra_args": None,
     }
     command = fill_placeholders(task_command(PERMUTECT_WDL, "PermutectFiltering"), inputs)
-    fake_tools = {"filter_variants": fake_tool(filter_variants_exit_code), "tar": fake_tool(), "bcftools": fake_tool()}
+    tools = ("pre_permutect_filtering", "filter_variants", "tar", "bcftools")
+    fake_tools = {tool: fake_tool(1 if tool == failing_tool else 0) for tool in tools}
     succeeded, calls = run_with_fake_tools(tmp_path, command, fake_tools)
-    assert succeeded == (filter_variants_exit_code == 0)
+    assert succeeded == (failing_tool is None)
     assert calls == expected_calls
 
 
