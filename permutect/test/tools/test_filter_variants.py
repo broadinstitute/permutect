@@ -23,6 +23,7 @@ from permutect.misc_utils import get_tumor_sample_index
 from permutect.misc_utils import str_repeat_count_change
 from permutect.misc_utils import str_repeat_lengths
 from permutect.misc_utils import tumor_alt_orientation_counts
+from permutect.misc_utils import tumor_ref_orientation_counts
 from permutect.segmentation.germline_model import GermlineModel
 from permutect.segmentation.germline_model import SampleSegmentation
 from permutect.segmentation.segmenter import Segment
@@ -215,15 +216,13 @@ def test_filtering_on_seqc2_wes_chr20(tmp_path):
     assert len(target_records) == 1
     assert pre_permutect_filtering.HAIRPIN_FILTER in target_records[0].FILTER.split(";")
 
-    # read orientation artifacts are possible for SNVs, including padded ones, given their alt orientation counts from
-    # the VCF, and only SNVs
-    num_snvs_with_read_orientation_priors = 0
+    # given a read orientation model, a variant filtered as a sequencing error only because of damage gets the
+    # orientation filter instead, and only SNVs can
+    assert filter_variants.ORIENTATION_FILTER in cyvcf2.VCF(permutect_vcf.name).raw_header
     for v in cyvcf2.VCF(permutect_vcf.name):
-        log_priors = v.INFO.get(filter_variants.LOG_PRIOR_INFO_KEY)
-        if log_priors is not None and log_priors[Call.READ_ORIENTATION] > constants.IMPOSSIBLE_LOG_PROB / 2:
+        if filter_variants.ORIENTATION_FILTER in record_filters(v):
             assert find_variant_type(v) == Variation.SNV
-            num_snvs_with_read_orientation_priors += 1
-    assert num_snvs_with_read_orientation_priors > 0
+            assert FILTER_NAMES_OF_CALLS[Call.SEQ_ERROR] not in record_filters(v)
 
     # Mutect2's slippage filter isn't trusted, so the posterior model scores the variants it filtered.  The posterior
     # model's own slippage calls are one-unit indels of STRs of at least the minimum length.
@@ -239,6 +238,55 @@ def test_filtering_on_seqc2_wes_chr20(tmp_path):
             assert find_variant_type(v) in INDEL_VARIATIONS
             assert abs(str_repeat_count_change(v)) == 1 and str_repeat_lengths(v)[1] >= MIN_SLIPPAGE_STR_LENGTH
     assert num_scored_mutect2_slippage > 0 and num_slippage_calls > 0
+
+
+FILTER_NAMES_OF_CALLS = filter_variants.FILTER_NAMES
+
+
+def posterior_result_with(probabilities: list, error_probability: float, without_damage=None) -> PosteriorResult:
+    return PosteriorResult(
+        artifact_logit=0.0,
+        posterior_probabilities=probabilities,
+        error_probability=error_probability,
+        log_priors=None,
+        spectra_lls=None,
+        normal_lls=None,
+        label=None,
+        alt_count=6,
+        depth=100,
+        var_type=Variation.SNV,
+        embedding=None,
+        simulated_embedding=None,
+        simulated_source="",
+        without_damage=without_damage,
+    )
+
+
+def one_hot(call: Call, probability: float = 0.9) -> list:
+    """posterior probabilities of probability for the given call and the rest spread evenly over the others"""
+    return [probability if c == call else (1 - probability) / (len(Call) - 1) for c in Call]
+
+
+def test_most_likely_error_call():
+    assert filter_variants.most_likely_error_call(one_hot(Call.SEQ_ERROR), Call.SOMATIC) == Call.SEQ_ERROR
+    # the passing call doesn't count
+    probabilities = one_hot(Call.SOMATIC)
+    probabilities[Call.ARTIFACT] += 0.01
+    assert filter_variants.most_likely_error_call(probabilities, Call.SOMATIC) == Call.ARTIFACT
+
+
+@pytest.mark.parametrize(
+    "without_damage, expected",
+    [
+        (None, False),  # without a read orientation model
+        ((one_hot(Call.SEQ_ERROR), 0.9), False),  # a sequencing error anyway
+        ((one_hot(Call.SOMATIC), 0.1), True),  # it would pass
+        ((one_hot(Call.ARTIFACT), 0.9), True),  # another call
+    ],
+)
+def test_error_only_because_of_damage(without_damage, expected):
+    posterior_result = posterior_result_with(one_hot(Call.SEQ_ERROR), 0.9, without_damage)
+    assert filter_variants.is_error_only_because_of_damage(posterior_result, 0.5, Call.SOMATIC) == expected
 
 
 def tumor_sample(vcf_path) -> str:
@@ -292,10 +340,15 @@ def test_annotated_alt_orientation_counts_come_from_the_vcf():
     dataset = filter_variants.make_annotated_dataset(SEQC2_WES_PLAIN_TEXT_DATA, MUTECT2_SEQC2_WES_VCF, contig_names)
     vcf = cyvcf2.VCF(MUTECT2_SEQC2_WES_VCF)
     tumor_sample_index = get_tumor_sample_index(vcf)
-    vcf_counts = {encode_variant(v): tumor_alt_orientation_counts(v, tumor_sample_index) for v in vcf}
+    vcf_counts = {
+        encode_variant(v): tumor_alt_orientation_counts(v, tumor_sample_index)
+        + tumor_ref_orientation_counts(v, tumor_sample_index)
+        for v in vcf
+    }
     data = list(dataset.memory_mapped_data.generate())
     assert data
-    counts = np.array([(datum.get(Data.ALT_F1R2_COUNT), datum.get(Data.ALT_F2R1_COUNT)) for datum in data])
+    fields = (Data.ALT_F1R2_COUNT, Data.ALT_F2R1_COUNT, Data.REF_F1R2_COUNT, Data.REF_F2R1_COUNT)
+    counts = np.array([[datum.get(field) for field in fields] for datum in data])
     expected_counts = np.array([vcf_counts[encode_datum(datum, contig_names)] for datum in data])
     assert np.array_equal(counts, expected_counts, equal_nan=True)
     # Mutect2 annotates every variant, and most have alt reads of both orientations

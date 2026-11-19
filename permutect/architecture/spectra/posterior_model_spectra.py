@@ -1,9 +1,11 @@
+import math
+
 import torch
+from torch import Tensor
 from torch import nn
 
 from permutect import constants
 from permutect.architecture.posterior_model_priors import get_ref_contexts_and_alt_bases
-from permutect.architecture.posterior_model_priors import has_alt_orientation_counts_b
 from permutect.architecture.posterior_model_priors import possible_slippage_b
 from permutect.architecture.spectra.artifact_spectra import ArtifactSpectra
 from permutect.architecture.spectra.normal_artifact_spectrum import NormalArtifactSpectrum
@@ -19,6 +21,20 @@ from permutect.utils.enums import INDEL_VARIATIONS
 from permutect.utils.enums import Call
 from permutect.utils.enums import Variation
 
+# The weight of damage, against Mutect2's sequencing error, in the SEQ_ERROR likelihood of an SNV whose alt reads'
+# orientations are known, given a read orientation model: a site without a variant has its alt reads from one mechanism
+# or the other, a priori equally likely.
+SEQ_ERROR_DAMAGE_WEIGHT = 0.5
+
+
+def has_orientation_counts_b(batch: Batch) -> Tensor:
+    """
+    whether each variant has the tumor's counts of alt and of ref reads in F1R2 and F2R1 orientation, which
+    filter_variants sets
+    """
+    fields = (Data.ALT_F1R2_COUNT, Data.ALT_F2R1_COUNT, Data.REF_F1R2_COUNT, Data.REF_F2R1_COUNT)
+    return ~torch.stack([torch.isnan(batch.get(field)) for field in fields]).any(dim=0)
+
 
 class PosteriorModelSpectra(nn.Module):
     """
@@ -27,7 +43,7 @@ class PosteriorModelSpectra(nn.Module):
         2) artifact spectra
         3) normal artifact spectrum
         4) germline and contamination likelihoods, of the germline model, which are fixed
-        5) read orientation artifact likelihoods, of the read orientation model, which are fixed
+        5) damage's likelihoods, of the read orientation model, which are fixed and part of SEQ_ERROR's
         6) slippage likelihoods, of the slippage model, which are fixed
     Basically, anything that computes the likelihood of alt and ref read counts goes here.
     """
@@ -45,7 +61,7 @@ class PosteriorModelSpectra(nn.Module):
         self._dtype = float_dtype(self._device)
         # without segments, and with default parameters, if not given.  Its parameters are frozen.
         self.germline_model = GermlineModel() if germline_model is None else germline_model
-        # without one, read orientation artifacts are impossible, as their priors make them
+        # without one, SEQ_ERROR's likelihood is Mutect2's alone
         self.read_orientation_model = read_orientation_model
         self.slippage_model = SlippageModel() if slippage_model is None else slippage_model
 
@@ -81,7 +97,7 @@ class PosteriorModelSpectra(nn.Module):
         spectra_log_lks_bc[:, Call.SOMATIC] = self.somatic_spectrum.forward(depths_b, alt_counts_b, mafs_b)
         spectra_log_lks_bc[:, Call.ARTIFACT] = self.artifact_spectra.forward(var_types_b, depths_b, alt_counts_b)
         spectra_log_lks_bc[:, Call.NORMAL_ARTIFACT] = na_tumor_log_lks_b
-        spectra_log_lks_bc[:, Call.SEQ_ERROR] = batch.get(Data.SEQ_ERROR_LOG_LK)
+        spectra_log_lks_bc[:, Call.SEQ_ERROR] = self.seq_error_log_likelihoods_b(batch)
         # the tumor and the normal share a germline genotype, so their germline likelihood is a joint one, which goes
         # here, and the normal's germline column below stays 0.  Indels have their own parameters, given their STRs'
         # repeat unit lengths and lengths, which are 0 outside STRs and NaN for data that filter_variants hasn't annotated.
@@ -104,7 +120,6 @@ class PosteriorModelSpectra(nn.Module):
         spectra_log_lks_bc[:, Call.CONTAMINATION] = self.germline_model.tumor.contamination_log_likelihoods(
             alt_counts_b, depths_b, log_afs_b
         )
-        spectra_log_lks_bc[:, Call.READ_ORIENTATION] = self.read_orientation_log_likelihoods_b(batch)
         # 0 where the prior makes slippage impossible
         spectra_log_lks_bc[:, Call.SLIPPAGE] = torch.where(
             possible_slippage_b(self.slippage_model, batch),
@@ -119,8 +134,6 @@ class PosteriorModelSpectra(nn.Module):
         normal_log_lks_bc[:, Call.SEQ_ERROR] = normal_seq_error_log_lks
         # the contaminant's reads are in the tumor alone
         normal_log_lks_bc[:, Call.CONTAMINATION] = normal_seq_error_log_lks
-        # read orientation artifacts come from damage to the tumor's DNA
-        normal_log_lks_bc[:, Call.READ_ORIENTATION] = normal_seq_error_log_lks
         # as for sequencing error, the normal's alt reads are sequencing errors.  Slippage can happen in the normal too,
         # which a joint model of the tumor and normal could use.
         normal_log_lks_bc[:, Call.SLIPPAGE] = normal_seq_error_log_lks
@@ -130,32 +143,39 @@ class PosteriorModelSpectra(nn.Module):
 
         return spectra_log_lks_bc, normal_log_lks_bc
 
-    def read_orientation_log_likelihoods_b(self, batch: Batch) -> torch.Tensor:
+    def seq_error_log_likelihoods_b(self, batch: Batch, with_damage: bool = True) -> Tensor:
         """
-        The log likelihood of each variant's alt count and alt F1R2 count given a read orientation artifact, relative to
-        the likelihood of its alt F1R2 count given a non-artifact, a factor that every other call shares and leaves out.
-        A read orientation artifact is a mixture of an F1R2 and an F2R1 artifact of the alt base, weighted by their
-        priors.  It's 0 where the priors make the artifact impossible: without a read orientation model, and for a
-        variant that isn't an SNV or lacks the alt orientation counts.
+        The log likelihood of each variant's alt reads given that the site has no variant, SEQ_ERROR.  Without a read
+        orientation model, or for a variant that isn't an SNV or lacks the orientation counts of its ref or alt reads,
+        it's Mutect2's sequencing error likelihood.  Otherwise it mixes that with the likelihood of the alt reads from
+        damage, which puts them in each orientation at the rates of damage to that orientation's strand (see
+        permutect.read_orientation.read_orientation_model), weighted by SEQ_ERROR_DAMAGE_WEIGHT.  Damage's likelihood is
+        relative to the hypergeometric split of a real variant's alt reads between the orientations, a factor that
+        every other call shares and leaves out.  With with_damage False, it's Mutect2's likelihood regardless.
+
+        Mutect2 gives the orientations of only some reads, so damage's likelihood includes the other reads too, as the
+        other calls' likelihoods do, each with damage at the rate expected of a read of either orientation.
         """
-        depths_b, alt_counts_b = batch.get(Data.ORIGINAL_DEPTH), batch.get(Data.ORIGINAL_ALT_COUNT)
+        seq_error_b = batch.get(Data.SEQ_ERROR_LOG_LK)
         model = self.read_orientation_model
-        if model is None:
-            return torch.zeros_like(depths_b, dtype=self._dtype)
-        left_b, ref_b, right_b, alt_b = get_ref_contexts_and_alt_bases(batch)
-        # the F1R2 likelihoods' counts are those of reads with an orientation, as in GATK's ReadOrientationFilter
-        alt_f1r2_counts_b, alt_f2r1_counts_b = (
-            torch.nan_to_num(batch.get(field)) for field in (Data.ALT_F1R2_COUNT, Data.ALT_F2R1_COUNT)
+        if model is None or not with_damage:
+            return seq_error_b
+        alt_f1r2_b, alt_f2r1_b, ref_f1r2_b, ref_f2r1_b = (
+            torch.nan_to_num(batch.get(field))
+            for field in (Data.ALT_F1R2_COUNT, Data.ALT_F2R1_COUNT, Data.REF_F1R2_COUNT, Data.REF_F2R1_COUNT)
         )
-        oriented_alt_counts_b = alt_f1r2_counts_b + alt_f2r1_counts_b
-
-        log_priors_bo = model.log_priors_bo(left_b, ref_b, right_b, alt_b)
-        artifact_log_lks_bo = model.artifact_spectrum_log_likelihoods_bo(alt_b, depths_b, alt_counts_b)
-        artifact_log_lks_bo += model.artifact_f1r2_log_likelihoods_bo(alt_b, oriented_alt_counts_b, alt_f1r2_counts_b)
-        log_prior_b = torch.logsumexp(log_priors_bo, dim=-1)
-        log_lks_b = torch.logsumexp(log_priors_bo + artifact_log_lks_bo, dim=-1) - log_prior_b
-        log_lks_b -= model.non_artifact_f1r2_log_likelihoods_b(oriented_alt_counts_b, alt_f1r2_counts_b)
-
+        damage_b, snvs_b = model.damage_log_likelihoods_b(
+            *get_ref_contexts_and_alt_bases(batch),
+            alt_f1r2_b,
+            alt_f2r1_b,
+            ref_f1r2_b + alt_f1r2_b,
+            ref_f2r1_b + alt_f2r1_b,
+            batch.get(Data.ORIGINAL_DEPTH),
+            batch.get(Data.ORIGINAL_ALT_COUNT),
+        )
+        mixed_b = torch.logaddexp(
+            seq_error_b + math.log(1 - SEQ_ERROR_DAMAGE_WEIGHT),
+            damage_b.to(seq_error_b.dtype) + math.log(SEQ_ERROR_DAMAGE_WEIGHT),
+        )
         is_snv_b = batch.get(Data.VARIANT_TYPE) == Variation.SNV
-        possible_b = is_snv_b & has_alt_orientation_counts_b(batch) & torch.isfinite(log_prior_b)
-        return torch.where(possible_b, log_lks_b, 0)
+        return torch.where(is_snv_b & snvs_b & has_orientation_counts_b(batch), mixed_b, seq_error_b)

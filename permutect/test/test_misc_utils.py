@@ -36,6 +36,7 @@ from permutect.misc_utils import resolve_device
 from permutect.misc_utils import str_repeat_count_change
 from permutect.misc_utils import tumor_alt_orientation_counts
 from permutect.misc_utils import tumor_depths
+from permutect.misc_utils import tumor_ref_orientation_counts
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
@@ -580,9 +581,14 @@ def test_tumor_alt_orientation_counts(tmp_path):
     with cyvcf2.VCF(str(path)) as vcf:
         tumor_sample_index = get_tumor_sample_index(vcf)
         counts = [tumor_alt_orientation_counts(v, tumor_sample_index) for v in vcf]
+    with cyvcf2.VCF(str(path)) as vcf:
+        ref_counts = [tumor_ref_orientation_counts(v, tumor_sample_index) for v in vcf]
     assert counts[0] == (3.0, 0.0)
     assert all(math.isnan(count) for count in counts[1])
     assert math.isnan(counts[2][0]) and counts[2][1] == 2.0
+    # likewise the ref reads'
+    assert ref_counts[0] == (4.0, 2.0) and ref_counts[2] == (3.0, 2.0)
+    assert all(math.isnan(count) for count in ref_counts[1])
 
 
 def test_tumor_alt_orientation_counts_without_the_annotations_in_the_header(tmp_path):

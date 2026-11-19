@@ -19,6 +19,7 @@ class PosteriorResult:
         embedding,
         simulated_embedding,
         simulated_source: str,
+        without_damage: tuple[list, float] = None,
     ):
         self.artifact_logit = artifact_logit
         self.posterior_probabilities = posterior_probabilities
@@ -34,3 +35,6 @@ class PosteriorResult:
         # the embedding of a twin simulated from the feature clustering model, and the component it came from
         self.simulated_embedding = simulated_embedding
         self.simulated_source = simulated_source
+        # given a read orientation model, the posterior probabilities and error probability as if SEQ_ERROR had Mutect2's
+        # likelihood alone, without damage
+        self.without_damage = without_damage

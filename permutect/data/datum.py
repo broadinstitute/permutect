@@ -76,9 +76,9 @@ class Data(enum.Enum):
     # after this, at the end of the int16 array comes the sub-array containing the ref sequence haplotype
 
     # float array elements
-    # log allele frequency, maf, normal maf, cached artifact logit, the repeat lengths, the alt orientation counts and the
-    # repeat count change are not used until the posterior model.  They are NaN until filter_variants sets them from the
-    # VCF, the germline model and the artifact model.
+    # log allele frequency, maf, normal maf, cached artifact logit, the repeat lengths, the alt and ref orientation
+    # counts and the repeat count change are not used until the posterior model.  They are NaN until filter_variants
+    # sets them from the VCF, the germline model and the artifact model.
     # allele frequency is stored as its natural log because population allele frequencies can be too small for float16
     SEQ_ERROR_LOG_LK = (FLOAT_DTYPE, 0)
     NORMAL_SEQ_ERROR_LOG_LK = (FLOAT_DTYPE, 1)
@@ -97,6 +97,10 @@ class Data(enum.Enum):
     # the change from the reference in the number of repeat units of the STR that the variant is in, from Mutect2's RPA
     # annotation, eg -1 for the deletion of one unit, or 0 outside an STR
     REPEAT_COUNT_CHANGE = (FLOAT_DTYPE, 10)
+    # the tumor's counts of ref reads in F1R2 and in F2R1 orientation, likewise, which give the read orientation model
+    # the site's own baseline orientation
+    REF_F1R2_COUNT = (FLOAT_DTYPE, 11)
+    REF_F2R1_COUNT = (FLOAT_DTYPE, 12)
     # after this, at the end of the float16 array comes the sub-array containing the INFO vector
 
     def __init__(self, dtype: np.dtype, idx: int):
@@ -106,13 +110,14 @@ class Data(enum.Enum):
 
 Data.NUM_SCALAR_INT_ELEMENTS = 16  # in Python 3.11+ can use enum.nonmember
 Data.HAPLOTYPES_START_IDX = 16  # in Python 3.11+ can use enum.nonmember
-Data.NUM_SCALAR_FLOAT_ELEMENTS = 11  # in Python 3.11+ can use enum.nonmember
-Data.INFO_START_IDX = 11  # in Python 3.11+ can use enum.nonmember
+Data.NUM_SCALAR_FLOAT_ELEMENTS = 13  # in Python 3.11+ can use enum.nonmember
+Data.INFO_START_IDX = 13  # in Python 3.11+ can use enum.nonmember
 
 # The version of the layout of the int and float arrays, which saved data record, so that data saved with another
 # layout fail to load rather than being misread.  Version 2 added REPEAT_UNIT_LENGTH and REPEAT_LENGTH, which moved the
-# INFO vector, and version 3 likewise added ALT_F1R2_COUNT, ALT_F2R1_COUNT and REPEAT_COUNT_CHANGE.
-DATA_LAYOUT_VERSION = 3
+# INFO vector, version 3 likewise added ALT_F1R2_COUNT, ALT_F2R1_COUNT and REPEAT_COUNT_CHANGE, and version 4
+# REF_F1R2_COUNT and REF_F2R1_COUNT.
+DATA_LAYOUT_VERSION = 4
 
 
 def get_data_field(int_array, float_array, data_field: Data):
@@ -232,6 +237,8 @@ class Datum:
         result.set(Data.ALT_F1R2_COUNT, np.nan)
         result.set(Data.ALT_F2R1_COUNT, np.nan)
         result.set(Data.REPEAT_COUNT_CHANGE, np.nan)
+        result.set(Data.REF_F1R2_COUNT, np.nan)
+        result.set(Data.REF_F2R1_COUNT, np.nan)
 
         result.float_array[Data.INFO_START_IDX :] = info_array
         return result

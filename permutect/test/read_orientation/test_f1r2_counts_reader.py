@@ -7,8 +7,13 @@ import torch
 from permutect.read_orientation.f1r2_counts_reader import ALT_HISTOGRAM_KEY_COLUMNS
 from permutect.read_orientation.f1r2_counts_reader import CONTEXTS
 from permutect.read_orientation.f1r2_counts_reader import REF_HISTOGRAM_KEY_COLUMNS
+from permutect.read_orientation.f1r2_counts_reader import UNKNOWN_REF_F1R2
 from permutect.read_orientation.f1r2_counts_reader import Sites
 from permutect.read_orientation.f1r2_counts_reader import read_f1r2_counts
+from permutect.read_orientation.maf_mixtures import BALANCED_MIXTURE
+from permutect.read_orientation.maf_mixtures import MAF_GRID
+from permutect.segmentation.germline_model import SampleSegmentation
+from permutect.segmentation.segmenter import Segment
 from permutect.test.test_file_names import DREAM_TUMOR_4_F1R2_SCATTERS
 
 ALT_TABLE_HEADER = "ref_count\talt_count\tref_f1r2\talt_f1r2\talt\tcontig\tposition"
@@ -66,8 +71,50 @@ def test_sites():
     assert rows(sites + sites) == [(A, 2, 1, 30, 2), (T, 2, 0, 30, 2), (T, 2, 1, 30, 6)]
     assert rows(Sites.concatenate([])) == []
 
-    # in the reverse complement's orientation, the alt bases are complementary and F1R2 and F2R1 reads swap
-    assert rows(sites.reverse_complement()) == [(A, 2, 1, 30, 3), (A, 2, 2, 30, 1), (T, 2, 1, 30, 1)]
+
+def test_sites_with_maf_mixtures():
+    # the same keys with different MAF mixtures are different sites, and sites without MAF mixtures have MAF 1/2
+    sites = Sites.of([[T, 2, 1, 30], [T, 2, 1, 30], [T, 2, 1, 30]], [1, 2, 4], [0, 3, 0])
+    assert sites.counts_n.tolist() == [5, 2] and sites.maf_mixtures_n.tolist() == [0, 3]
+    assert (sites + sites).counts_n.tolist() == [10, 4]
+    assert Sites.of([[T, 2, 1, 30]], [1]).maf_mixtures_n.tolist() == [BALANCED_MIXTURE]
+
+
+def test_sites_with_ref_f1r2_counts():
+    # the same keys with different ref F1R2 counts are different sites, and sites without them have unknown ones
+    sites = Sites.of([[T, 2, 1, 30]] * 3, [1, 2, 4], ref_f1r2_counts_n=[10, 3, 10])
+    assert sites.counts_n.tolist() == [2, 5] and sites.ref_f1r2_counts_n.tolist() == [3, 10]
+    assert Sites.of([[T, 2, 1, 30]], [1]).ref_f1r2_counts_n.tolist() == [UNKNOWN_REF_F1R2]
+
+
+def test_maf_mixtures_of_sites(tmp_path):
+    depths = [1, 2]
+    ref_rows = [("chr1", 1, "ACG", [3, 0]), ("chr1", 1_000_001, "ACG", [0, 4])]
+    alt_rows = [("chr1", 1_000_001, "ACG", "T", "F1R2", [1, 0])]
+    # the alt table's sites are at positions 1000 and 2000
+    alt_tables = {"ACG": [(10, 5, 5, 4, "T"), (10, 5, 5, 4, "T")]}
+    write_tar_gz(tmp_path / "counts.tar.gz", f1r2_files("S", depths, ref_rows, alt_rows, alt_tables))
+    segments = [Segment("chr1", 1, 1500, 0.0, 0.0), Segment("chr1", 1501, 2_000_000, 0.25, 0.25)]
+
+    counts = read_f1r2_counts([tmp_path / "counts.tar.gz"], SampleSegmentation("S", segments))["S"]
+    sites = counts.sites["ACG"]
+    loh, quarter, straddling = MAF_GRID.index(0.01), MAF_GRID.index(0.25), len(MAF_GRID)
+    result = sorted(
+        (*keys, mixture, count)
+        for keys, mixture, count in zip(sites.keys_n4.tolist(), sites.maf_mixtures_n.tolist(), sites.counts_n.tolist())
+    )
+    # the first block is mostly MAF 0.25 but a little loss of heterozygosity, and the second all MAF 0.25
+    histogram_sites = [(C, 0, 0, 1, straddling, 3), (C, 0, 0, 2, quarter, 4), (T, 1, 1, 1, quarter, 1)]
+    alt_table_sites = [(T, 5, 4, 15, loh, 1), (T, 5, 4, 15, quarter, 1)]
+    assert result == sorted(histogram_sites + alt_table_sites)
+    weights_g = counts.maf_mixtures_mg[straddling]
+    assert weights_g[loh].item() == pytest.approx(0.0015) and weights_g[quarter].item() == pytest.approx(0.9985)
+
+    # without a segmentation, the same sites, all with MAF 1/2
+    without = read_f1r2_counts([tmp_path / "counts.tar.gz"])["S"]
+    assert rows(without.sites["ACG"]) == [(C, 0, 0, 1, 3), (C, 0, 0, 2, 4), (T, 1, 1, 1, 1), (T, 5, 4, 15, 2)]
+    assert set(without.sites["ACG"].maf_mixtures_n.tolist()) == {BALANCED_MIXTURE}
+    assert without.maf_mixtures_mg.shape == (len(MAF_GRID), len(MAF_GRID))
 
 
 def test_inputs_are_summed(tmp_path):
@@ -93,14 +140,38 @@ def test_inputs_are_summed(tmp_path):
     assert counts.max_depth == 4
     assert counts.sites.keys() == set(CONTEXTS)
     # sites without alt reads have the ref base as their alt base, and alt table sites with the same alt base, alt
-    # count, alt F1R2 count and depth are combined, whatever their ref F1R2 counts
+    # count, alt F1R2 count and depth are combined only if their ref F1R2 counts are the same too
     ref_sites = [(C, 0, 0, 1, 11), (C, 0, 0, 2, 2), (C, 0, 0, 3, 3), (C, 0, 0, 4, 5)]
     one_alt_read_sites = [(A, 1, 0, 3, 3), (T, 1, 1, 1, 1), (T, 1, 1, 2, 1), (T, 1, 1, 4, 2)]
-    alt_table_sites = [(T, 5, 4, 8, 1), (T, 5, 4, 15, 2), (T, 5, 4, 16, 1)]
+    alt_table_sites = [(T, 5, 4, 8, 1), (T, 5, 4, 15, 1), (T, 5, 4, 15, 1), (T, 5, 4, 16, 1)]
     assert rows(counts.sites["ACG"]) == sorted(ref_sites + one_alt_read_sites + alt_table_sites)
+    # the alt table sites' own ref F1R2 counts, and unknown ones for the histograms' sites
+    acg = counts.sites["ACG"]
+    assert sorted(acg.ref_f1r2_counts_n[acg.alt_counts_n >= 2].tolist()) == [2, 3, 5, 6]
+    assert set(acg.ref_f1r2_counts_n[acg.alt_counts_n < 2].tolist()) == {UNKNOWN_REF_F1R2}
     assert rows(counts.sites["TTT"]) == [(G, 2, 1, 9, 1), (T, 0, 0, 3, 5)]
     assert rows(counts.sites["CCC"]) == []
     assert rows(counts_by_sample["OTHER"].sites["ACG"]) == [(C, 0, 0, depth, depth) for depth in range(1, 5)]
+
+
+def test_capture_counts_of_alt_tables(tmp_path):
+    depths = [1, 2]
+    ref_rows = [("chr1", 1, "ACG", [1, 1])]
+    # alt-table sites (ref count, alt count, ref F1R2 count, alt F1R2 count, alt base), one without ref reads, which counts too
+    alt_tables_1 = {"ACG": [(20, 3, 5, 1, "T"), (0, 4, 0, 2, "T")], "TTT": [(20, 2, 5, 1, "G")]}
+    alt_tables_2 = {"ACG": [(20, 3, 5, 0, "A"), (8, 3, 8, 0, "A")]}
+    write_tar_gz(tmp_path / "1.tar.gz", f1r2_files("S", depths, ref_rows, [], alt_tables_1))
+    write_tar_gz(tmp_path / "2.tar.gz", f1r2_files("S", depths, ref_rows, [], alt_tables_2))
+    capture = read_f1r2_counts([tmp_path / "1.tar.gz", tmp_path / "2.tar.gz"])["S"].capture_counts
+    # by (depth, F1R2 count), ref and alt reads both, summed over contexts and inputs
+    assert sorted(zip(*(x.tolist() for x in capture.tensors()))) == [
+        (4, 2, 1),
+        (11, 8, 1),
+        (22, 6, 1),
+        (23, 5, 1),
+        (23, 6, 1),
+    ]
+    assert capture.num_sites() == 5
 
 
 def test_rounded_depths(tmp_path):
