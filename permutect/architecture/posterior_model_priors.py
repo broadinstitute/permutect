@@ -20,6 +20,10 @@ from permutect.utils.array_utils import index_tensor
 from permutect.utils.enums import Call
 from permutect.utils.enums import Variation
 
+# the seed of the variational fit of the context-dependent SNV priors and of the draws from it, which PyMC doesn't take
+# from numpy's global random number generator
+CONTEXT_PRIORS_RANDOM_SEED = 0
+
 
 def get_ref_contexts_and_alt_bases(batch: Batch) -> tuple[Tensor, Tensor, Tensor, Tensor]:
     # each row is the ref sequence, followed by the alt sequence (hstacked) with A = 0, C = 1 . . . deletion = 4
@@ -230,9 +234,9 @@ class PosteriorModelPriors(nn.Module):
                     observed=snv_sc.cpu().numpy().flatten(),
                 )
 
-                mean_field = pm.fit(method="advi")
+                mean_field = pm.fit(method="advi", random_seed=CONTEXT_PRIORS_RANDOM_SEED)
 
-                idata = mean_field.sample(1000)
+                idata = mean_field.sample(1000, random_seed=CONTEXT_PRIORS_RANDOM_SEED)
 
                 mutation_rates_sc = np.mean(
                     idata.posterior["rate_sc"], axis=(0, 1)

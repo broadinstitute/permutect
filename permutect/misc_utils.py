@@ -1,4 +1,5 @@
 import os
+import random
 import time
 from datetime import timedelta
 from typing import Iterator
@@ -24,6 +25,17 @@ from permutect.utils.allele_utils import truncate_bases_if_necessary
 
 def report_memory_usage(message: str = ""):
     print(f"{message}  Memory usage: {psutil.virtual_memory().percent:.1f}%")
+
+
+def seed_random_number_generators(seed: int = 0):
+    """
+    Seed the global random number generators of Python, numpy and torch, including torch's of every GPU, so that a tool
+    makes the same random choices in every run, such as the order in which a ReadsDataset yields its data.  A DataLoader
+    seeds its workers' generators from torch's, so this seeds theirs too.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
 
 class ConsistentValue:
