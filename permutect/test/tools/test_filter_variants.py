@@ -455,3 +455,37 @@ def test_posterior_data_artifact_logits_are_deterministic(tmp_path):
     model.train(True)
     second_logits = artifact_logits()
     assert np.array_equal(first_logits, second_logits)
+
+
+def test_filtering_is_deterministic(tmp_path):
+    """
+    Two runs on the same inputs write the same records, since their random choices, such as the order of the data in
+    test-time adaptation and in fitting the spectra and the variational fit of the context-dependent SNV priors, are
+    seeded.  Each record's filters are sorted, rather than in the order of a set, which changes from run to run with
+    Python's hash randomization and so would be the same in both runs of this one process.
+    """
+    pre_filtered_vcf = run_pre_permutect_filtering(MUTECT2_SEQC2_WES_VCF, HG38_CHR20_REFERENCE)
+
+    def filtered_records(run: str) -> list[str]:
+        output_vcf = tmp_path / f"{run}.vcf"
+        filtering_args = parse_filtering_arguments(
+            {
+                constants.INPUT_NAME: pre_filtered_vcf.name,
+                constants.TEST_DATASET_NAME: SEQC2_WES_PLAIN_TEXT_DATA,
+                constants.CONTIGS_TABLE_NAME: HG38_CONTIGS_TABLE,
+                constants.OUTPUT_NAME: str(output_vcf),
+                constants.TENSORBOARD_DIR_NAME: str(tmp_path / f"{run}-tensorboard"),
+                # the context-dependent SNV priors are fit in the second half of the iterations
+                constants.NUM_SPECTRUM_ITERATIONS_NAME: "2",
+            }
+        )
+        filter_variants.main_without_parsing(filtering_args)
+        with open(output_vcf) as file:
+            return [line for line in file if not line.startswith("#")]
+
+    first_records = filtered_records("first")
+    assert filtered_records("second") == first_records
+
+    filters = [record.split("\t")[6].split(";") for record in first_records]
+    assert any(len(names) > 1 for names in filters)
+    assert all(names == sorted(names) for names in filters)

@@ -33,6 +33,7 @@ from permutect.misc_utils import gpu_if_available
 from permutect.misc_utils import overlapping_filters
 from permutect.misc_utils import report_device
 from permutect.misc_utils import report_memory_usage
+from permutect.misc_utils import seed_random_number_generators
 from permutect.misc_utils import tumor_depths
 from permutect.parameters import TrainingParameters
 from permutect.parameters import add_num_processes_to_parser
@@ -235,6 +236,8 @@ def make_filtered_vcf(
     """
     :param num_processes: the number of processes that read and normalize chunks of the plain text test dataset at once
     """
+    # the same random choices in every run, such as the order of the data in fitting the spectra
+    seed_random_number_generators()
     print("Loading artifact model and test dataset")
     contig_index_to_name_map = {}
     with open(contigs_table) as file:
@@ -658,7 +661,8 @@ def apply_filtering_to_vcf(
             if v.FILTER is not None:
                 filters.update(v.FILTER.split(";"))
             missing_encodings.append(encoding)
-        v.FILTER = ";".join(filters) if filters else "PASS"
+        # sorted, since the order of a set of strings changes from run to run with Python's hash randomization
+        v.FILTER = ";".join(sorted(filters)) if filters else "PASS"
     if missing_encodings:
         print(
             f"{len(missing_encodings)} variants in the input VCF had no Permutect posterior, for example because they "
