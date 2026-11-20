@@ -41,7 +41,9 @@ class SlippageModel(nn.Module):
         super().__init__()
         self.min_str_length = min_str_length
         # buffers rather than parameters, since nothing that uses the model changes them
-        self.register_buffer("allele_fraction_pseudocounts_2", torch.tensor(allele_fraction_pseudocounts).double())
+        self.register_buffer(
+            "allele_fraction_pseudocounts_2", torch.tensor(allele_fraction_pseudocounts, dtype=torch.float64)
+        )
 
     def possible_b(self, variant_types_b: Tensor, repeat_lengths_b: Tensor, repeat_count_changes_b: Tensor) -> Tensor:
         """
@@ -55,3 +57,13 @@ class SlippageModel(nn.Module):
         """the log likelihoods of each variant's alt count in the tumor, given its depth and slippage"""
         alpha, beta = self.allele_fraction_pseudocounts_2
         return beta_binomial_log_lk(depths_b, alt_counts_b, alpha, beta)
+
+    def save(self, path):
+        """save everything needed to reconstruct the model, as a list and a number, which torch.load can read safely"""
+        state = {"allele_fraction_pseudocounts": self.allele_fraction_pseudocounts_2.tolist()}
+        torch.save(state | {"min_str_length": self.min_str_length}, path)
+
+    @classmethod
+    def load(cls, path) -> "SlippageModel":
+        state = torch.load(path, map_location="cpu", weights_only=True)
+        return cls(tuple(state["allele_fraction_pseudocounts"]), state["min_str_length"])
