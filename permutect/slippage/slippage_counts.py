@@ -41,8 +41,8 @@ LOCATION_COLUMNS = ("contig", "start", "unit", "units")
 @dataclass
 class SlippageCounts:
     """
-    The STRs of one sample's slippage counts table, indexed by s, with the count bins of COUNT_COLUMNS indexed by k and the
-    two most common changes indexed by a
+    The STRs of one sample's slippage counts table that read_slippage_counts keeps, indexed by s, with the count bins of
+    COUNT_COLUMNS indexed by k and the two most common changes indexed by a
     """
 
     sample: str
@@ -63,13 +63,20 @@ class SlippageCounts:
 
 
 def read_slippage_counts(path) -> SlippageCounts:
-    """the slippage counts table at path"""
+    """
+    The slippage counts table at path, without the STRs that may have two non-reference alleles: those where the
+    reference length doesn't have the most or second-most fragments.
+    """
     columns = [*LOCATION_COLUMNS, *COUNT_COLUMNS, *ALT_CHANGE_COLUMNS, *ALT_ALLELE_FREQUENCY_COLUMNS]
     with open(path) as file:
         table = read_gatk_table(file, usecols=columns, dtype={"contig": str, "unit": str})
     if table.sample is None:
         raise ValueError(f"The slippage counts table {path} doesn't name its sample")
-    rows = table.rows
+    # drop the STRs where two count bins, including not_whole_units, have more fragments than the reference; a tie keeps
+    # the STR.  This also drops hom alts with more fragments of another length, eg their own slippage away from the
+    # reference, than of the reference's.
+    counts = table.rows[list(COUNT_COLUMNS)]
+    rows = table.rows[counts.gt(counts["no_change"], axis=0).sum(axis=1) <= 1]
     unit_lengths_s = torch.tensor(rows["unit"].str.len().to_numpy())
     units_s = torch.tensor(rows["units"].to_numpy())
     return SlippageCounts(
