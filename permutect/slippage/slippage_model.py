@@ -29,14 +29,17 @@ class SlippageModel(nn.Module):
     """
     Which variants can be slippage, and the likelihoods of their alt counts given slippage.
 
-    TODO: the pseudocounts are fixed for now.  Learn them, eg for each repeat unit length and STR length, from the
-    slippage data that GATK collects.
+    learn_slippage_model learns the log odds of slips by unit length and allele length (see
+    permutect.slippage.slip_rates), if any, from the slippage counts that GATK collects.
+
+    TODO: use the learned log odds.  For now the likelihoods come from the fixed pseudocounts.
     """
 
     def __init__(
         self,
         allele_fraction_pseudocounts: tuple[float, float] = SLIPPAGE_ALLELE_FRACTION_PSEUDOCOUNTS,
         min_str_length: int = MIN_SLIPPAGE_STR_LENGTH,
+        slip_log_odds_jul: Tensor = None,
     ):
         super().__init__()
         self.min_str_length = min_str_length
@@ -44,6 +47,8 @@ class SlippageModel(nn.Module):
         self.register_buffer(
             "allele_fraction_pseudocounts_2", torch.tensor(allele_fraction_pseudocounts, dtype=torch.float64)
         )
+        # the learned log odds of each slip, unit length and allele length, or none
+        self.register_buffer("slip_log_odds_jul", torch.zeros(0) if slip_log_odds_jul is None else slip_log_odds_jul)
 
     def possible_b(self, variant_types_b: Tensor, repeat_lengths_b: Tensor, repeat_count_changes_b: Tensor) -> Tensor:
         """
@@ -59,11 +64,12 @@ class SlippageModel(nn.Module):
         return beta_binomial_log_lk(depths_b, alt_counts_b, alpha, beta)
 
     def save(self, path):
-        """save everything needed to reconstruct the model, as a list and a number, which torch.load can read safely"""
+        """save everything needed to reconstruct the model, in types that torch.load can read safely"""
         state = {"allele_fraction_pseudocounts": self.allele_fraction_pseudocounts_2.tolist()}
-        torch.save(state | {"min_str_length": self.min_str_length}, path)
+        state |= {"min_str_length": self.min_str_length, "slip_log_odds": self.slip_log_odds_jul}
+        torch.save(state, path)
 
     @classmethod
     def load(cls, path) -> "SlippageModel":
         state = torch.load(path, map_location="cpu", weights_only=True)
-        return cls(tuple(state["allele_fraction_pseudocounts"]), state["min_str_length"])
+        return cls(tuple(state["allele_fraction_pseudocounts"]), state["min_str_length"], state["slip_log_odds"])

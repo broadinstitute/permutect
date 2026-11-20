@@ -79,5 +79,8 @@ NORMAL_PLOT_NAME = "normal_plot"
 # arguments for learn_read_orientation_model, which also takes MAX_EM_ITERATIONS_NAME
 CONVERGENCE_THRESHOLD_NAME = "convergence_threshold"
 
+# arguments for learn_slippage_model
+DEFAULT_ALLELE_FREQUENCY_NAME = "default_allele_frequency"
+
 # numerical constants shared by the models
 IMPOSSIBLE_LOG_PROB = -9999  # rules out a call, while staying finite to avoid the NaNs that -inf can give

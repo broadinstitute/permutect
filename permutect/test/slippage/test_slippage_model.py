@@ -64,9 +64,17 @@ def test_decisions_approximate_filter_mutect_calls(depth):
 
 def test_save_and_load(tmp_path):
     path = tmp_path / "slippage-model.pt"
+    slip_log_odds_jul = torch.randn(4, 5, 40, dtype=torch.float64)
     # pseudocounts that float32 would round
-    SlippageModel((67.13, 1055.24), 10).save(path)
+    SlippageModel((67.13, 1055.24), 10, slip_log_odds_jul).save(path)
     model = SlippageModel.load(path)
     assert model.allele_fraction_pseudocounts_2.tolist() == [67.13, 1055.24]
     assert model.allele_fraction_pseudocounts_2.dtype == torch.float64
     assert model.min_str_length == 10
+    assert torch.equal(model.slip_log_odds_jul, slip_log_odds_jul)
+
+
+def test_save_and_load_without_slip_rates(tmp_path):
+    path = tmp_path / "slippage-model.pt"
+    SlippageModel().save(path)
+    assert SlippageModel.load(path).slip_log_odds_jul.numel() == 0
