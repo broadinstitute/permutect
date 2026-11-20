@@ -52,7 +52,7 @@ workflow Permutect {
         Int? gpu_count
         String? concordance_header
         # split each multi-nucleotide variant (MNV) into its constituent SNVs, eg to compare with a truth VCF that represents
-        # MNVs that way.  Concordance then evaluates the split VCFs; output_vcf keeps the MNVs.
+        # MNVs that way.  Concordance then evaluates the split VCF; output_vcf keeps the MNVs.
         Boolean split_mnvs = false
 
         # Mutect2's outputs from an earlier run, ie the m2_outputs output of that run: an uncompressed tar archive of
@@ -213,15 +213,6 @@ workflow Permutect {
             gatk_docker = permutect_docker
     }
 
-    call PrePermutectFiltering {
-        input:
-            input_vcf = SplitMultiallelics.output_vcf,
-            ref_fasta = ref_fasta,
-            ref_fai = ref_fai,
-            hairpin_filter = filter_pcr_errors,
-            permutect_docker = permutect_docker
-    }
-
     # Mutect2's pileups at the common variants if Mutect2 ran, otherwise the cached pileups.  Unlike select_first, this
     # allows them to be absent, as they are without common variants.
     File? tumor_pileups = if defined(Mutect2.tumor_pileups) then Mutect2.tumor_pileups else ExtractM2Outputs.tumor_pileups
@@ -258,8 +249,10 @@ workflow Permutect {
 
     call PermutectFiltering {
         input:
-            mutect2_vcf = PrePermutectFiltering.output_vcf,
-            mutect2_vcf_idx = PrePermutectFiltering.output_vcf_idx,
+            mutect2_vcf = SplitMultiallelics.output_vcf,
+            ref_fasta = ref_fasta,
+            ref_fai = ref_fai,
+            hairpin_filter = filter_pcr_errors,
             artifact_model = artifact_model,
             test_dataset = select_first([Mutect2.permutect_test_dataset, ExtractM2Outputs.test_dataset]),
             contigs_table = select_first([Mutect2.permutect_contigs_table, ExtractM2Outputs.contigs_table]),
@@ -275,57 +268,25 @@ workflow Permutect {
             permutect_docker = permutect_docker,
     }
 
-    if (split_mnvs) {
-        call SplitMNVs as SplitPermutectMNVs {
-            input:
-                input_vcf = PermutectFiltering.output_vcf,
-                permutect_docker = permutect_docker
-        }
-    }
-
     if (defined(test_dataset_truth_vcf_hack)){
-        if (split_mnvs) {
-            call SplitMNVs as SplitM2MNVs {
-                input:
-                    input_vcf = select_first([Mutect2.output_vcf, ExtractM2Outputs.mutect2_vcf]),
-                    permutect_docker = permutect_docker
-            }
-        }
-
         call Concordance as PermutectConcordance {
             input:
                 intervals = intervals_hack,
                 masks = masks_hack,
                 truth_vcf = select_first([test_dataset_truth_vcf_hack]),
                 truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_or_conventional]),
-                eval_vcf = select_first([SplitPermutectMNVs.output_vcf, PermutectFiltering.output_vcf]),
-                eval_vcf_idx = select_first([SplitPermutectMNVs.output_vcf_idx, PermutectFiltering.output_vcf_idx]),
+                eval_vcf = PermutectFiltering.output_vcf,
+                eval_vcf_idx = PermutectFiltering.output_vcf_idx,
+                split_mnvs = split_mnvs,
                 gatk_docker = permutect_docker,
                 concordance_header = concordance_header,
-        }
-
-        call Concordance as M2Concordance {
-            input:
-                intervals = intervals_hack,
-                masks = masks_hack,
-                truth_vcf = select_first([test_dataset_truth_vcf_hack]),
-                truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_or_conventional]),
-                eval_vcf = select_first([SplitM2MNVs.output_vcf, Mutect2.output_vcf, ExtractM2Outputs.mutect2_vcf]),
-                eval_vcf_idx = select_first([SplitM2MNVs.output_vcf_idx, Mutect2.output_vcf_idx, ExtractM2Outputs.mutect2_vcf_idx]),
-                gatk_docker = permutect_docker,
-                concordance_header = concordance_header
         }
     }
 
     output {
-        # Permutect's calls go to output_vcf in a matched-normal run and to tumor_only_output_vcf in a tumor-only run
-        File? output_vcf = if tumor_only_mode then NONE else PermutectFiltering.output_vcf
-        File? output_vcf_idx = if tumor_only_mode then NONE else PermutectFiltering.output_vcf_idx
-        File? tumor_only_output_vcf = if tumor_only_mode then PermutectFiltering.output_vcf else NONE
-        File? tumor_only_output_vcf_idx = if tumor_only_mode then PermutectFiltering.output_vcf_idx else NONE
-        # output_vcf with each MNV split into SNVs, if split_mnvs is true
-        File? mnv_split_vcf = SplitPermutectMNVs.output_vcf
-        File? mnv_split_vcf_idx = SplitPermutectMNVs.output_vcf_idx
+        # Permutect's calls, in both matched-normal and tumor-only runs
+        File output_vcf = PermutectFiltering.output_vcf
+        File output_vcf_idx = PermutectFiltering.output_vcf_idx
         File tensorboard_report = PermutectFiltering.tensorboard_report
         # Mutect2's outputs, for use as cached_m2_outputs in later runs: the archive of this run's Mutect2 outputs, or
         # else the given cached_m2_outputs, passed through as a String for the reason given where it is declared.
@@ -347,8 +308,6 @@ workflow Permutect {
         File? concordance_summary = PermutectConcordance.summary
         File? filter_analysis = PermutectConcordance.filter_analysis
 
-        File? m2_concordance_summary = M2Concordance.summary
-
         # segment_pileups' outputs, if there were common variants
         File? germline_model = SegmentPileups.germline_model
         File? tumor_segments = SegmentPileups.tumor_segments
@@ -367,8 +326,12 @@ workflow Permutect {
         File artifact_model
         File test_dataset
         File contigs_table
+        # Mutect2's VCF with its multiallelic records split, which pre_permutect_filtering filters for filter_variants
         File mutect2_vcf
-        File mutect2_vcf_idx
+        File ref_fasta
+        File ref_fai
+        # whether pre_permutect_filtering applies its hairpin filter as well as its multiallelic indel filter
+        Boolean hairpin_filter
         File? germline_model
         File? read_orientation_model
         File mutect_stats
@@ -384,20 +347,34 @@ workflow Permutect {
         Int? max_retries
         Int? disk_space
         Int? cpu
+        # memory in GB, which overrides the estimate below
         Int? mem
     }
 
-    # Mem is in units of GB but our command and memory runtime values are in MB
-    Int machine_mem = if defined(mem) then mem * 1000 else 16000
-    Int command_mem = machine_mem - 500
     Int num_cpus = select_first([cpu, 4])
+
+    # Without mem, an estimate of the peak memory from measurements in November 2026, plus 1.5 GB of margin:
+    # - preprocessing the test dataset, in a spawned process per CPU that imports torch and permutect, takes about 1.8 GB
+    #   plus 0.62 GB per process, whatever the dataset's size
+    # - afterwards memory peaks at about 3.75 GB plus 0.64 GB per GB of test dataset.  The data loader's chunks are at most
+    #   an eighth of the free memory, so this overestimates for a smaller machine.
+    # - each DataLoader worker adds up to about 0.5 GB.  The batch size and the number of GPUs don't matter.
+    Float preprocessing_gb = 1.8 + 0.62 * num_cpus
+    Float filtering_gb = 3.75 + 0.64 * size(test_dataset, "GB")
+    Float peak_gb = (if preprocessing_gb > filtering_gb then preprocessing_gb else filtering_gb) + 0.5 * num_workers
+    # in MB as Cromwell counts them, 2^20 bytes, so a little more than the estimate
+    Int machine_mem = if defined(mem) then mem * 1000 else ceil((peak_gb + 1.5) * 1000)
+    Int command_mem = machine_mem - 500
 
     command <<<
         set -euo pipefail
         genomic_span=`grep "callable" ~{mutect_stats} | while read name value; do echo $value; done`
 
+        pre_permutect_filtering --input ~{mutect2_vcf} --reference ~{ref_fasta} --output pre-filtered.vcf \
+            ~{if hairpin_filter then "" else "--no_hairpin_filter"}
+
         # one process per CPU reads and normalizes chunks of the test dataset
-        filter_variants --input ~{mutect2_vcf} --test_dataset ~{test_dataset} \
+        filter_variants --input pre-filtered.vcf --test_dataset ~{test_dataset} \
             --artifact_model ~{artifact_model} \
             --contigs_table ~{contigs_table} \
             --output permutect-filtered.vcf \
@@ -419,7 +396,7 @@ workflow Permutect {
 
     runtime {
         docker: permutect_docker
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + select_first([disk_space, 100]) + " SSD"
         preemptible: select_first([preemptible, 0])
@@ -437,49 +414,6 @@ workflow Permutect {
         File output_vcf = "permutect-filtered.vcf.gz"
         File output_vcf_idx = "permutect-filtered.vcf.gz.tbi"
         File tensorboard_report = "tensorboard.tar"
-    }
-}
-
-task PrePermutectFiltering {
-    input {
-        File input_vcf
-        File ref_fasta
-        File ref_fai
-        Boolean hairpin_filter
-        String permutect_docker
-        Int? preemptible
-        Int max_retries = 0
-        Int disk_space = 100
-        Int cpu = 1
-        Int mem = 4
-    }
-
-    # Mem is in units of GB but our command and memory runtime values are in MB
-    Int machine_mem = mem * 1000
-    Int command_mem = machine_mem - 500
-
-    command <<<
-        set -e
-
-        pre_permutect_filtering --input ~{input_vcf} --reference ~{ref_fasta} --output pre-filtered.vcf \
-            ~{if hairpin_filter then "" else "--no_hairpin_filter"}
-
-        gatk --java-options "-Xmx~{command_mem}m" IndexFeatureFile -I pre-filtered.vcf
-    >>>
-
-    runtime {
-        docker: permutect_docker
-        bootDiskSizeGb: 12
-        memory: machine_mem + " MB"
-        disks: "local-disk " + disk_space + " SSD"
-        preemptible: select_first([preemptible, 0])
-        maxRetries: max_retries
-        cpu: cpu
-    }
-
-    output {
-        File output_vcf = "pre-filtered.vcf"
-        File output_vcf_idx = "pre-filtered.vcf.idx"
     }
 }
 
@@ -516,7 +450,7 @@ task SplitMultiallelics {
 
     runtime {
         docker: gatk_docker
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + disk_space + " SSD"
         preemptible: select_first([preemptible, 0])
@@ -530,45 +464,6 @@ task SplitMultiallelics {
     }
 }
 
-# decompose each multi-nucleotide variant (MNV) into its constituent SNVs, each of which keeps the MNV's FILTER, INFO and
-# FORMAT fields.  Multiallelic records are split first, because atomizing a multiallelic record with an MNV allele gives
-# star alleles.  Other variants are unchanged.
-task SplitMNVs {
-    input {
-        File input_vcf
-        String permutect_docker
-        Int? preemptible
-        Int max_retries = 0
-        Int disk_space = 20
-        Int cpu = 1
-        Int mem = 2
-    }
-
-    # Mem is in units of GB but our command and memory runtime values are in MB
-    Int machine_mem = mem * 1000
-
-    command <<<
-        set -euo pipefail
-        bcftools norm -m -any --atomize ~{input_vcf} -Oz -o mnvs-split.vcf.gz
-        bcftools index -t mnvs-split.vcf.gz
-    >>>
-
-    runtime {
-        docker: permutect_docker
-        bootDiskSizeGb: 12
-        memory: machine_mem + " MB"
-        disks: "local-disk " + disk_space + " SSD"
-        preemptible: select_first([preemptible, 0])
-        maxRetries: max_retries
-        cpu: cpu
-    }
-
-    output {
-        File output_vcf = "mnvs-split.vcf.gz"
-        File output_vcf_idx = "mnvs-split.vcf.gz.tbi"
-    }
-}
-
 task Concordance {
     input {
     	File? intervals
@@ -578,6 +473,8 @@ task Concordance {
     	File eval_vcf
     	File eval_vcf_idx
         String? concordance_header
+        # split each multi-nucleotide variant (MNV) of eval_vcf into its constituent SNVs, which needs bcftools
+        Boolean split_mnvs = false
 
     	# runtime
     	String gatk_docker = "us.gcr.io/broad-gatk/gatk"
@@ -585,14 +482,23 @@ task Concordance {
 	}
 
     command <<<
+        eval_vcf="~{eval_vcf}"
+        # decompose each MNV into its constituent SNVs, each of which keeps the MNV's FILTER, INFO and FORMAT fields.
+        # Multiallelic records are split first, because atomizing a multiallelic record with an MNV allele gives star
+        # alleles.  Other variants are unchanged.  The rest of this script runs without set -e, so stop here explicitly.
+        if [ "~{split_mnvs}" = "true" ]; then
+            bcftools norm -m -any --atomize "$eval_vcf" -Oz -o mnvs-split.vcf.gz || exit 1
+            eval_vcf=mnvs-split.vcf.gz
+        fi
+
         # this shouldn't be necessary but the Terra hacks on top of Terra hacks to deal with all the bugs recently
         # have reached a breaking point
-        gatk IndexFeatureFile -I ~{eval_vcf}
+        gatk IndexFeatureFile -I "$eval_vcf"
 
         gatk --java-options "-Xmx2g" Concordance \
             ~{"-L " + intervals} \
             ~{"-XL " + masks} \
-            -truth ~{truth_vcf} -eval ~{eval_vcf} \
+            -truth ~{truth_vcf} -eval "$eval_vcf" \
             -tpfn "tpfn.vcf" \
             -tpfp "tpfp.vcf" \
             -ftnfn "ftnfn.vcf" \
@@ -622,7 +528,7 @@ task Concordance {
 
     runtime {
         memory: "5 GB"
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         docker: "${gatk_docker}"
         disks: "local-disk " + 100 + " HDD"
         preemptible: select_first([preemptible, 2])
@@ -678,7 +584,7 @@ task SegmentPileups {
 
     runtime {
         docker: permutect_docker
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + disk_space + " SSD"
         preemptible: select_first([preemptible, 0])
@@ -721,7 +627,7 @@ task LearnReadOrientationModel {
 
     runtime {
         docker: permutect_docker
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + disk_space + " SSD"
         preemptible: select_first([preemptible, 0])
@@ -788,7 +694,7 @@ task ArchiveM2Outputs {
 
     runtime {
         docker: permutect_docker
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: "2 GB"
         disks: "local-disk " + disk_space + " SSD"
         preemptible: select_first([preemptible, 0])
@@ -820,7 +726,7 @@ task ExtractM2Outputs {
 
     runtime {
         docker: permutect_docker
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: "2 GB"
         disks: "local-disk " + disk_space + " SSD"
         preemptible: select_first([preemptible, 0])

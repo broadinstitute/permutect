@@ -205,10 +205,17 @@ def task_output_globs(wdl_path: str, task_name: str) -> dict:
 
 def fill_placeholders(command: str, inputs: dict) -> str:
     """
-    Replace the WDL placeholders ~{name}, ~{default="..." name}, ~{"prefix" + name} and ~{sep=" " name}, as Cromwell
-    would.  An undefined (None) input gives its default, or nothing, and an array input given a separator its elements
-    joined by the separator.
+    Replace the WDL placeholders ~{name}, ~{default="..." name}, ~{"prefix" + name}, ~{sep=" " name} and
+    ~{if name then "..." else "..."}, as Cromwell would.  An undefined (None) input gives its default, or nothing, an
+    array input given a separator its elements joined by the separator, and a Boolean input in a conditional the string
+    for its value.
     """
+
+    def fill_conditional(match):
+        name, if_true, if_false = match.groups()
+        return if_true if inputs[name] else if_false
+
+    command = re.sub(r'~\{if\s+(\w+)\s+then\s+"([^"]*)"\s+else\s+"([^"]*)"\}', fill_conditional, command)
 
     def fill(match):
         _, separator, default, prefix, name = match.groups()
@@ -391,14 +398,20 @@ def test_split_multiallelics_stops_when_bcftools_fails(tmp_path, bcftools_exit_c
 
 
 @pytest.mark.parametrize(
-    "filter_variants_exit_code, expected_calls",
-    [(0, ["filter_variants", "tar", "bcftools", "bcftools"]), (1, ["filter_variants"])],
+    "failing_tool, expected_calls",
+    [
+        (None, ["pre_permutect_filtering", "filter_variants", "tar", "bcftools", "bcftools"]),
+        ("pre_permutect_filtering", ["pre_permutect_filtering"]),
+        ("filter_variants", ["pre_permutect_filtering", "filter_variants"]),
+    ],
 )
-def test_permutect_filtering_stops_when_filter_variants_fails(tmp_path, filter_variants_exit_code, expected_calls):
+def test_permutect_filtering_stops_when_a_tool_fails(tmp_path, failing_tool, expected_calls):
     (tmp_path / "mutect.stats").write_text("statistic\tvalue\ncallable\t60000000\n")
     inputs = {
         "mutect_stats": "mutect.stats",
         "mutect2_vcf": "mutect2.vcf",
+        "ref_fasta": "ref.fasta",
+        "hairpin_filter": False,
         "test_dataset": "test.dataset",
         "artifact_model": "model.pt",
         "contigs_table": "contigs.table",
@@ -412,10 +425,29 @@ def test_permutect_filtering_stops_when_filter_variants_fails(tmp_path, filter_v
         "permutect_filtering_extra_args": None,
     }
     command = fill_placeholders(task_command(PERMUTECT_WDL, "PermutectFiltering"), inputs)
-    fake_tools = {"filter_variants": fake_tool(filter_variants_exit_code), "tar": fake_tool(), "bcftools": fake_tool()}
+    tools = ("pre_permutect_filtering", "filter_variants", "tar", "bcftools")
+    fake_tools = {tool: fake_tool(1 if tool == failing_tool else 0) for tool in tools}
     succeeded, calls = run_with_fake_tools(tmp_path, command, fake_tools)
-    assert succeeded == (filter_variants_exit_code == 0)
+    assert succeeded == (failing_tool is None)
     assert calls == expected_calls
+
+
+@pytest.mark.parametrize("split_mnvs", [True, False])
+def test_concordance_evaluates_the_mnv_split_vcf_if_asked(tmp_path, split_mnvs):
+    # Concordance evaluates Permutect's VCF with each MNV split into SNVs if split_mnvs, and the VCF as is otherwise
+    inputs = {"eval_vcf": "permutect.vcf.gz", "truth_vcf": "truth.vcf", "split_mnvs": str(split_mnvs).lower()}
+    command = fill_placeholders(task_command(PERMUTECT_WDL, "Concordance"), defaultdict(lambda: None, inputs))
+    recorder = '#!/bin/bash\necho "$(basename "$0") $*" >> calls.txt\n'
+    run_bash(command, tmp_path, {"bcftools": recorder, "gatk": recorder})
+    calls = (tmp_path / "calls.txt").read_text().splitlines()
+
+    split_command = "bcftools norm -m -any --atomize permutect.vcf.gz -Oz -o mnvs-split.vcf.gz"
+    assert [call for call in calls if call.startswith("bcftools")] == ([split_command] if split_mnvs else [])
+    evaluated = "mnvs-split.vcf.gz" if split_mnvs else "permutect.vcf.gz"
+    assert "gatk IndexFeatureFile -I " + evaluated in calls
+    concordance_calls = [call.split() for call in calls if " Concordance " in call]
+    assert len(concordance_calls) == 1
+    assert concordance_calls[0][concordance_calls[0].index("-eval") + 1] == evaluated
 
 
 @pytest.mark.parametrize("with_pileups", [True, False])

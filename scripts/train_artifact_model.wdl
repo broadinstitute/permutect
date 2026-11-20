@@ -117,7 +117,7 @@ task Train {
 
     runtime {
         docker: permutect_docker
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + select_first([disk_space, 100]) + " SSD"
         preemptible: select_first([preemptible, 0])
