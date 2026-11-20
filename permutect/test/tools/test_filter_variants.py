@@ -414,6 +414,32 @@ def test_germline_mode_records_a_missed_artifact_as_a_germline_call(tmp_path, mo
     assert mistaken_calls == [Call.GERMLINE]
 
 
+def test_filtering_needs_a_vcf_sorted_by_position(tmp_path):
+    # the results of the data are read alongside the VCF's records in one pass, which needs the records in order
+    data = []
+    for position in (100, 200):
+        datum = make_datum_with_alleles(0, position, "C", "T")
+        datum.set(Data.LOG_ALLELE_FREQUENCY, math.log(0.01))
+        for data_field in (Data.MAF, Data.NORMAL_MAF):
+            datum.set(data_field, 0.5)
+        datum.set(Data.CACHED_ARTIFACT_LOGIT, 0.0)
+        data.append(datum)
+    input_vcf = tmp_path / "input.vcf"
+    input_vcf.write_text(VCF_HEADER + vcf_line("C", "T", pos=200) + "\n" + vcf_line("C", "T", pos=100) + "\n")
+
+    model = PosteriorModel(-10, -10, device=torch.device("cpu"))
+    with pytest.raises(ValueError, match="sorted by position"):
+        filter_variants.apply_filtering_to_vcf(
+            str(input_vcf),
+            str(tmp_path / "filtered.vcf"),
+            {0: "chr1"},
+            {var_type: 0.5 for var_type in Variation},
+            [Batch(data)],
+            model,
+            SummaryWriter(str(tmp_path / "tensorboard")),
+        )
+
+
 def test_posterior_info_holds_the_embeddings_and_the_twins_component():
     embeddings_be, simulated_be, components = torch.randn(3, 5), torch.randn(3, 5), [0, 2, 7]
     info_be = torch.vstack(

@@ -1,6 +1,8 @@
 import math
+import random
 from collections import defaultdict
 from typing import List
+from typing import NamedTuple
 
 import numpy as np
 import torch
@@ -26,13 +28,24 @@ from permutect.utils.enums import Variation
 NUM_DATA_FOR_TENSORBOARD_PROJECTION = 10000
 
 
+class Mistake(NamedTuple):
+    """the call of a variant called wrongly, and the values of its posterior result in the mistake histograms"""
+
+    call: Call
+    variant_type: int
+    alt_count: int
+    depth: int
+    artifact_logit: float
+    call_probability: float  # the posterior probability of the mistaken call
+
+
 class EvaluationMetrics:
     def __init__(self, num_sources, device=None):
         device = resolve_device(device)
         # we will have a map from epoch type to EvaluationMetricsForOneEpochType
         self.accuracy_metrics_by_epoch_type = defaultdict(lambda: AccuracyMetrics.create(num_sources, device))
 
-        # list of (PosteriorResult, Call) tuples
+        # a Mistake for each variant called wrongly
         self.mistakes = []
         self.has_been_sent_to_cpu = False
 
@@ -66,7 +79,17 @@ class EvaluationMetrics:
 
     # track bad calls when filtering is given an optional evaluation truth VCF
     def record_mistake(self, posterior_result: PosteriorResult, call: Call):
-        self.mistakes.append((posterior_result, call))
+        # only the values in the histograms rather than the whole result, which has embeddings and lists of values
+        self.mistakes.append(
+            Mistake(
+                call=call,
+                variant_type=posterior_result.variant_type,
+                alt_count=posterior_result.alt_count,
+                depth=posterior_result.depth,
+                artifact_logit=posterior_result.artifact_logit,
+                call_probability=posterior_result.posterior_probabilities[call],
+            )
+        )
 
     def make_mistake_histograms(self, summary_writer: SummaryWriter):
         assert self.has_been_sent_to_cpu, "Can't make plots before sending to CPU"
@@ -74,43 +97,42 @@ class EvaluationMetrics:
         if not self.mistakes:
             return
 
-        # indexed by call then var_type, inner is a list of posterior results with that call and var type
-        posterior_result_mistakes_by_call_and_var_type = defaultdict(lambda: defaultdict(list))
-        for posterior_result, call in self.mistakes:
-            posterior_result_mistakes_by_call_and_var_type[call][posterior_result.variant_type].append(posterior_result)
+        # indexed by call then var_type, inner is a list of the mistakes with that call and var type
+        mistakes_by_call_and_var_type = defaultdict(lambda: defaultdict(list))
+        for mistake in self.mistakes:
+            mistakes_by_call_and_var_type[mistake.call][mistake.variant_type].append(mistake)
 
-        mistake_calls = posterior_result_mistakes_by_call_and_var_type.keys()
+        mistake_calls = mistakes_by_call_and_var_type.keys()
         num_rows = len(mistake_calls)
         variation_types = [var_type.name for var_type in Variation]
         row_names = [mistake.name for mistake in mistake_calls]
 
-        # each figure's tag, x-axis label, and data for the posterior results of the mistakes with a given call
+        # each figure's tag, x-axis label, and data for the mistakes with a given call
         histograms = (
             (
                 "mistake allele fractions",
                 "alt allele fraction",
-                lambda prs, call: [pr.alt_count / pr.depth for pr in prs],
+                lambda mistakes: [mistake.alt_count / mistake.depth for mistake in mistakes],
             ),
-            ("mistake alt counts", "alt count", lambda prs, call: [pr.alt_count for pr in prs]),
+            ("mistake alt counts", "alt count", lambda mistakes: [mistake.alt_count for mistake in mistakes]),
             # known artifacts have infinite artifact logits, which can't be histogrammed
             (
                 "mistake artifact logits",
                 "artifact logit",
-                lambda prs, call: [pr.artifact_logit for pr in prs if math.isfinite(pr.artifact_logit)],
+                lambda mistakes: [m.artifact_logit for m in mistakes if math.isfinite(m.artifact_logit)],
             ),
             # posterior probability assigned to this incorrect call
             (
                 "probability assigned to mistake calls",
                 "mistake call probability",
-                lambda prs, call: [pr.posterior_probabilities[call] for pr in prs],
+                lambda mistakes: [mistake.call_probability for mistake in mistakes],
             ),
         )
         for tag, x_label, histogram_data in histograms:
             fig, axes = plt.subplots(num_rows, len(Variation), sharex="all", sharey="none", squeeze=False)
             for row_idx, mistake_call in enumerate(mistake_calls):
                 for var_type in Variation:
-                    posterior_results = posterior_result_mistakes_by_call_and_var_type[mistake_call][var_type]
-                    data = histogram_data(posterior_results, mistake_call)
+                    data = histogram_data(mistakes_by_call_and_var_type[mistake_call][var_type])
                     plotting.simple_histograms_on_axis(axes[row_idx, var_type], [data], [""], 20)
             plotting.tidy_subplots(
                 fig, axes, x_label=x_label, y_label="", row_labels=row_names, col_labels=variation_types
@@ -215,14 +237,14 @@ class EvaluationMetrics:
             summary_writer.add_figure(f"logit histograms ({epoch_type.name})", hist_fig, global_step=epoch)
 
 
-def sample_indices_for_tensorboard(indices: List[int]):
-    indices_np = np.array(indices)
+class EmbeddingDatum(NamedTuple):
+    """A datum recorded for the projections: its metadata, its embeddings, and its simulated twin's source"""
 
-    if len(indices_np) <= NUM_DATA_FOR_TENSORBOARD_PROJECTION:
-        return indices_np
-
-    idx = np.random.choice(len(indices_np), size=NUM_DATA_FOR_TENSORBOARD_PROJECTION, replace=False)
-    return indices_np[idx]
+    metadata: tuple  # label, correctness, type, and count, as in the projections
+    features: Tensor
+    ref_features: Tensor | None
+    simulated_features: Tensor | None
+    simulated_source: str | None
 
 
 class EmbeddingMetrics:
@@ -238,6 +260,10 @@ class EmbeddingMetrics:
     UNKNOWN = "unknown"  # unlabeled data, or labeled data whose correctness isn't evaluated
     MODEL = "model"  # embeddings simulated from the model, which have no correctness
 
+    # the projections keep every datum with these correctness statuses, up to the sample size, but only some others.
+    # Without labeled truth, every datum is boring.
+    INTERESTING_STATUSES = (TRUE_POSITIVE, FALSE_POSITIVE, FALSE_NEGATIVE_ARTIFACT)
+
     # the Source metadata of data's embeddings, as opposed to embeddings simulated from the model
     DATA_SOURCE = "data"
 
@@ -251,16 +277,22 @@ class EmbeddingMetrics:
         label, _, variant_type, count = data_metadata
         return "model " + label.lower(), EmbeddingMetrics.MODEL, variant_type, count, source
 
-    def __init__(self):
-        # things we will collect for the projections
-        self.label_metadata = []  # list (extended by each batch) 1 if artifact, 0 if not
-        self.correct_metadata = []  # list (extended by each batch), 1 if correct prediction, 0 if not
-        self.type_metadata = []  # list of lists, strings of variant type
-        self.truncated_count_metadata = []  # list of lists
-        self.features = []  # list of 2D tensors (to be stacked into a single 2D tensor), features over batches
-        self.ref_features = []
-        self.simulated_features = []  # optional simulated twins of the features
-        self.simulated_source_metadata = []  # where in the model each simulated twin came from
+    @staticmethod
+    def group_names() -> list[str]:
+        """the groups of data with their own projections: each variant type, then each alt count bin"""
+        variant_types = ["variant type " + var_type.name for var_type in Variation]
+        return variant_types + ["alt count " + alt_count_bin_name(count_bin) for count_bin in range(NUM_ALT_COUNT_BINS)]
+
+    def __init__(self, sample_size: int = NUM_DATA_FOR_TENSORBOARD_PROJECTION):
+        """
+        :param sample_size: the most data of each group in a projection.  For each group and for its boring and its
+            interesting data, the metrics keep the number recorded and a uniform random sample of at most this many, so
+            that memory doesn't grow with the number of data.
+        """
+        self.sample_size = sample_size
+        # indexed by group name, then by whether the data are interesting
+        self.counts = defaultdict(lambda: [0, 0])
+        self.samples = defaultdict(lambda: ([], []))
 
     def record_batch(
         self,
@@ -279,23 +311,81 @@ class EmbeddingMetrics:
         :param labels: the Label of each datum (as an enum or int)
         :param variant_types: the Variation of each datum (as an enum or int)
         :param alt_counts: the alt count of each datum
-        :param features_be: embeddings, one row per datum
+        :param features_be: embeddings, one row per datum, or a single datum's 1D embedding
         :param ref_features_be: optional ref embeddings, one row per datum
         :param correctness: the correctness status of each datum, one of the class constants, or None if not evaluated
         :param simulated_features_be: optional embeddings, one row per datum, simulated from the model for a datum like
             each one, e.g. with the same alt count.  Projections of the embeddings show them alongside the data's.
         :param simulated_sources: with simulated_features_be, where in the model each simulated embedding came from
         """
-        self.label_metadata.extend(Label(label).name for label in labels)
-        self.correct_metadata.extend([EmbeddingMetrics.UNKNOWN] * len(labels) if correctness is None else correctness)
-        self.type_metadata.extend(Variation(variant_type).name for variant_type in variant_types)
-        self.truncated_count_metadata.extend(alt_count_bin_name(alt_count_bin_index(count)) for count in alt_counts)
-        self.features.append(features_be)
-        if ref_features_be is not None:
-            self.ref_features.append(ref_features_be)
-        if simulated_features_be is not None:
-            self.simulated_features.append(simulated_features_be)
-            self.simulated_source_metadata.extend("model " + source for source in simulated_sources)
+        features_be = torch.atleast_2d(features_be)
+        ref_features_be = None if ref_features_be is None else torch.atleast_2d(ref_features_be)
+        simulated_features_be = None if simulated_features_be is None else torch.atleast_2d(simulated_features_be)
+        for n, (label, variant_type, alt_count) in enumerate(zip(labels, variant_types, alt_counts, strict=True)):
+            status = EmbeddingMetrics.UNKNOWN if correctness is None else correctness[n]
+            metadata = (
+                Label(label).name,
+                status,
+                Variation(variant_type).name,
+                alt_count_bin_name(alt_count_bin_index(alt_count)),
+            )
+            interesting = status in EmbeddingMetrics.INTERESTING_STATUSES
+            groups = ("variant type " + metadata[2], "alt count " + metadata[3])
+            slots = [(group, self._sample_slot(group, interesting)) for group in groups]
+            if all(slot is None for _, slot in slots):
+                continue
+
+            # copies, so that the sample doesn't keep whole batches in memory
+            datum = EmbeddingDatum(
+                metadata,
+                features_be[n].clone(),
+                None if ref_features_be is None else ref_features_be[n].clone(),
+                None if simulated_features_be is None else simulated_features_be[n].clone(),
+                None if simulated_features_be is None else "model " + simulated_sources[n],
+            )
+            for group, slot in slots:
+                sample = self.samples[group][interesting]
+                if slot == len(sample):
+                    sample.append(datum)
+                elif slot is not None:
+                    sample[slot] = datum
+
+    def _sample_slot(self, group: str, interesting: bool) -> int | None:
+        """
+        Count a new datum of a group and kind, and choose where it goes in their sample, by reservoir sampling: the next
+        slot while the sample isn't full, and then the slot of a random datum that it replaces, or None to leave it out,
+        so that the sample is always uniform
+        """
+        self.counts[group][interesting] += 1
+        sample = self.samples[group][interesting]
+        if len(sample) < self.sample_size:
+            return len(sample)
+        slot = random.randrange(self.counts[group][interesting])
+        return slot if slot < self.sample_size else None
+
+    def projection_data(self, group: str, is_filter_variants: bool) -> list[EmbeddingDatum]:
+        """
+        A random sample of a group's data for its projection: of every interesting datum and some boring ones, in
+        filter_variants a third as many as the interesting ones but at least 100, and otherwise all of them, a uniform
+        sample of at most sample_size.  The numbers of interesting and boring data in such a sample are hypergeometric,
+        and given them, the data of each kind are a uniform sample of that kind, as a subsample of its uniform sample is.
+        """
+        num_boring, num_interesting = self.counts[group]
+        boring_sample, interesting_sample = self.samples[group]
+        num_boring_in_pool = min(max(num_interesting // 3, 100), num_boring) if is_filter_variants else num_boring
+        pool_size = num_boring_in_pool + num_interesting
+        num_kept = min(pool_size, self.sample_size)
+        if num_kept == pool_size:
+            num_interesting_kept = num_interesting
+        else:
+            num_interesting_kept = int(np.random.hypergeometric(num_interesting, num_boring_in_pool, num_kept))
+
+        def subsample(sample: list, size: int) -> list:
+            return [sample[n] for n in np.random.choice(len(sample), size=size, replace=False).tolist()]
+
+        return subsample(interesting_sample, num_interesting_kept) + subsample(
+            boring_sample, num_kept - num_interesting_kept
+        )
 
     def output_to_summary_writer(
         self,
@@ -304,77 +394,31 @@ class EmbeddingMetrics:
         is_filter_variants: bool = False,
         epoch: int = None,
     ):
-        # downsample to a reasonable amount of UMAP data
-        all_metadata = list(
-            zip(
-                self.label_metadata,
-                self.correct_metadata,
-                self.type_metadata,
-                self.truncated_count_metadata,
-            )
-        )
-
-        # note that if we don't have labeled truth, everything is boring.  The order of status, then index, gives the
-        # sets the same iteration order, and so the same random samples, as before.
-        interesting_statuses = (
-            EmbeddingMetrics.TRUE_POSITIVE,
-            EmbeddingMetrics.FALSE_POSITIVE,
-            EmbeddingMetrics.FALSE_NEGATIVE_ARTIFACT,
-        )
-        interesting_indices = {
-            n for status in interesting_statuses for n, s in enumerate(self.correct_metadata) if s == status
-        }
-        boring_indices = set(range(len(all_metadata))) - interesting_indices
-
-        """if is_filter_variants:
-            boring_indices = np.array(indices_by_correct_status["unknown"] + indices_by_correct_status[EmbeddingMetrics.TRUE_NEGATIVE_ARTIFACT])
-
-            # if we have labeled truth, keep a few "boring" true negatives around; otherwise we only have "unknown"s
-            boring_count = len(interesting_indices) // 3 if len(interesting_indices) > 0 else len(boring_indices)
-            boring_to_keep = boring_indices[np.random.choice(len(boring_indices), size=boring_count, replace=False)]
-            idx = np.hstack((boring_to_keep, interesting_indices))
-
-        idx = np.random.choice(len(all_metadata), size=min(NUM_DATA_FOR_TENSORBOARD_PROJECTION, len(all_metadata)), replace=False)
-"""
-
-        stacked_features = torch.vstack(self.features)
-        stacked_ref_features = torch.vstack(self.ref_features) if self.ref_features else None
-        stacked_simulated_features = torch.vstack(self.simulated_features) if self.simulated_features else None
-
         # read average embeddings stratified by variant type, then by alt count
-        groups = [("variant type " + var_type.name, self.type_metadata, var_type.name) for var_type in Variation]
-        count_names = [alt_count_bin_name(count_bin) for count_bin in range(NUM_ALT_COUNT_BINS)]
-        groups += [("alt count " + count_name, self.truncated_count_metadata, count_name) for count_name in count_names]
-        for group_name, group_metadata, group_value in groups:
-            indices = {n for n, value in enumerate(group_metadata) if value == group_value}
-            interesting = interesting_indices & indices
-            boring = boring_indices & indices
-            boring_count = min(max(len(interesting) // 3, 100) if is_filter_variants else len(boring), len(boring))
-            boring_to_keep = np.random.choice(np.fromiter(boring, dtype=int), size=boring_count, replace=False)
-            idx = sample_indices_for_tensorboard(np.hstack((boring_to_keep, np.fromiter(interesting, dtype=int))))
-
+        for group_name in EmbeddingMetrics.group_names():
+            data = self.projection_data(group_name, is_filter_variants)
             # skip groups without data, e.g. indels in an SNV-only panel; tensorboard fails on empty embeddings
-            if len(idx) > 0:
-                data_metadata = [all_metadata[round(n)] + (EmbeddingMetrics.DATA_SOURCE,) for n in idx.tolist()]
-                for features, kind in ((stacked_features, "embedding"), (stacked_ref_features, "ref embedding")):
-                    if features is not None:
-                        projected_features, metadata = features[idx], data_metadata
+            if not data:
+                continue
+            data_metadata = [datum.metadata + (EmbeddingMetrics.DATA_SOURCE,) for datum in data]
+            for kind in ("embedding", "ref embedding"):
+                features = [datum.features if kind == "embedding" else datum.ref_features for datum in data]
+                if features[0] is None:
+                    continue
+                projected_features, metadata = torch.vstack(features), data_metadata
 
-                        # each datum's simulated twin.  The model describes only the alt embeddings, not the ref
-                        # embeddings.
-                        if kind == "embedding" and stacked_simulated_features is not None:
-                            projected_features = torch.vstack((projected_features, stacked_simulated_features[idx]))
-                            metadata = data_metadata + [
-                                EmbeddingMetrics.twin_metadata(
-                                    all_metadata[round(n)], self.simulated_source_metadata[round(n)]
-                                )
-                                for n in idx.tolist()
-                            ]
+                # each datum's simulated twin.  The model describes only the alt embeddings, not the ref embeddings.
+                if kind == "embedding" and data[0].simulated_features is not None:
+                    simulated_features = torch.vstack([datum.simulated_features for datum in data])
+                    projected_features = torch.vstack((projected_features, simulated_features))
+                    metadata = data_metadata + [
+                        EmbeddingMetrics.twin_metadata(datum.metadata, datum.simulated_source) for datum in data
+                    ]
 
-                        summary_writer.add_embedding(
-                            projected_features,
-                            metadata=metadata,
-                            metadata_header=["Labels", "Correctness", "Types", "Counts", "Source"],
-                            tag=prefix + kind + " for " + group_name,
-                            global_step=epoch,
-                        )
+                summary_writer.add_embedding(
+                    projected_features,
+                    metadata=metadata,
+                    metadata_header=["Labels", "Correctness", "Types", "Counts", "Source"],
+                    tag=prefix + kind + " for " + group_name,
+                    global_step=epoch,
+                )

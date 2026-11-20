@@ -1,6 +1,7 @@
 import gzip
 import io
 import itertools
+import math
 import os
 import pickle
 import shutil
@@ -413,11 +414,34 @@ def test_data_saved_in_an_older_layout_fail_to_load(tmp_path):
 
 
 def test_vcf_annotation_keys_follow_misc_utils(tmp_path, monkeypatch):
-    # like the output join in filter_variants, both sides of the annotation join must use the misc_utils encodings, so
-    # that changing the key format there cannot make every datum silently drop out of the annotated data
-    original_encode = misc_utils.encode
-    monkeypatch.setattr(misc_utils, "encode", lambda *args: "new format " + original_encode(*args))
+    # like the output join in filter_variants, both sides of the annotation join must use the same allele keys, so that
+    # changing the keys cannot make every datum silently drop out of the annotated data
+    original_allele_key = misc_utils.allele_key
+    monkeypatch.setattr(memory_mapped_data_module, "allele_key", lambda ref, alt: original_allele_key(ref, alt) + 1)
     assert len(annotated_mafs(tmp_path)) == 2
+
+
+def test_vcf_annotation_of_variants_with_the_same_truncated_alleles(tmp_path):
+    # two long insertions that differ only after the 13 bases to which alleles are truncated have the same keys.  Their
+    # datum gets the values of the later record, and is a known artifact if either record has an artifact filter, as when
+    # the annotations were in dicts
+    insertion = "C" + "AG" * 6
+    vcf = tmp_path / "variants.vcf"
+    vcf.write_text(
+        VCF_HEADER
+        + vcf_line("C", insertion + "A", pos=100, filters="germline", info="POPAF=3")
+        + "\n"
+        + vcf_line("C", insertion + "T", pos=100, info="POPAF=5")
+        + "\n"
+    )
+    data = [make_datum_with_alleles(0, 100, "C", insertion + "A")]
+    memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=1, estimated_num_reads=3)
+    annotated = memory_mapped_data.make_vcf_annotate_memory_mapped_data(
+        str(vcf), {0: "chr1"}, artifact_filters={"germline"}
+    )
+    [datum] = list(annotated.generate())
+    assert float(datum.get(Data.LOG_ALLELE_FREQUENCY)) == pytest.approx(-math.log(10) * 5, rel=1e-2)
+    assert math.isinf(float(datum.get(Data.CACHED_ARTIFACT_LOGIT)))
 
 
 @pytest.mark.parametrize("num_folds, folds_to_use", [(3, [0, 2]), (3, [1]), (1000, [7]), (3, None)])

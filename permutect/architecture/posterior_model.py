@@ -289,7 +289,8 @@ class PosteriorModel(torch.nn.Module):
             error_probs_b = self.error_probabilities_b(batch, germline_mode)
             var_types_b = batch.get(Data.VARIANT_TYPE)
             error_probs.append(error_probs_b)
-            var_types.append(var_types_b)
+            # a copy: the column is a view of the batch's data, which would stay in memory until the end
+            var_types.append(var_types_b.clone())
 
             indices = BatchIndices(
                 sources=torch.zeros_like(var_types_b),
