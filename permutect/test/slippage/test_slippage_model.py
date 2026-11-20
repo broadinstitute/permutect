@@ -60,3 +60,13 @@ def test_decisions_approximate_filter_mutect_calls(depth):
     model_k = SlippageModel().tumor_log_likelihoods_b(depths_k, torch.from_numpy(alt_counts_k).double()).numpy()
     gatk_fraction, model_fraction = passing_allele_fraction(gatk_k, depth), passing_allele_fraction(model_k, depth)
     assert gatk_fraction - 0.07 <= model_fraction <= gatk_fraction
+
+
+def test_save_and_load(tmp_path):
+    path = tmp_path / "slippage-model.pt"
+    # pseudocounts that float32 would round
+    SlippageModel((67.13, 1055.24), 10).save(path)
+    model = SlippageModel.load(path)
+    assert model.allele_fraction_pseudocounts_2.tolist() == [67.13, 1055.24]
+    assert model.allele_fraction_pseudocounts_2.dtype == torch.float64
+    assert model.min_str_length == 10

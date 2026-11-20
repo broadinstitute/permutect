@@ -43,6 +43,7 @@ preprocess_dataset = "permutect.tools.preprocess_dataset:main"
 edit_dataset = "permutect.tools.edit_dataset:main"
 segment_pileups = "permutect.tools.segment_pileups:main"
 learn_read_orientation_model = "permutect.tools.learn_read_orientation_model:main"
+learn_slippage_model = "permutect.tools.learn_slippage_model:main"
 
 [tool.setuptools.packages.find]
 include = ["permutect*"]
