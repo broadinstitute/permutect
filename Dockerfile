@@ -67,7 +67,7 @@ RUN python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml
 
 # the GATK jar.  Unlike a RUN wget, whose cached layer outlives a new upload of the jar, an ADD of a URL checks it on
 # every build.  It comes after the dependencies so that a new jar doesn't reinstall them.
-ADD --chmod=644 https://storage.googleapis.com/permutect/gatk-builds/branch-5a-read-orientation.jar /root/gatk.jar
+ADD --chmod=644 https://storage.googleapis.com/permutect/gatk-builds/small-optimizations.jar /root/gatk.jar
 
 COPY permutect/ /app/permutect/
 RUN pip install --break-system-packages --no-cache-dir --no-deps .
