@@ -1,7 +1,6 @@
 import itertools
 
 import numpy as np
-import pymc as pm
 import torch
 from matplotlib import pyplot as plt
 from torch import Tensor
@@ -20,9 +19,12 @@ from permutect.utils.array_utils import index_tensor
 from permutect.utils.enums import Call
 from permutect.utils.enums import Variation
 
-# the seed of the variational fit of the context-dependent SNV priors and of the draws from it, which PyMC doesn't take
-# from numpy's global random number generator
-CONTEXT_PRIORS_RANDOM_SEED = 0
+# the shape and rate of the Gamma hyperpriors of the concentrations of the Dirichlet priors of the relative somatic SNV
+# rates of the substitutions and of the contexts of each substitution
+CONCENTRATION_HYPERPRIOR_SHAPE = 4.0
+CONCENTRATION_HYPERPRIOR_RATE = 5.0
+# the beta of the Beta(1, beta) prior of the overall somatic SNV rate per site
+OVERALL_RATE_PRIOR_BETA = 1e6
 
 
 def get_ref_contexts_and_alt_bases(batch: Batch) -> tuple[Tensor, Tensor, Tensor, Tensor]:
@@ -63,6 +65,53 @@ def convert_rrra_tensor_to_sc(input_rrra: torch.Tensor) -> torch.Tensor:
 
     # step 4: switch s and c
     return torch.transpose(tensor_cs, 0, 1)
+
+
+def context_dependent_snv_log_rates_sc(somatic_sc: Tensor, sites_sc: Tensor) -> Tensor:
+    """
+    The log somatic SNV rate per site of each substitution 's' and pair of flanking bases 'c', indexed as by
+    convert_rrra_tensor_to_sc, given each one's expected somatic SNVs, from the E step, and its sites, by empirical Bayes
+    in a hierarchical model.  The rate of (s, c) is r * 12 theta_s * 16 theta_sc.  The overall rate r has a
+    Beta(1, OVERALL_RATE_PRIOR_BETA) prior, the substitutions' relative rates theta_s a symmetric Dirichlet prior of
+    concentration kappa_s, the relative rates theta_sc of each substitution's contexts symmetric Dirichlet priors of
+    concentration kappa_c, and the concentrations Gamma hyperpriors.
+
+    The rates are tiny and every (s, c) has about the same number of sites, most of them ignored sites, so given their
+    total the somatic SNVs are multinomial with probabilities theta_s theta_sc, whose Dirichlet priors are conjugate.
+    The concentrations are the mode of their posterior, the Dirichlet-multinomial likelihood of the counts times the
+    hyperpriors, and the thetas are their posterior means given the concentrations.  It's deterministic and takes
+    milliseconds, and r is its posterior mean.
+    """
+    counts_sc = somatic_sc.detach().double().cpu()
+    num_substitutions, num_contexts = counts_sc.shape
+    counts_s = counts_sc.sum(dim=1)
+    total = counts_s.sum()
+    log_concentrations = torch.zeros(2, dtype=torch.float64, requires_grad=True)
+    optimizer = torch.optim.LBFGS([log_concentrations], max_iter=100, line_search_fn="strong_wolfe")
+
+    def negative_log_posterior():
+        optimizer.zero_grad()
+        kappa_s, kappa_c = torch.exp(log_concentrations)
+        lgamma = torch.lgamma
+        substitutions = lgamma(num_substitutions * kappa_s) - lgamma(total + num_substitutions * kappa_s)
+        substitutions = substitutions + torch.sum(lgamma(counts_s + kappa_s) - lgamma(kappa_s))
+        contexts = torch.sum(lgamma(num_contexts * kappa_c) - lgamma(counts_s + num_contexts * kappa_c))
+        contexts = contexts + torch.sum(lgamma(counts_sc + kappa_c) - lgamma(kappa_c))
+        # the Gamma hyperpriors' log densities, plus the log Jacobian of optimizing the logs of the concentrations
+        hyperpriors = torch.sum(
+            CONCENTRATION_HYPERPRIOR_SHAPE * log_concentrations
+            - CONCENTRATION_HYPERPRIOR_RATE * torch.exp(log_concentrations)
+        )
+        loss = -(substitutions + contexts + hyperpriors)
+        loss.backward()
+        return loss
+
+    optimizer.step(negative_log_posterior)
+    kappa_s, kappa_c = torch.exp(log_concentrations.detach())
+    theta_s = (counts_s + kappa_s) / (total + num_substitutions * kappa_s)
+    theta_sc = (counts_sc + kappa_c) / (counts_s[:, None] + num_contexts * kappa_c)
+    overall_rate = (total + 1) / (sites_sc.detach().double().cpu().sum() + OVERALL_RATE_PRIOR_BETA + 1)
+    return torch.log(overall_rate * num_substitutions * theta_s[:, None] * num_contexts * theta_sc)
 
 
 class PosteriorModelPriors(nn.Module):
@@ -201,59 +250,22 @@ class PosteriorModelPriors(nn.Module):
             self.log_priors_vc[:, Call.SLIPPAGE] = 0
 
         if self.use_context_dependent_snv_priors:
-            total_sc = torch.round(convert_rrra_tensor_to_sc(snv_context_totals_rrra) + total_ignored_per_context).int()
-            snv_sc = torch.round(convert_rrra_tensor_to_sc(somatic_snv_totals_rrra)).int()
+            # indices 's' for the 4x3=12 substitutions, A->C = 0, A->G = 1. . .T->G = 11, and 'c' for the 4x4=16 pairs
+            # of flanking bases
+            sites_sc = convert_rrra_tensor_to_sc(snv_context_totals_rrra) + total_ignored_per_context
+            somatic_sc = convert_rrra_tensor_to_sc(somatic_snv_totals_rrra)
+            # on the device of the priors, so that the loop below copies nothing from the host
+            log_rates_sc = context_dependent_snv_log_rates_sc(somatic_sc, sites_sc).to(self.somatic_snv_log_priors_rrra)
 
-            with pm.Model() as _mutation_rate_model:
-                # NOTE: indices here are i) 's' for the 4x3=12 different substitutions, flattened so that
-                # A->C = 0, A->G = 1. . .T->G = 11 and ii) 'c' for 4x4=16 different two bases of flanking
-                # context, also flattened into one dimension rather than two.
-
-                # overall mutation rate multiplier.  Approximately the overall average mutation rate.
-                overall_rate = pm.Beta("overall_rate", alpha=1.0, beta=1e6)
-
-                # concentration parameter for symmetric Dirichlet for relative mutation rates over the 4x3 = 12
-                # different possible substitutions
-                substitution_concentration = pm.Gamma("substitution_concentration", alpha=4.0, beta=5.0)
-                concentration_s = pm.math.ones(shape=(12,)) * substitution_concentration
-                theta_s = pm.Dirichlet("theta_s", a=concentration_s)
-
-                # cocnentration parameter for symmetric Dirichlets for relative mutation rates over the 4x4 = 16
-                # different possible two bases of flanking context within each substitution. Note that while we have
-                # a single global concentration for all substitutions, within each substitution type there is an
-                # independent Dirichlet random variable for the relative weights of different contexts.
-                context_concentration = pm.Gamma("context_concentration", alpha=4.0, beta=5.0)
-                concentration_c = pm.math.ones(shape=(16,)) * context_concentration
-                theta_sc = pm.Dirichlet("theta_sc", a=concentration_c, shape=(12, 16))
-
-                rate_sc = pm.Deterministic("rate_sc", overall_rate * 12 * theta_s.reshape((12, 1)) * 16 * theta_sc)
-                _outcome = pm.Binomial(
-                    "outcome",
-                    n=total_sc.cpu().numpy().flatten(),
-                    p=rate_sc.flatten(),
-                    observed=snv_sc.cpu().numpy().flatten(),
-                )
-
-                mean_field = pm.fit(method="advi", random_seed=CONTEXT_PRIORS_RANDOM_SEED)
-
-                idata = mean_field.sample(1000, random_seed=CONTEXT_PRIORS_RANDOM_SEED)
-
-                mutation_rates_sc = np.mean(
-                    idata.posterior["rate_sc"], axis=(0, 1)
-                )  # axis 0 is the different MCMC samplers, axis 1 is the MCMC step
-                mutation_rates_sc = torch.from_numpy(mutation_rates_sc.to_numpy())
-
-                with torch.no_grad():
-                    # lf, rf are left and right flanking bases, ref and alt are ref and alt bases of the substitution.
-                    for lf, rf in itertools.product(range(4), range(4)):
-                        for ref, alt in itertools.product(range(4), range(4)):
-                            if ref != alt:
-                                context = lf * 4 + rf
-                                substitution_with_trivial = ref * 4 + alt
-                                substitution = substitution_with_trivial - (substitution_with_trivial // 5) - 1
-                                self.somatic_snv_log_priors_rrra[lf, ref, rf, alt] = torch.log(
-                                    mutation_rates_sc[substitution, context]
-                                )
+            with torch.no_grad():
+                # lf, rf are left and right flanking bases, ref and alt are ref and alt bases of the substitution.
+                for lf, rf in itertools.product(range(4), range(4)):
+                    for ref, alt in itertools.product(range(4), range(4)):
+                        if ref != alt:
+                            context = lf * 4 + rf
+                            substitution_with_trivial = ref * 4 + alt
+                            substitution = substitution_with_trivial - (substitution_with_trivial // 5) - 1
+                            self.somatic_snv_log_priors_rrra[lf, ref, rf, alt] = log_rates_sc[substitution, context]
         else:  # if not using context-dependent SNV priors
             with torch.no_grad():
                 self.somatic_snv_log_priors_rrra.fill_(self.log_priors_vc[Variation.SNV, Call.SOMATIC])

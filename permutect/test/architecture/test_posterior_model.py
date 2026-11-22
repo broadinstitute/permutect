@@ -263,11 +263,10 @@ def posterior_loader(num_batches: int) -> list:
 @pytest.mark.parametrize("posterior_pass", ["learn_priors_and_spectra", "calculate_probability_thresholds"])
 def test_posterior_passes_read_no_values_for_each_batch(monkeypatch, posterior_pass):
     # copying values to the CPU makes the CPU wait for the GPU, so the passes over the posterior data copy values for
-    # each iteration or at the end, not for every batch
+    # each iteration or at the end, not for every batch.  The second of the two iterations fits the context-dependent
+    # SNV priors, which copies their totals once.
     def num_copies(num_batches: int) -> int:
         model = make_posterior_model(torch.device("cpu"))
-        # the context-dependent priors' M step fits a PyMC model, which is slow and doesn't depend on the batches
-        monkeypatch.setattr(model.priors, "enable_context_dependent_snv_priors", lambda: None)
         with permutect_calls(monkeypatch, "item", "tolist", "cpu") as calls:
             if posterior_pass == "learn_priors_and_spectra":
                 model.learn_priors_and_spectra(posterior_loader(num_batches), 2, ignored_to_non_ignored_ratio=10)
