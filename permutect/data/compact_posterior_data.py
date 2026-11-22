@@ -3,6 +3,7 @@ The posterior data that the posterior model reads, held as tensors, on the GPU w
 and finding the error probability thresholds don't build a Datum and a Batch of every variant in every pass.
 """
 
+import copy
 import math
 
 import numpy as np
@@ -43,7 +44,8 @@ class CompactPosteriorData:
 
     Iterating gives batches on the device in a new random order each time, as a DataLoader of the posterior ReadsDataset
     does, but without building a Datum and a Batch of every variant on the host.  The order comes from torch's global
-    random number generator, which filter_variants seeds, so that it's the same in every run.
+    random number generator, which filter_variants seeds, so that it's the same in every run.  in_order gives a view of
+    the same data that iterates in the stored order instead.
     """
 
     def __init__(
@@ -56,6 +58,7 @@ class CompactPosteriorData:
         """
         self.device = resolve_device(device)
         self.batch_size = batch_size
+        self.shuffle = True
         self.size = len(int_array_ve)
         self.nbytes = int_array_ve.nbytes + float_array_ve.nbytes
         if max_device_bytes is None and self.device.type == "cuda":
@@ -83,12 +86,23 @@ class CompactPosteriorData:
         float_array_ve = np.array(float_mmap[:, : Data.NUM_SCALAR_FLOAT_ELEMENTS])
         return cls(int_array_ve, float_array_ve, batch_size, device, max_device_bytes)
 
+    def in_order(self, batch_size: int) -> "CompactPosteriorData":
+        """
+        The same data, sharing their tensors, in batches of the given size in the stored order, as for a pass over all
+        of them whose order mustn't change
+        """
+        view = copy.copy(self)
+        view.batch_size, view.shuffle = batch_size, False
+        return view
+
     def __len__(self) -> int:
         return math.ceil(self.size / self.batch_size)
 
     def __iter__(self):
-        # a permutation from torch's global generator on the CPU, so that the order doesn't depend on the device
-        order = torch.randperm(self.size).to(self.int_tensor_ve.device)
+        # a permutation from torch's global generator on the CPU, so that the order doesn't depend on the device, or else
+        # the stored order
+        order = torch.randperm(self.size) if self.shuffle else torch.arange(self.size)
+        order = order.to(self.int_tensor_ve.device)
         for start in range(0, self.size, self.batch_size):
             indices = order[start : start + self.batch_size]
             int_be, float_be = self.int_tensor_ve[indices], self.float_tensor_ve[indices]

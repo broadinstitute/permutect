@@ -263,18 +263,78 @@ def posterior_loader(num_batches: int) -> list:
 @pytest.mark.parametrize("posterior_pass", ["learn_priors_and_spectra", "calculate_probability_thresholds"])
 def test_posterior_passes_read_no_values_for_each_batch(monkeypatch, posterior_pass):
     # copying values to the CPU makes the CPU wait for the GPU, so the passes over the posterior data copy values for
-    # each iteration or at the end, not for every batch.  The second of the two iterations fits the context-dependent
-    # SNV priors, which copies their totals once.
+    # each iteration or at the end, not for every batch.  Fitting takes one warm-start epoch and exactly two EM
+    # iterations however many batches there are, and each M step copies the context-dependent SNV priors' totals once.
     def num_copies(num_batches: int) -> int:
         model = make_posterior_model(torch.device("cpu"))
         with permutect_calls(monkeypatch, "item", "tolist", "cpu") as calls:
             if posterior_pass == "learn_priors_and_spectra":
-                model.learn_priors_and_spectra(posterior_loader(num_batches), 2, ignored_to_non_ignored_ratio=10)
+                model.learn_priors_and_spectra(
+                    posterior_loader(num_batches), 2, 10, num_warmup_steps=1, convergence_threshold=0
+                )
             else:
                 model.calculate_probability_thresholds(posterior_loader(num_batches))
         return len(calls)
 
     assert num_copies(1) == num_copies(3)
+
+
+def varied_batches() -> list:
+    # batches of variants that differ in alt count and artifact logit, so that the spectra have something to fit
+    values = PLAUSIBLE_VALUES | {Data.ORIGINAL_DEPTH: 60}
+    return [
+        make_batch([1e-6, 1e-4], values | {Data.ORIGINAL_ALT_COUNT: alt, Data.CACHED_ARTIFACT_LOGIT: logit})
+        for alt in (2, 4, 8, 15, 30)
+        for logit in (-3.0, 0.0, 3.0)
+    ]
+
+
+def test_fitting_stops_once_the_evidence_stops_changing():
+    model = make_posterior_model("cpu")
+    iterations, converged = model.learn_priors_and_spectra(varied_batches(), 50, 10, num_warmup_steps=30)
+    assert converged and iterations < 50
+
+    # with a threshold of 0 it never converges, and stops at the maximum number of EM iterations
+    model = make_posterior_model("cpu")
+    assert model.learn_priors_and_spectra(varied_batches(), 3, 10, num_warmup_steps=30, convergence_threshold=0) == (
+        3,
+        False,
+    )
+
+
+def test_the_warm_start_takes_whole_epochs_of_at_least_the_warmup_steps(monkeypatch):
+    # 4 batches and at least 10 steps make 3 epochs, each ending in an M step, with the context-dependent SNV priors
+    model = make_posterior_model("cpu")
+    context_dependent, update_priors_m_step = [], model.priors.update_priors_m_step
+
+    def recorded_m_step(*args, **kwargs):
+        context_dependent.append(model.priors.use_context_dependent_snv_priors)
+        return update_priors_m_step(*args, **kwargs)
+
+    monkeypatch.setattr(model.priors, "update_priors_m_step", recorded_m_step)
+    assert model.learn_priors_and_spectra(posterior_loader(4), 0, 10, num_warmup_steps=10) == (0, False)
+    assert context_dependent == [True] * 3
+
+
+class CountedBatches(list):
+    # batches that count the passes over them
+    def __init__(self, batches):
+        super().__init__(batches)
+        self.passes = 0
+
+    def __iter__(self):
+        self.passes += 1
+        return super().__iter__()
+
+
+def test_the_em_passes_over_the_full_pass_loader():
+    # the warm start's minibatches get one epoch, and the full passes the L-BFGS evaluations and E steps of the EM
+    minibatches, full_passes = CountedBatches(varied_batches()), CountedBatches(varied_batches())
+    model = make_posterior_model("cpu")
+    model.learn_priors_and_spectra(
+        minibatches, 2, 10, num_warmup_steps=1, convergence_threshold=0, full_pass_loader=full_passes
+    )
+    assert minibatches.passes == 1 and full_passes.passes >= 4
 
 
 def test_calculating_thresholds_keeps_no_autograd_graphs(monkeypatch):

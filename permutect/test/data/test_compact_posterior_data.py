@@ -104,6 +104,16 @@ def test_each_pass_has_a_new_order_that_the_seed_determines():
     assert positions() == first
 
 
+def test_in_order_gives_the_same_data_in_their_stored_order():
+    memory_mapped_data, _ = make_data(10)
+    compact = CompactPosteriorData.from_memory_mapped_data(memory_mapped_data, batch_size=4, device="cpu")
+    in_order = compact.in_order(3)
+    assert len(in_order) == 4 and [batch.size() for batch in in_order] == [3, 3, 3, 1]
+    assert torch.cat([batch.get(Data.POSITION) for batch in in_order]).tolist() == list(range(1000, 1010))
+    # the original still shuffles in batches of its own size, and the view shares its tensors
+    assert compact.batch_size == 4 and compact.shuffle and in_order.int_tensor_ve is compact.int_tensor_ve
+
+
 def test_data_too_big_for_the_device_stay_on_the_host():
     memory_mapped_data, _ = make_data(5)
     too_big = CompactPosteriorData.from_memory_mapped_data(memory_mapped_data, 2, device=META, max_device_bytes=0)

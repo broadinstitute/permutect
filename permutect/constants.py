@@ -40,6 +40,8 @@ TRAINABLE_PARAMETERS_NAME = "trainable_parameters"
 NUM_SPECTRUM_ITERATIONS_NAME = "num_spectrum_iterations"
 SPECTRUM_LEARNING_RATE_NAME = "spectrum_learning_rate"
 SPECTRUM_BATCH_SIZE_NAME = "spectrum_batch_size"
+NUM_SPECTRUM_WARMUP_STEPS_NAME = "num_spectrum_warmup_steps"
+SPECTRUM_CONVERGENCE_THRESHOLD_NAME = "spectrum_convergence_threshold"
 
 # miscellaneous
 DATASET_EDIT_TYPE_NAME = "dataset_edit"

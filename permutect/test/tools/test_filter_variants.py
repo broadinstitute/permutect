@@ -516,7 +516,7 @@ def test_filtering_is_deterministic(tmp_path):
                 constants.CONTIGS_TABLE_NAME: HG38_CONTIGS_TABLE,
                 constants.OUTPUT_NAME: str(output_vcf),
                 constants.TENSORBOARD_DIR_NAME: str(tmp_path / f"{run}-tensorboard"),
-                # the context-dependent SNV priors are fit in the second half of the iterations
+                # at most two EM iterations after the warm start, to keep it quick
                 constants.NUM_SPECTRUM_ITERATIONS_NAME: "2",
             }
         )

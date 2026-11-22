@@ -11,6 +11,9 @@ from permutect import constants
 from permutect.architecture.artifact_model import ArtifactModel
 from permutect.architecture.artifact_model import load_model
 from permutect.architecture.feature_clustering import component_name
+from permutect.architecture.posterior_model import DEFAULT_NUM_SPECTRUM_WARMUP_STEPS
+from permutect.architecture.posterior_model import DEFAULT_SPECTRUM_CONVERGENCE_THRESHOLD
+from permutect.architecture.posterior_model import DEFAULT_SPECTRUM_LEARNING_RATE
 from permutect.architecture.posterior_model import PosteriorModel
 from permutect.data import plain_text_data
 from permutect.data.batch import Batch
@@ -75,6 +78,10 @@ FILTER_NAMES = [call_type.name.lower() for call_type in Call]
 # SEQ_ERROR's likelihood, it would pass or be another call
 ORIENTATION_FILTER = "read_orientation"
 
+# the batch size of the passes over all the posterior data in fitting the spectra.  Its 65536 variants' somatic spectrum
+# likelihoods take about 130 MB for each intermediate tensor.
+FULL_PASS_BATCH_SIZE = 65536
+
 
 def parse_arguments(argv=None):
     parser = argparse.ArgumentParser()
@@ -104,21 +111,37 @@ def parse_arguments(argv=None):
     parser.add_argument(
         "--" + constants.NUM_SPECTRUM_ITERATIONS_NAME,
         type=int,
-        default=10,
-        help="number of epochs for fitting allele fraction spectra",
+        default=50,
+        help="maximum number of full-batch EM iterations for fitting allele fraction spectra and priors, after the warm "
+        f"start, if the change in the evidence hasn't fallen below --{constants.SPECTRUM_CONVERGENCE_THRESHOLD_NAME}",
     )
     parser.add_argument(
         "--" + constants.SPECTRUM_LEARNING_RATE_NAME,
         type=float,
-        default=0.001,
-        help="learning rate for fitting allele fraction spectra",
+        default=DEFAULT_SPECTRUM_LEARNING_RATE,
+        help="learning rate of the Adam steps that warm-start fitting allele fraction spectra",
+    )
+    parser.add_argument(
+        "--" + constants.NUM_SPECTRUM_WARMUP_STEPS_NAME,
+        type=int,
+        default=DEFAULT_NUM_SPECTRUM_WARMUP_STEPS,
+        help="minimum number of Adam steps, one per batch and in whole epochs, that warm-start fitting allele fraction "
+        "spectra",
+    )
+    parser.add_argument(
+        "--" + constants.SPECTRUM_CONVERGENCE_THRESHOLD_NAME,
+        type=float,
+        default=DEFAULT_SPECTRUM_CONVERGENCE_THRESHOLD,
+        help="fitting allele fraction spectra and priors stops when an EM iteration changes the mean log evidence per "
+        "variant by less than this",
     )
     parser.add_argument(
         "--" + constants.SPECTRUM_BATCH_SIZE_NAME,
         type=int,
-        help="batch size for fitting allele fraction spectra and finding the error probability thresholds, by default "
-        f"--{constants.BATCH_SIZE_NAME}.  Each batch is a step of the spectra's optimizer, whose fixed cost on a GPU is "
-        "most of a small batch's cost: bigger batches are faster, but give fewer steps per iteration.",
+        help="batch size for the warm start of fitting allele fraction spectra and for finding the error probability "
+        f"thresholds, by default --{constants.BATCH_SIZE_NAME}.  Each batch is a step of the warm start's optimizer, "
+        "whose fixed cost on a GPU is most of a small batch's cost: bigger batches are faster, but give fewer steps per "
+        "epoch.",
     )
     parser.add_argument(
         "--" + constants.INITIAL_LOG_VARIANT_PRIOR_NAME,
@@ -214,6 +237,8 @@ def main_without_parsing(args):
         num_spectrum_iterations=getattr(args, constants.NUM_SPECTRUM_ITERATIONS_NAME),
         spectrum_learning_rate=getattr(args, constants.SPECTRUM_LEARNING_RATE_NAME),
         spectrum_batch_size=getattr(args, constants.SPECTRUM_BATCH_SIZE_NAME),
+        num_spectrum_warmup_steps=getattr(args, constants.NUM_SPECTRUM_WARMUP_STEPS_NAME),
+        spectrum_convergence_threshold=getattr(args, constants.SPECTRUM_CONVERGENCE_THRESHOLD_NAME),
         tensorboard_dir=getattr(args, constants.TENSORBOARD_DIR_NAME),
         genomic_span=getattr(args, constants.GENOMIC_SPAN_NAME),
         germline_mode=getattr(args, constants.GERMLINE_MODE_NAME),
@@ -247,11 +272,16 @@ def make_filtered_vcf(
     read_orientation_model: ReadOrientationModel = None,
     num_processes: int = 1,
     spectrum_batch_size: int = None,
+    num_spectrum_warmup_steps: int = DEFAULT_NUM_SPECTRUM_WARMUP_STEPS,
+    spectrum_convergence_threshold: float = DEFAULT_SPECTRUM_CONVERGENCE_THRESHOLD,
 ):
     """
     :param num_processes: the number of processes that read and normalize chunks of the plain text test dataset at once
-    :param spectrum_batch_size: the batch size for fitting the spectra and finding the thresholds, by default
-        training_params.batch_size
+    :param spectrum_batch_size: the batch size for the warm start of fitting the spectra and for finding the thresholds,
+        by default training_params.batch_size
+    :param num_spectrum_iterations, spectrum_learning_rate, num_spectrum_warmup_steps, spectrum_convergence_threshold:
+        the maximum number of EM iterations, the warm start's learning rate and minimum number of steps, and the
+        convergence threshold of PosteriorModel.learn_priors_and_spectra
     """
     # the same random choices in every run, such as the order of the data in fitting the spectra
     seed_random_number_generators()
@@ -323,6 +353,9 @@ def make_filtered_vcf(
         summary_writer=summary_writer,
         ignored_to_non_ignored_ratio=num_ignored_sites / len(posterior_data_loader.dataset),
         learning_rate=spectrum_learning_rate,
+        num_warmup_steps=num_spectrum_warmup_steps,
+        convergence_threshold=spectrum_convergence_threshold,
+        full_pass_loader=posterior_batches.in_order(FULL_PASS_BATCH_SIZE),
     )
 
     print("Calculating optimal logit threshold")
