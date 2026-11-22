@@ -17,7 +17,6 @@ dependencies = [
     "numpy>=1.26.2",
     "pandas>=2.2",
     "numba>=0.65",
-    "pymc>=5.28.1",
     "tqdm>=4.66.1",
     "setuptools>=78.1.1",
     "matplotlib>=3.8.2",
