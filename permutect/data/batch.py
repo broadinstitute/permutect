@@ -59,6 +59,19 @@ class Batch:
         self.ref_and_alt_totals = (int(torch.sum(self.get(Data.REF_COUNT))), int(torch.sum(self.get(Data.ALT_COUNT))))
         self._finish_initialization_from_arrays()
 
+    @classmethod
+    def without_reads(cls, int_tensor: Tensor, float_tensor: Tensor) -> Batch:
+        """
+        A batch of data without reads, such as posterior data, from the long and float32 tensors of their stacked int and
+        float arrays, without building a Datum of each
+        """
+        batch = cls.__new__(cls)
+        batch.int_tensor, batch.float_tensor = int_tensor, float_tensor
+        batch.reads_re = torch.zeros((0, 0), dtype=float_tensor.dtype, device=float_tensor.device)
+        batch.ref_and_alt_totals = (0, 0)
+        batch._finish_initialization_from_arrays()
+        return batch
+
     def _finish_initialization_from_arrays(self):
         self._size = len(self.int_tensor)
         self.lazy_batch_indices = {False: None, True: None}

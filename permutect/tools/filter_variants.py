@@ -15,6 +15,7 @@ from permutect.architecture.posterior_model import PosteriorModel
 from permutect.data import plain_text_data
 from permutect.data.batch import Batch
 from permutect.data.batches_on_device import batches_on_device
+from permutect.data.compact_posterior_data import CompactPosteriorData
 from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
@@ -291,6 +292,11 @@ def make_filtered_vcf(
         batch_size=training_params.batch_size,
         num_workers=training_params.num_workers,
     )
+    # the fields that fitting the spectra and finding the thresholds read, as tensors on the GPU if they fit, so that
+    # those passes don't build a Datum and a Batch of every variant each time.  Writing the VCF needs the other fields.
+    posterior_batches = CompactPosteriorData.from_memory_mapped_data(
+        posterior_data_loader.dataset.memory_mapped_data, batch_size=training_params.batch_size, device=device
+    )
 
     print("Learning AF spectra")
     summary_writer = SummaryWriter(tensorboard_dir)
@@ -299,7 +305,7 @@ def make_filtered_vcf(
     # here is where pretrained artifact priors and spectra are used if given
 
     posterior_model.learn_priors_and_spectra(
-        posterior_data_loader,
+        posterior_batches,
         num_iterations=num_spectrum_iterations,
         summary_writer=summary_writer,
         ignored_to_non_ignored_ratio=num_ignored_sites / len(posterior_data_loader.dataset),
@@ -308,7 +314,7 @@ def make_filtered_vcf(
 
     print("Calculating optimal logit threshold")
     error_probability_thresholds = posterior_model.calculate_probability_thresholds(
-        posterior_data_loader, summary_writer, germline_mode=germline_mode, recall_weight=recall_weight
+        posterior_batches, summary_writer, germline_mode=germline_mode, recall_weight=recall_weight
     )
     print(f"Optimal probability threshold: {error_probability_thresholds}")
     apply_filtering_to_vcf(
