@@ -420,6 +420,7 @@ def test_permutect_filtering_stops_when_a_tool_fails(tmp_path, failing_tool, exp
         "num_cpus": 2,
         "num_spectrum_iterations": None,
         "spectrum_learning_rate": None,
+        "spectrum_batch_size": None,
         "germline_model": None,
         "read_orientation_model": None,
         "permutect_filtering_extra_args": None,

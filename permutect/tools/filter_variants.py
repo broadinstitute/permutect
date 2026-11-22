@@ -114,6 +114,13 @@ def parse_arguments(argv=None):
         help="learning rate for fitting allele fraction spectra",
     )
     parser.add_argument(
+        "--" + constants.SPECTRUM_BATCH_SIZE_NAME,
+        type=int,
+        help="batch size for fitting allele fraction spectra and finding the error probability thresholds, by default "
+        f"--{constants.BATCH_SIZE_NAME}.  Each batch is a step of the spectra's optimizer, whose fixed cost on a GPU is "
+        "most of a small batch's cost: bigger batches are faster, but give fewer steps per iteration.",
+    )
+    parser.add_argument(
         "--" + constants.INITIAL_LOG_VARIANT_PRIOR_NAME,
         type=float,
         default=-10.0,
@@ -206,6 +213,7 @@ def main_without_parsing(args):
         output_vcf=getattr(args, constants.OUTPUT_NAME),
         num_spectrum_iterations=getattr(args, constants.NUM_SPECTRUM_ITERATIONS_NAME),
         spectrum_learning_rate=getattr(args, constants.SPECTRUM_LEARNING_RATE_NAME),
+        spectrum_batch_size=getattr(args, constants.SPECTRUM_BATCH_SIZE_NAME),
         tensorboard_dir=getattr(args, constants.TENSORBOARD_DIR_NAME),
         genomic_span=getattr(args, constants.GENOMIC_SPAN_NAME),
         germline_mode=getattr(args, constants.GERMLINE_MODE_NAME),
@@ -238,9 +246,12 @@ def make_filtered_vcf(
     germline_model: GermlineModel = None,
     read_orientation_model: ReadOrientationModel = None,
     num_processes: int = 1,
+    spectrum_batch_size: int = None,
 ):
     """
     :param num_processes: the number of processes that read and normalize chunks of the plain text test dataset at once
+    :param spectrum_batch_size: the batch size for fitting the spectra and finding the thresholds, by default
+        training_params.batch_size
     """
     # the same random choices in every run, such as the order of the data in fitting the spectra
     seed_random_number_generators()
@@ -295,7 +306,9 @@ def make_filtered_vcf(
     # the fields that fitting the spectra and finding the thresholds read, as tensors on the GPU if they fit, so that
     # those passes don't build a Datum and a Batch of every variant each time.  Writing the VCF needs the other fields.
     posterior_batches = CompactPosteriorData.from_memory_mapped_data(
-        posterior_data_loader.dataset.memory_mapped_data, batch_size=training_params.batch_size, device=device
+        posterior_data_loader.dataset.memory_mapped_data,
+        batch_size=training_params.batch_size if spectrum_batch_size is None else spectrum_batch_size,
+        device=device,
     )
 
     print("Learning AF spectra")

@@ -14,6 +14,7 @@ from permutect.architecture.artifact_model import ArtifactModel
 from permutect.architecture.artifact_model import load_model
 from permutect.architecture.posterior_model import PosteriorModel
 from permutect.data.batch import Batch
+from permutect.data.compact_posterior_data import CompactPosteriorData
 from permutect.data.datum import Data
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.metrics.posterior_result import PosteriorResult
@@ -74,8 +75,19 @@ def test_filtering_on_dream1_chr20(monkeypatch, capsys):
             constants.CONTIGS_TABLE_NAME: HG19_CONTIGS_TABLE,
             constants.OUTPUT_NAME: permutect_vcf.name,
             constants.TENSORBOARD_DIR_NAME: tensorboard_dir.name,
+            constants.SPECTRUM_BATCH_SIZE_NAME: "256",
         }
     )
+
+    # every CompactPosteriorData that filter_variants makes
+    compact_data = []
+
+    class RecordedCompactPosteriorData(CompactPosteriorData):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            compact_data.append(self)
+
+    monkeypatch.setattr(filter_variants, "CompactPosteriorData", RecordedCompactPosteriorData)
 
     # every PosteriorResult that filter_variants makes
     posterior_results = []
@@ -108,6 +120,9 @@ def test_filtering_on_dream1_chr20(monkeypatch, capsys):
     # the writers for test-time adaptation and for the posterior model are closed, so that their last events, such as
     # the final plots, aren't lost when the program exits
     assert len(writers) == 2 and all(writer.closed for writer in writers)
+
+    # fitting the spectra and finding the thresholds use the spectrum batch size, not the data loaders' batch size of 64
+    assert [data.batch_size for data in compact_data] == [256]
 
     # the values written to the VCF are plain numbers copied from the device once per batch.  Rows of device tensors
     # were read number by number while writing the VCF, which made the CPU wait for the GPU many times per variant.

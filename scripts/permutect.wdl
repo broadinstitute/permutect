@@ -14,6 +14,7 @@ workflow Permutect {
         Int scatter_count
         Int? num_spectrum_iterations
         Float? spectrum_learning_rate
+        Int? spectrum_batch_size
         File primary_bam
         File primary_bai
         File? control_bam
@@ -264,6 +265,7 @@ workflow Permutect {
             gpu_count = gpu_count,
             num_spectrum_iterations = num_spectrum_iterations,
             spectrum_learning_rate = spectrum_learning_rate,
+            spectrum_batch_size = spectrum_batch_size,
             permutect_filtering_extra_args = permutect_filtering_extra_args,
             permutect_docker = permutect_docker,
     }
@@ -337,6 +339,7 @@ workflow Permutect {
         File mutect_stats
         Int? num_spectrum_iterations
         Float? spectrum_learning_rate
+        Int? spectrum_batch_size
         Int batch_size
         Int num_workers
         Int? gpu_count
@@ -382,6 +385,7 @@ workflow Permutect {
             --batch_size ~{batch_size} --num_workers ~{num_workers} --num_processes ~{num_cpus} \
             ~{" --num_spectrum_iterations " + num_spectrum_iterations} \
             ~{" --spectrum_learning_rate " + spectrum_learning_rate} \
+            ~{" --spectrum_batch_size " + spectrum_batch_size} \
             ~{" --germline_model " + germline_model} \
             ~{" --read_orientation_model " + read_orientation_model} \
             --genomic_span $genomic_span ~{permutect_filtering_extra_args}

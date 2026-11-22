@@ -39,6 +39,7 @@ TRAINABLE_PARAMETERS_NAME = "trainable_parameters"
 # posterior model training parameters
 NUM_SPECTRUM_ITERATIONS_NAME = "num_spectrum_iterations"
 SPECTRUM_LEARNING_RATE_NAME = "spectrum_learning_rate"
+SPECTRUM_BATCH_SIZE_NAME = "spectrum_batch_size"
 
 # miscellaneous
 DATASET_EDIT_TYPE_NAME = "dataset_edit"
