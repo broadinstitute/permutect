@@ -17,9 +17,9 @@ from permutect.misc_utils import resolve_device
 from permutect.read_orientation.read_orientation_model import ReadOrientationModel
 from permutect.segmentation.germline_model import GermlineModel
 from permutect.slippage.slippage_model import SlippageModel
-from permutect.utils.enums import INDEL_VARIATIONS
 from permutect.utils.enums import Call
 from permutect.utils.enums import Variation
+from permutect.utils.enums import is_indel_b
 
 # The weight of damage, against Mutect2's sequencing error, in the SEQ_ERROR likelihood of an SNV whose alt reads'
 # orientations are known, given a read orientation model: a site without a variant has its alt reads from one mechanism
@@ -101,7 +101,7 @@ class PosteriorModelSpectra(nn.Module):
         # the tumor and the normal share a germline genotype, so their germline likelihood is a joint one, which goes
         # here, and the normal's germline column below stays 0.  Indels have their own parameters, given their STRs'
         # repeat unit lengths and lengths, which are 0 outside STRs and NaN for data that filter_variants hasn't annotated.
-        indels_b = torch.isin(var_types_b, torch.tensor(INDEL_VARIATIONS, device=var_types_b.device))
+        indels_b = is_indel_b(var_types_b)
         repeat_unit_lengths_b, repeat_lengths_b = (
             torch.nan_to_num(batch.get(field), nan=0.0) for field in (Data.REPEAT_UNIT_LENGTH, Data.REPEAT_LENGTH)
         )

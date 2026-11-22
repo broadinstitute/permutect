@@ -30,6 +30,17 @@ class Variation(enum.IntEnum):
 INDEL_VARIATIONS = (Variation.INSERTION, Variation.DELETION, Variation.BIG_INSERTION, Variation.BIG_DELETION)
 
 
+def is_indel_b(variant_types_b):
+    """
+    Whether each of a tensor of variant types is an indel.  It compares them with each type of INDEL_VARIATIONS rather
+    than use torch.isin with a tensor of them, which would be copied to the GPU every time and make the CPU wait for it.
+    """
+    result_b = variant_types_b == INDEL_VARIATIONS[0]
+    for variation in INDEL_VARIATIONS[1:]:
+        result_b = result_b | (variant_types_b == variation)
+    return result_b
+
+
 class Call(enum.IntEnum):
     SOMATIC = 0
     ARTIFACT = 1

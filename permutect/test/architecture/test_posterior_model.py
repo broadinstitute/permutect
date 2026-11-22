@@ -23,6 +23,7 @@ from permutect.segmentation.germline_model import GermlineModel
 from permutect.segmentation.germline_model import SampleSegmentation
 from permutect.test.architecture.test_posterior_model_priors import make_batch
 from permutect.test.host_reads import permutect_calls
+from permutect.test.host_reads import permutect_device_tensors
 from permutect.test.segmentation.test_germline_model import sample_segmentation
 from permutect.utils.enums import Call
 from permutect.utils.enums import Variation
@@ -464,3 +465,14 @@ def test_known_artifacts_rule_out_slippage():
     model = make_posterior_model("cpu")
     batch = make_batch([1e-8], STR_INDEL_VALUES | {Data.CACHED_ARTIFACT_LOGIT: math.inf})
     assert model.log_relative_posteriors_bc(batch)[0, Call.SLIPPAGE].item() == constants.IMPOSSIBLE_LOG_PROB
+
+
+def test_posteriors_copy_no_python_values_to_the_device(monkeypatch):
+    # the posteriors are computed for every batch, so a tensor of Python values made on the device for each one, such as
+    # the indel variant types used to be, makes the CPU wait for the GPU every batch.  Indels of long STRs can be
+    # slippage, which takes all of the code that made them.
+    model = make_posterior_model("cpu")
+    batch = make_batch([1e-8, 1e-8], STR_INDEL_VALUES)
+    with permutect_device_tensors(monkeypatch) as devices:
+        model.log_relative_posteriors_bc(batch)
+    assert devices == []
