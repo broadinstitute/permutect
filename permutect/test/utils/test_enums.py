@@ -8,9 +8,11 @@ from permutect.architecture.artifact_model import load_model
 from permutect.parameters import add_training_params_to_parser
 from permutect.parameters import parse_training_params
 from permutect.test.test_file_names import PERMUTECT_V0_9_2_ARTIFACT_MODEL
+from permutect.utils.enums import INDEL_VARIATIONS
 from permutect.utils.enums import Epoch
 from permutect.utils.enums import ParameterSet
 from permutect.utils.enums import Variation
+from permutect.utils.enums import is_indel_b
 
 PARAMETER_SET_NAMES = [
     "INITIAL_READ_EMBEDDING",
@@ -51,6 +53,11 @@ def test_variation_get_type():
     assert Variation.get_type("AT", "GC") == Variation.MNV
     assert Variation.get_type("ACG", "TTA") == Variation.MNV
     assert Variation.get_type("ACGT", "TCGA") == Variation.MNV
+
+
+def test_is_indel_b_picks_out_the_indel_variations():
+    variant_types_b = torch.tensor([variation for variation in Variation] * 2)
+    assert is_indel_b(variant_types_b).tolist() == [variation in INDEL_VARIATIONS for variation in Variation] * 2
 
 
 def test_variation_get_type_trims_matching_bases_of_substitutions():

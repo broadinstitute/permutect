@@ -14,6 +14,7 @@ from permutect.architecture.artifact_model import ArtifactModel
 from permutect.architecture.artifact_model import load_model
 from permutect.architecture.posterior_model import PosteriorModel
 from permutect.data.batch import Batch
+from permutect.data.compact_posterior_data import CompactPosteriorData
 from permutect.data.datum import Data
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.metrics.posterior_result import PosteriorResult
@@ -74,8 +75,19 @@ def test_filtering_on_dream1_chr20(monkeypatch, capsys):
             constants.CONTIGS_TABLE_NAME: HG19_CONTIGS_TABLE,
             constants.OUTPUT_NAME: permutect_vcf.name,
             constants.TENSORBOARD_DIR_NAME: tensorboard_dir.name,
+            constants.SPECTRUM_BATCH_SIZE_NAME: "256",
         }
     )
+
+    # every CompactPosteriorData that filter_variants makes
+    compact_data = []
+
+    class RecordedCompactPosteriorData(CompactPosteriorData):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            compact_data.append(self)
+
+    monkeypatch.setattr(filter_variants, "CompactPosteriorData", RecordedCompactPosteriorData)
 
     # every PosteriorResult that filter_variants makes
     posterior_results = []
@@ -108,6 +120,9 @@ def test_filtering_on_dream1_chr20(monkeypatch, capsys):
     # the writers for test-time adaptation and for the posterior model are closed, so that their last events, such as
     # the final plots, aren't lost when the program exits
     assert len(writers) == 2 and all(writer.closed for writer in writers)
+
+    # fitting the spectra and finding the thresholds use the spectrum batch size, not the data loaders' batch size of 64
+    assert [data.batch_size for data in compact_data] == [256]
 
     # the values written to the VCF are plain numbers copied from the device once per batch.  Rows of device tensors
     # were read number by number while writing the VCF, which made the CPU wait for the GPU many times per variant.
@@ -486,9 +501,9 @@ def test_posterior_data_artifact_logits_are_deterministic(tmp_path):
 def test_filtering_is_deterministic(tmp_path):
     """
     Two runs on the same inputs write the same records, since their random choices, such as the order of the data in
-    test-time adaptation and in fitting the spectra and the variational fit of the context-dependent SNV priors, are
-    seeded.  Each record's filters are sorted, rather than in the order of a set, which changes from run to run with
-    Python's hash randomization and so would be the same in both runs of this one process.
+    test-time adaptation and in fitting the spectra, are seeded.  Each record's filters are sorted, rather than in the
+    order of a set, which changes from run to run with Python's hash randomization and so would be the same in both runs
+    of this one process.
     """
     pre_filtered_vcf = run_pre_permutect_filtering(MUTECT2_SEQC2_WES_VCF, HG38_CHR20_REFERENCE)
 
@@ -501,7 +516,7 @@ def test_filtering_is_deterministic(tmp_path):
                 constants.CONTIGS_TABLE_NAME: HG38_CONTIGS_TABLE,
                 constants.OUTPUT_NAME: str(output_vcf),
                 constants.TENSORBOARD_DIR_NAME: str(tmp_path / f"{run}-tensorboard"),
-                # the context-dependent SNV priors are fit in the second half of the iterations
+                # at most two EM iterations after the warm start, to keep it quick
                 constants.NUM_SPECTRUM_ITERATIONS_NAME: "2",
             }
         )

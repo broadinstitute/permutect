@@ -9,7 +9,7 @@ import torch
 from torch import Tensor
 from torch import nn
 
-from permutect.utils.enums import INDEL_VARIATIONS
+from permutect.utils.enums import is_indel_b
 from permutect.utils.stats_utils import beta_binomial_log_lk
 
 # FilterMutectCalls' --min-slippage-length: the minimum number of bases of an STR in the reference for slippage
@@ -48,7 +48,7 @@ class SlippageModel(nn.Module):
         Whether each variant can be slippage: an indel that changes by one the number of repeat units of an STR of at
         least min_str_length reference bases.  Unannotated data, whose repeat lengths and changes are NaN, can't be.
         """
-        indels_b = torch.isin(variant_types_b, torch.tensor(INDEL_VARIATIONS, device=variant_types_b.device))
+        indels_b = is_indel_b(variant_types_b)
         return indels_b & (repeat_lengths_b >= self.min_str_length) & (repeat_count_changes_b.abs() == 1)
 
     def tumor_log_likelihoods_b(self, depths_b: Tensor, alt_counts_b: Tensor) -> Tensor:

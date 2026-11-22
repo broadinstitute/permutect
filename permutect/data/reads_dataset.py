@@ -254,9 +254,11 @@ class ReadsDataset(IterableDataset):
             # copying reads each chunk from the memory-mapped files in one sequential pass, so that the shuffled access
             # below is to RAM rather than to the files.  The copies aren't needed for correctness: a slice of a memory
             # map is read from its file when used, and Datum copies its int and float arrays anyway.
-            chunk_int_data_ve = int_array_ve[start:end].copy()
-            chunk_float_data_ve = float_array_ve[start:end].copy()
-            chunk_reads_re = stacked_reads_re[chunk_read_start_idx:chunk_read_end_idx].copy()
+            # np.array, not .copy(), which would keep the np.memmap subclass, whose per-datum indexing below runs
+            # through numpy's Python-level __getitem__ and __array_finalize__ and took about 30% of the loading time.
+            chunk_int_data_ve = np.array(int_array_ve[start:end])
+            chunk_float_data_ve = np.array(float_array_ve[start:end])
+            chunk_reads_re = np.array(stacked_reads_re[chunk_read_start_idx:chunk_read_end_idx])
             chunk_read_offsets = self._read_offsets[start : end + 1] - chunk_read_start_idx
             ram_timer.report("Time to load chunk data into RAM")
             report_memory_usage("Chunk data loaded into RAM.")

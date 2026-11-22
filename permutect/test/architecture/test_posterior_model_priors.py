@@ -1,8 +1,12 @@
+import math
+
 import numpy as np
 import pytest
 import torch
 
 from permutect.architecture.posterior_model_priors import PosteriorModelPriors
+from permutect.architecture.posterior_model_priors import context_dependent_snv_log_rates_sc
+from permutect.architecture.posterior_model_priors import convert_rrra_tensor_to_sc
 from permutect.data.batch import Batch
 from permutect.data.datum import RAW_READS_ARRAY_DTYPE
 from permutect.data.datum import Data
@@ -93,3 +97,48 @@ def test_mnvs_have_their_own_priors():
     totals_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra()
     priors.update_priors_m_step(totals_vc, totals_rrra, totals_rrra, ignored_to_non_ignored_ratio=10)
     assert priors.log_priors_vc[Variation.MNV, Call.SOMATIC] > priors.log_priors_vc[Variation.SNV, Call.SOMATIC]
+
+
+def test_context_dependent_snv_rates_recover_simulated_rates():
+    # somatic SNVs simulated from the hierarchical model, about 1000 for each substitution and context
+    rng = np.random.default_rng(seed=0)
+    theta_s, theta_sc = rng.dirichlet(np.full(12, 20.0)), rng.dirichlet(np.full(16, 20.0), size=12)
+    rates_sc = 1e-6 * 12 * theta_s[:, None] * 16 * theta_sc
+    sites_sc = np.full((12, 16), 1e9)
+    counts_sc = torch.from_numpy(rng.poisson(rates_sc * sites_sc)).float()
+    log_rates_sc = context_dependent_snv_log_rates_sc(counts_sc, torch.from_numpy(sites_sc))
+    errors_sc = (log_rates_sc - torch.from_numpy(np.log(rates_sc))).abs()
+    assert errors_sc.max() < 0.2 and errors_sc.mean() < 0.05
+
+
+def test_context_dependent_snv_rates_shrink_sparse_counts_and_keep_the_total():
+    # three somatic SNVs, all of one substitution in one context
+    counts_sc, sites_sc = torch.zeros(12, 16), torch.full((12, 16), 1e9)
+    counts_sc[2, 5] = 3
+    rates_sc = torch.exp(context_dependent_snv_log_rates_sc(counts_sc, sites_sc))
+    # that context's rate is the highest, the substitution's other contexts share in it, and nothing is impossible
+    assert rates_sc[2, 5] == rates_sc.max() and rates_sc[2, 4] > rates_sc[3, 4] and torch.all(rates_sc > 0)
+    # the expected number of somatic SNVs at the sites is the count plus the overall rate prior's pseudocount
+    assert torch.sum(sites_sc * rates_sc).item() == pytest.approx(3 + 1, rel=1e-4)
+
+
+def test_context_dependent_snv_rates_without_somatic_snvs_are_uniform():
+    sites_sc = torch.full((12, 16), 1e8)
+    log_rates_sc = context_dependent_snv_log_rates_sc(torch.zeros(12, 16), sites_sc)
+    expected = -math.log(sites_sc.sum().item() + 1e6 + 1)
+    torch.testing.assert_close(log_rates_sc, torch.full((12, 16), expected, dtype=torch.float64))
+
+
+def test_the_m_step_puts_the_context_dependent_rates_in_the_snv_priors():
+    priors = PosteriorModelPriors(variant_log_prior=-10, artifact_log_prior=-10, no_germline_mode=False, device="cpu")
+    rng = np.random.default_rng(seed=1)
+    somatic_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra()
+    somatic_rrra[:4, :4, :4, :4] = torch.from_numpy(rng.uniform(0, 5, size=(4, 4, 4, 4)))
+    snvs_rrra = PosteriorModelPriors.initialize_snv_context_totals_rrra()
+    snvs_rrra[:4, :4, :4, :4] = somatic_rrra[:4, :4, :4, :4] + 100
+    totals_vc = torch.full((len(Variation), len(Call)), 100.0)
+    priors.update_priors_m_step(totals_vc, somatic_rrra, snvs_rrra, ignored_to_non_ignored_ratio=1000)
+
+    sites_sc = convert_rrra_tensor_to_sc(snvs_rrra) + 1000 * totals_vc.sum().item() / 64
+    expected_sc = context_dependent_snv_log_rates_sc(convert_rrra_tensor_to_sc(somatic_rrra), sites_sc)
+    torch.testing.assert_close(convert_rrra_tensor_to_sc(priors.somatic_snv_log_priors_rrra), expected_sc.float())
