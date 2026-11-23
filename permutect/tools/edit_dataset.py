@@ -1,10 +1,22 @@
 import argparse
 from enum import Enum
+from typing import Generator
+
+import numpy as np
 
 from permutect import constants
+from permutect.data.datum import COMPRESSED_READS_ARRAY_DTYPE
+from permutect.data.datum import FLOAT_DTYPE
+from permutect.data.datum import INTEGER_DTYPE
 from permutect.data.datum import Data
+from permutect.data.datum import set_data_field_column
 from permutect.data.memory_mapped_data import MemoryMappedData
+from permutect.data.memory_mapped_data import StackedData
+from permutect.data.memory_mapped_data import stacked_read_offsets
 from permutect.utils.enums import Label
+
+# the data that are edited at once
+DATA_PER_EDIT = 100000
 
 
 class EditType(Enum):
@@ -16,36 +28,43 @@ class EditType(Enum):
     KEEP_EVERYTHING = "keep_everything"
 
 
-# generates the data of the original datasets with the edit applied, and with the new source if one is given
-def generate_edited_data(memory_mapped_datas, edit_type: str, source: int):
+def edited_chunks(memory_mapped_datas, edit_type: str, source: int) -> Generator[StackedData, None, None]:
+    """
+    The data of the original datasets with the edit applied, and with the new source if one is given, DATA_PER_EDIT at a
+    time.  Their arrays have the dtypes that a Datum gives them, as they did when the data were edited one at a time.
+    """
+    edit = EditType(edit_type)
     for memory_mapped_data in memory_mapped_datas:
-        for reads_datum in memory_mapped_data.generate():
+        read_offsets = memory_mapped_data.read_offsets
+        for start in range(0, memory_mapped_data.num_data, DATA_PER_EDIT):
+            end = min(start + DATA_PER_EDIT, memory_mapped_data.num_data)
+            int_array_ve = np.array(memory_mapped_data.int_mmap[start:end], dtype=INTEGER_DTYPE)
+            float_array_ve = np.array(memory_mapped_data.float_mmap[start:end], dtype=FLOAT_DTYPE)
             if source is not None:
-                reads_datum.set(Data.SOURCE, source)
+                set_data_field_column(int_array_ve, float_array_ve, Data.SOURCE, np.full(end - start, source))
 
-            original_label = reads_datum.get(Data.LABEL)
+            labels = int_array_ve[:, Data.LABEL.idx]  # a view, so that relabeling edits the int array
+            keep = np.ones(end - start, dtype=bool)
+            if edit == EditType.UNLABEL_ARTIFACTS:
+                labels[labels == Label.ARTIFACT] = Label.UNLABELED
+            elif edit == EditType.UNLABEL_VARIANTS:
+                labels[labels == Label.VARIANT] = Label.UNLABELED
+            elif edit == EditType.UNLABEL_EVERYTHING:
+                labels[:] = Label.UNLABELED
+            elif edit == EditType.REMOVE_ARTIFACTS:
+                keep = labels != Label.ARTIFACT
+            elif edit == EditType.REMOVE_VARIANTS:
+                keep = labels != Label.VARIANT
 
-            if edit_type == EditType.UNLABEL_ARTIFACTS.value:
-                if original_label == Label.ARTIFACT:
-                    reads_datum.set(Data.LABEL, Label.UNLABELED)
-                yield reads_datum
-            elif edit_type == EditType.UNLABEL_VARIANTS.value:
-                if original_label == Label.VARIANT:
-                    reads_datum.set(Data.LABEL, Label.UNLABELED)
-                yield reads_datum
-            elif edit_type == EditType.UNLABEL_EVERYTHING.value:
-                reads_datum.set(Data.LABEL, Label.UNLABELED)
-                yield reads_datum
-            elif edit_type == EditType.REMOVE_ARTIFACTS.value:
-                if original_label != Label.ARTIFACT:
-                    yield reads_datum
-            elif edit_type == EditType.REMOVE_VARIANTS.value:
-                if original_label != Label.VARIANT:
-                    yield reads_datum
-            elif edit_type == EditType.KEEP_EVERYTHING.value:
-                yield reads_datum
+            # the reads of the data that are kept
+            read_counts = np.diff(read_offsets[start : end + 1]).astype(np.int64)
+            if memory_mapped_data.reads_mmap is None:
+                reads_re = np.zeros((0, 0), dtype=COMPRESSED_READS_ARRAY_DTYPE)
             else:
-                raise Exception(f"edit type {edit_type} not implemented yet")
+                reads_re = memory_mapped_data.reads_mmap[read_offsets[start] : read_offsets[end]]
+                reads_re = reads_re[np.repeat(keep, read_counts)]
+            kept_read_offsets = stacked_read_offsets(read_counts[keep])
+            yield StackedData(int_array_ve[keep], float_array_ve[keep], reads_re, kept_read_offsets)
 
 
 def parse_arguments(argv=None):
@@ -85,14 +104,15 @@ def main_without_parsing(args):
     for mmd in memory_mapped_datas:
         print(f"Input dataset with {mmd.num_data} data and {mmd.num_reads} reads.")
 
-    output_data_generator = generate_edited_data(memory_mapped_datas, edit_type, new_source)
     total_num_data = sum([mmd.num_data for mmd in memory_mapped_datas])
     total_num_reads = sum([mmd.num_reads for mmd in memory_mapped_datas])
-    MemoryMappedData.from_generator(
-        reads_datum_source=output_data_generator,
+    edited = MemoryMappedData.from_chunks(
+        edited_chunks(memory_mapped_datas, edit_type, new_source),
         estimated_num_data=total_num_data,
         estimated_num_reads=total_num_reads,
-    ).save_to_tarfile(output_tarfile=output_tarfile)
+    )
+    print(f"Output dataset with {edited.num_data} data and {edited.num_reads} reads.")
+    edited.save_to_tarfile(output_tarfile=output_tarfile)
 
 
 def main():
