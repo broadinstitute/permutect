@@ -1,4 +1,5 @@
 import io
+import itertools
 from collections import Counter
 
 import numpy as np
@@ -10,6 +11,8 @@ from permutect.data import plain_text_data
 from permutect.data.datum import FLOAT_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
+from permutect.data.datum import get_data_field
+from permutect.data.memory_mapped_data import StackedData
 from permutect.data.memory_mapped_data import stacked_read_offsets
 from permutect.data.plain_text_data import MAX_VALUE
 from permutect.data.plain_text_data import PlainTextChunk
@@ -19,9 +22,13 @@ from permutect.data.plain_text_data import alt_read_medians_and_means
 from permutect.data.plain_text_data import convert_quantile_normalized_to_uint8
 from permutect.data.plain_text_data import convert_uint8_to_quantile_normalized
 from permutect.data.plain_text_data import line_to_array
+from permutect.data.plain_text_data import lines_to_array
 from permutect.data.plain_text_data import plain_text_chunks
 from permutect.data.plain_text_data import read_2d_array
+from permutect.data.plain_text_data import read_raw_stacked_data
 from permutect.data.plain_text_data import read_raw_unnormalized_data
+from permutect.test.test_file_names import DREAM_1_CHR20_PLAIN_TEXT_DATA
+from permutect.test.test_file_names import SEQC2_WES_PLAIN_TEXT_DATA
 from permutect.test.test_file_names import SMALL_PLAIN_TEXT_DATA
 
 
@@ -56,12 +63,15 @@ def test_numbers_are_parsed_as_before():
         block = reads_lines[start : start + 7]
         expected = np.vstack([parse_one_number_at_a_time(line) for line in block])
         assert read_2d_array(io.StringIO("".join(block)), len(block)).tobytes() == expected.tobytes()
+        assert lines_to_array(block).tobytes() == expected.tobytes()
 
 
 @pytest.mark.parametrize("text", ["1 2 3\n4 abc 6\n", "1 2 3\n4 5\n"])
 def test_malformed_lines_are_rejected(text):
     with pytest.raises(ValueError):
         read_2d_array(io.StringIO(text), 2)
+    with pytest.raises(ValueError):
+        lines_to_array(text.splitlines(keepends=True))
 
 
 def test_alt_read_medians_and_means_are_those_of_each_datum():
@@ -100,8 +110,36 @@ def test_file_index_finds_each_datum_with_alt_reads():
     positions = [int(datum.get(Data.POSITION)) for datum in read_raw_unnormalized_data(SMALL_PLAIN_TEXT_DATA)]
     assert len(file_index) == len(positions)
     for start, end in ((0, 1), (10, 25), (len(positions) - 3, len(positions))):
-        segment_data = file_index.segment(start, end).read(torch.Generator())
-        assert [int(datum.get(Data.POSITION)) for datum in segment_data] == positions[start:end]
+        segment_data = read_raw_stacked_data([file_index.segment(start, end)], torch.Generator())
+        assert get_data_field(segment_data.int_array_ve, None, Data.POSITION).tolist() == positions[start:end]
+
+
+def test_chunks_are_read_as_they_were_datum_by_datum(monkeypatch):
+    # byte for byte, with the same reads beyond the caps on ref and alt counts dropped, in chunks of 3000 data that span
+    # the end of one file and the start of the next
+    monkeypatch.setattr(plain_text_data, "NUM_RAW_DATA_TO_NORMALIZE_AT_ONCE", 3000)
+    dataset_files = [SMALL_PLAIN_TEXT_DATA, SEQC2_WES_PLAIN_TEXT_DATA, DREAM_1_CHR20_PLAIN_TEXT_DATA]
+    file_indices = [PlainTextFileIndex.of(file, source) for source, file in enumerate(dataset_files)]
+    num_kept_reads = 0
+    for chunk in plain_text_chunks(file_indices, seed=0):
+        generator = torch.Generator().manual_seed(chunk.seed)
+        datum_by_datum = [
+            datum
+            for segment in chunk.segments
+            for datum in itertools.islice(
+                read_raw_unnormalized_data(segment.dataset_file, segment.source, segment.start, generator),
+                segment.num_data,
+            )
+        ]
+        expected = StackedData.of(datum_by_datum)
+        stacked = read_raw_stacked_data(chunk.segments, torch.Generator().manual_seed(chunk.seed))
+        for name in ("int_array_ve", "float_array_ve", "reads_re", "read_offsets"):
+            array, expected_array = getattr(stacked, name), getattr(expected, name)
+            assert array.dtype == expected_array.dtype and array.shape == expected_array.shape, name
+            assert array.tobytes() == expected_array.tobytes(), name
+        num_kept_reads += len(stacked.reads_re)
+    # the reads beyond the caps of thousands of data were dropped
+    assert num_kept_reads < sum(file_index.num_reads for file_index in file_indices) - 10000
 
 
 def test_chunks_have_the_same_boundaries_as_before(monkeypatch):
