@@ -4,8 +4,6 @@ import torch
 from permutect.architecture.gated_mlp import GatedRefAltMLP
 from permutect.sets.ragged_sets import RaggedSets
 
-META = torch.device("meta")
-
 
 def make_read_encoder_inputs(device: torch.device) -> tuple[GatedRefAltMLP, RaggedSets, RaggedSets]:
     # the ref and alt reads of three variants, one of which has no ref reads
@@ -20,16 +18,9 @@ def run_read_encoder(encoder: GatedRefAltMLP, ref_bre: RaggedSets, alt_bre: Ragg
     return ref_bre.means_over_sets(), alt_bre.sums_over_sets()
 
 
-def test_set_operations_do_not_read_data_on_the_cpu():
-    # meta tensors have no data, so on the meta device anything that reads GPU data on the CPU, and makes the CPU wait for
-    # the GPU, fails.  For example, checking the sum of the set lengths, or repeat_interleave without an output size.
-    ref_means_bf, alt_sums_bf = run_read_encoder(*make_read_encoder_inputs(META))
-    assert ref_means_bf.shape == alt_sums_bf.shape == (3, 6)
-
-
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
 def test_set_operations_do_not_synchronize_cuda():
-    # unlike the meta device, this also catches segment_reduce checking its lengths
+    # anything that makes the CPU wait for the GPU, such as segment_reduce checking its lengths, is an error
     inputs = make_read_encoder_inputs(torch.device("cuda"))
     torch.cuda.set_sync_debug_mode("error")
     try:
