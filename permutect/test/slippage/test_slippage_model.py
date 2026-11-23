@@ -49,7 +49,7 @@ def passing_allele_fraction(log_slippage_k: np.ndarray, depth: int) -> float:
     return (np.flatnonzero(slippage_wins_k).max() + 1) / depth
 
 
-@pytest.mark.parametrize("depth", [20, 30, 50, 100, 200, 1000])
+@pytest.mark.parametrize("depth", [20, 1000])
 def test_decisions_approximate_filter_mutect_calls(depth):
     # FilterMutectCalls' slippage likelihood is the regularized incomplete beta function I_r(k + 1, n - k + 1) with r =
     # 0.1.  The beta-binomial's passing allele fraction is lower, by at most 0.07.

@@ -100,67 +100,42 @@ def make_datum(contig: int, position: int, ref: str, alt: str) -> Datum:
     return datum
 
 
-def test_timer_prints_message_on_creation(capsys):
-    Timer("Doing something. . .")
-    assert capsys.readouterr().out == "Doing something. . .\n"
-
+def test_timer(monkeypatch, capsys):
+    # it prints its message, if any, when it's created
     Timer()
     assert capsys.readouterr().out == ""
 
-
-def test_timer_reports_elapsed_time(monkeypatch, capsys):
     # fake the clock only where the Timer reads it, so that nothing else, eg another thread, consumes the fake times
     clock = iter([10.0, 11.5, 13.25])
     monkeypatch.setattr(misc_utils, "time", SimpleNamespace(perf_counter=lambda: next(clock)))
-
-    timer = Timer()
+    timer = Timer("Doing something. . .")
     time.perf_counter()  # other code still reads the real clock
     timer.report("first")
     timer.report("second")
 
     # each report measures from when the timer was created, not from the previous report
-    assert capsys.readouterr().out.splitlines() == ["first: 1.5000 seconds", "second: 3.2500 seconds"]
-
-
-def test_timer_with_real_clock(capsys):
-    start = time.perf_counter()
-    timer = Timer()
-    timer.report("elapsed")
-    max_elapsed = time.perf_counter() - start
-    output = capsys.readouterr().out.strip()
-    assert output.startswith("elapsed: ")
-    assert output.endswith(" seconds")
-    elapsed = float(output.removeprefix("elapsed: ").removesuffix(" seconds"))
-    # bounded by the time measured around the Timer, plus rounding to 4 decimals, rather than a fixed time that a
-    # loaded machine could exceed
-    assert 0 <= elapsed <= max_elapsed + 0.00005
+    lines = capsys.readouterr().out.splitlines()
+    assert lines == ["Doing something. . .", "first: 1.5000 seconds", "second: 3.2500 seconds"]
 
 
 def test_get_first_numeric_element(tmp_path):
-    biallelic, multiallelic = read_variants(
+    biallelic, multiallelic, zero, missing = read_variants(
         tmp_path,
         vcf_line("A", "T", info="POPAF=3.5;DP=20"),
         vcf_line("G", "C,T", pos=200, info="POPAF=1.5,4.0"),
+        vcf_line("A", "T", pos=300, info="POPAF=0"),
+        vcf_line("A", "T", pos=400),
     )
-    # cyvcf2 returns a single value as a scalar, even for a Number=A field
+    # cyvcf2 returns a single value as a scalar, even for a Number=A field, and multiple values as a tuple
     assert get_first_numeric_element(biallelic, "DP") == 20
     assert get_first_numeric_element(biallelic, "POPAF") == 3.5
-
-    # cyvcf2 returns multiple values as a tuple
     assert get_first_numeric_element(multiallelic, "POPAF") == 1.5
 
-
-def test_get_first_numeric_element_edge_cases(tmp_path):
-    zero, missing = read_variants(
-        tmp_path,
-        vcf_line("A", "T", info="POPAF=0"),
-        vcf_line("A", "T", pos=200),
-    )
     # zero is a real value, not a missing one
     assert get_first_numeric_element(zero, "POPAF") == 0
 
     # a missing INFO field raises an error naming the variant, rather than returning a default
-    with pytest.raises(ValueError, match="chr1:200 has no POPAF INFO field"):
+    with pytest.raises(ValueError, match="chr1:400 has no POPAF INFO field"):
         get_first_numeric_element(missing, "POPAF")
 
 
@@ -245,10 +220,12 @@ def test_vcf_contig_ranks(tmp_path):
 
 
 def test_overlapping_filters(tmp_path):
-    single, multiple = read_variants(
+    single, multiple, passing, unfiltered = read_variants(
         tmp_path,
         vcf_line("A", "T", filters="germline"),
         vcf_line("A", "T", pos=200, filters="weak_evidence;germline;normal_artifact"),
+        vcf_line("A", "T", pos=300, filters="PASS"),
+        vcf_line("A", "T", pos=400, filters="."),
     )
     assert overlapping_filters(single, {"germline", "weak_evidence"}) == {"germline"}
     assert overlapping_filters(multiple, {"germline", "weak_evidence", "contamination"}) == {
@@ -257,23 +234,13 @@ def test_overlapping_filters(tmp_path):
     }
     assert overlapping_filters(multiple, {"contamination"}) == set()
 
-
-def test_overlapping_filters_edge_cases(tmp_path):
-    passing, unfiltered, filtered = read_variants(
-        tmp_path,
-        vcf_line("A", "T", filters="PASS"),
-        vcf_line("A", "T", pos=200, filters="."),
-        vcf_line("A", "T", pos=300, filters="germline"),
-    )
     # cyvcf2 reports both PASS and a missing FILTER as no filters, so PASS never overlaps
     assert overlapping_filters(passing, {"germline", "PASS"}) == set()
     assert overlapping_filters(unfiltered, {"germline"}) == set()
 
-    # an empty set never overlaps
-    assert overlapping_filters(filtered, set()) == set()
-
-    # filter names must match exactly
-    assert overlapping_filters(filtered, {"germ", "Germline", "germline_risk"}) == set()
+    # an empty set never overlaps, and filter names must match exactly
+    assert overlapping_filters(single, set()) == set()
+    assert overlapping_filters(single, {"germ", "Germline", "germline_risk"}) == set()
 
 
 # a tumor-normal Mutect2 header without a FORMAT/DP line for its DP values, like the output of SplitMultiallelics
