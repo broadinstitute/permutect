@@ -143,10 +143,13 @@ task Preprocess {
         Boolean use_ssd = true
     }
 
-    # Mem is in units of GB but our command and memory runtime values are in MB
-    Int machine_mem = if defined(mem) then mem * 1000 else 16000
-    Int command_mem = machine_mem - 500
     Int num_cpus = select_first([cpu, 4])
+    # Mem is in units of GB but our memory runtime value is in MB.  Memory doesn't grow with the dataset: each of the
+    # processes normalizes 10,000 data at a time in well under 1 GB, and the main process needs about 0.5 GB.
+    Int machine_mem = if defined(mem) then mem * 1000 else (2 + num_cpus) * 1000
+    # the plain text dataset, and the preprocessed data twice, in temporary memory maps and in the tarfile, each less
+    # than half the size of the plain text
+    Int default_disk_space = ceil(2 * size(training_dataset, "GB")) + 10
 
     command <<<
         set -e
@@ -160,7 +163,7 @@ task Preprocess {
         docker: permutect_docker
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
-        disks: "local-disk " + select_first([disk_space, 100]) + if use_ssd then " SSD" else " HDD"
+        disks: "local-disk " + select_first([disk_space, default_disk_space]) + if use_ssd then " SSD" else " HDD"
         preemptible: select_first([preemptible, 2])
         maxRetries: select_first([max_retries, 0])
         cpu: num_cpus

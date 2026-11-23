@@ -38,12 +38,14 @@ task EditDataset {
         Int? disk_space
         Int? cpu
         Int? mem
-        Boolean use_ssd = false
+        Boolean use_ssd = true
     }
 
-    # Mem is in units of GB but our command and memory runtime values are in MB
+    # the input datasets and the edited dataset, which is no bigger than them
+    Int default_disk_space = ceil(2 * size(train_tar, "GB")) + 10
+
+    # Mem is in units of GB but our memory runtime value is in MB
     Int machine_mem = if defined(mem) then mem * 1000 else 16000
-    Int command_mem = machine_mem - 500
 
     command <<<
         set -e
@@ -60,7 +62,7 @@ task EditDataset {
         docker: permutect_docker
         bootDiskSizeGb: 12
         memory: machine_mem + " MB"
-        disks: "local-disk " + select_first([disk_space, 100]) + if use_ssd then " SSD" else " HDD"
+        disks: "local-disk " + select_first([disk_space, default_disk_space]) + if use_ssd then " SSD" else " HDD"
         preemptible: select_first([preemptible, 10])
         maxRetries: select_first([max_retries, 0])
         cpu: select_first([cpu, 1])

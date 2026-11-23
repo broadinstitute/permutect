@@ -1,13 +1,13 @@
+"""
+This tool takes as input a list of plain text Permutect training datasets made by Mutect2, normalizes their data, and
+saves it as a tarfile of memory-mapped binary arrays.
+"""
+
 import argparse
 
 from permutect import constants
 from permutect.data.plain_text_data import make_normalized_mmap_data
 from permutect.parameters import add_num_processes_to_parser
-
-"""
-This tool takes as input a list of plain text Permutect training datasets made by Mutect2, normalizes their data, and
-saves it as a tarfile of memory-mapped binary arrays.
-"""
 
 
 def parse_arguments(argv=None):
@@ -24,7 +24,8 @@ def parse_arguments(argv=None):
         "--" + constants.SOURCES_NAME,
         nargs="+",
         type=int,
-        help="integer sources corresponding to plain text data files for distinguishing different sequencing conditions",
+        help="integer sources of the plain text data files, which distinguish different sequencing conditions: one for "
+        "all the files, or one for each.  By default every file has source 0.",
     )
     parser.add_argument(
         "--" + constants.OUTPUT_NAME,

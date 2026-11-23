@@ -64,6 +64,8 @@ VCF_ANNOTATION_FIELDS = [
 ]
 # the VCF records whose annotations are appended to the table at once
 VCF_RECORDS_PER_BATCH = 10000
+# the data that from_generator stacks and writes to the memory maps at once
+DATA_PER_STACKED_WRITE = 10000
 
 
 class BytesChunksReader(io.RawIOBase):
@@ -91,26 +93,85 @@ class BytesChunksReader(io.RawIOBase):
 
 
 def add_to_tarfile(tar: tarfile.TarFile, name: str, chunks, size: int):
-    # the member's size precedes its bytes in the tarfile
+    """
+    Add a member of the bytes of an iterable of byte strings to a tarfile.  Its size precedes its bytes in the tarfile,
+    so more bytes than the size are an error, as are fewer, for which tarfile raises an error.
+    """
     info = tarfile.TarInfo(name)
     info.size, info.mtime, info.mode = size, int(time.time()), 0o644
-    tar.addfile(info, io.BufferedReader(BytesChunksReader(chunks)))
+    file = io.BufferedReader(BytesChunksReader(chunks))
+    tar.addfile(info, file)
+    if file.read(1):
+        raise ValueError(f"{name} has more bytes than its size of {size}.")
 
 
-def add_array_to_tarfile(tar: tarfile.TarFile, name: str, array: np.ndarray):
+class ArrayRows(NamedTuple):
     """
-    Write an array into a tarfile as a .npy file, as np.save writes it, copying a block of its rows into memory at a time
+    An array to write into a tarfile a block of rows at a time, so that it needn't be in memory or a file all at once:
+    its dtype, number of rows and shape of each row, and an iterable of blocks of its rows
     """
+
+    dtype: np.dtype
+    num_rows: int
+    row_shape: tuple
+    blocks: Iterable[np.ndarray]
+
+    @classmethod
+    def of(cls, array: np.ndarray) -> ArrayRows:
+        """the rows of an array, such as a memory map, copied into memory a block at a time"""
+        rows_per_block = max(1, NPY_WRITE_BLOCK_BYTES // max(1, array[:1].nbytes))
+        blocks = (array[start : start + rows_per_block] for start in range(0, len(array), rows_per_block))
+        return cls(array.dtype, len(array), array.shape[1:], blocks)
+
+
+def add_array_to_tarfile(tar: tarfile.TarFile, name: str, rows: ArrayRows):
+    """
+    Write an array into a tarfile as a .npy file, as np.save writes it, a block of its rows at a time
+    """
+    shape = (rows.num_rows, *rows.row_shape)
     header = io.BytesIO()
-    header_data = np.lib.format.header_data_from_array_1_0(array)
+    header_data = {"descr": np.lib.format.dtype_to_descr(np.dtype(rows.dtype)), "fortran_order": False, "shape": shape}
     try:
         np.lib.format.write_array_header_1_0(header, header_data)
     except ValueError:  # as np.save does for a header too long for version 1.0
         np.lib.format.write_array_header_2_0(header, header_data)
 
-    rows_per_block = max(1, NPY_WRITE_BLOCK_BYTES // max(1, array[:1].nbytes))
-    blocks = (array[start : start + rows_per_block].tobytes() for start in range(0, len(array), rows_per_block))
-    add_to_tarfile(tar, name, itertools.chain([header.getvalue()], blocks), size=len(header.getvalue()) + array.nbytes)
+    def block_bytes(block: np.ndarray) -> bytes:
+        if block.dtype != rows.dtype or block.shape[1:] != tuple(rows.row_shape):
+            raise ValueError(f"{name} has a block of {block.dtype} rows of shape {block.shape[1:]}.")
+        return block.tobytes()
+
+    size = len(header.getvalue()) + math.prod(shape) * np.dtype(rows.dtype).itemsize
+    add_to_tarfile(tar, name, itertools.chain([header.getvalue()], map(block_bytes, rows.blocks)), size=size)
+
+
+def write_data_tarfile(output_tarfile, int_rows: ArrayRows, float_rows: ArrayRows, reads_rows: ArrayRows = None):
+    """
+    Write data into a tarfile that MemoryMappedData.load_from_tarfile loads, a block of rows of each array at a time:
+    the rows of their int arrays, of their float arrays, and of their reads, if they have any
+    """
+    # num_data, data dimension; num_reads, reads dimension; the layout of the data arrays
+    metadata = np.array(
+        [
+            int_rows.num_rows,
+            int_rows.row_shape[-1],
+            float_rows.row_shape[-1],
+            0 if reads_rows is None else reads_rows.num_rows,
+            0 if reads_rows is None else reads_rows.row_shape[-1],
+            DATA_LAYOUT_VERSION,
+        ],
+        dtype=np.uint32,
+    )
+    metadata_bytes = io.BytesIO()
+    torch.save(metadata, metadata_bytes)
+
+    with tarfile.open(output_tarfile, "w") as output_tar:
+        metadata_name = "metadata" + SUFFIX_FOR_METADATA
+        add_to_tarfile(output_tar, metadata_name, [metadata_bytes.getvalue()], size=len(metadata_bytes.getvalue()))
+        add_array_to_tarfile(output_tar, "int_array" + SUFFIX_FOR_INT_MMAP, int_rows)
+        add_array_to_tarfile(output_tar, "float_array" + SUFFIX_FOR_FLOAT_MMAP, float_rows)
+        if reads_rows is not None:
+            add_array_to_tarfile(output_tar, "reads_array" + SUFFIX_FOR_READS_MMAP, reads_rows)
 
 
 def grown_memory_map(old_mmap, required_rows: int, estimated_rows: int, row_shape: tuple, dtype, suffix: str):
@@ -211,10 +272,12 @@ class StackedData:
 
     @classmethod
     def of(cls, data: list[Datum]) -> StackedData:
+        # the reads of data without any, which may not have the reads' width, are left out
+        reads = [datum.reads_re for datum in data if len(datum.reads_re) > 0]
         return cls(
             int_array_ve=np.vstack([datum.int_array for datum in data]),
             float_array_ve=np.vstack([datum.float_array for datum in data]),
-            reads_re=np.vstack([datum.reads_re for datum in data]),
+            reads_re=np.vstack(reads) if reads else np.zeros((0, 0), dtype=data[0].reads_re.dtype),
             read_offsets=stacked_read_offsets([len(datum.reads_re) for datum in data]),
         )
 
@@ -461,28 +524,8 @@ class MemoryMappedData:
             4) it's convenient to package things as a single tarfile
         Each array is written straight into the tarfile as a .npy file, without a temporary copy.
         """
-        # num_data, data dimension; num_reads, reads dimension; the layout of the data arrays
-        metadata = np.array(
-            [
-                self.num_data,
-                self.int_mmap.shape[-1],
-                self.float_mmap.shape[-1],
-                self.num_reads,
-                0 if self.reads_mmap is None else self.reads_mmap.shape[-1],
-                DATA_LAYOUT_VERSION,
-            ],
-            dtype=np.uint32,
-        )
-        metadata_bytes = io.BytesIO()
-        torch.save(metadata, metadata_bytes)
-
-        with tarfile.open(output_tarfile, "w") as output_tar:
-            metadata_name = "metadata" + SUFFIX_FOR_METADATA
-            add_to_tarfile(output_tar, metadata_name, [metadata_bytes.getvalue()], size=len(metadata_bytes.getvalue()))
-            add_array_to_tarfile(output_tar, "int_array" + SUFFIX_FOR_INT_MMAP, self.int_mmap)
-            add_array_to_tarfile(output_tar, "float_array" + SUFFIX_FOR_FLOAT_MMAP, self.float_mmap)
-            if self.reads_mmap is not None:
-                add_array_to_tarfile(output_tar, "reads_array" + SUFFIX_FOR_READS_MMAP, self.reads_mmap)
+        reads_rows = None if self.reads_mmap is None else ArrayRows.of(self.reads_mmap)
+        write_data_tarfile(output_tarfile, ArrayRows.of(self.int_mmap), ArrayRows.of(self.float_mmap), reads_rows)
 
     @classmethod
     def load_from_tarfile(cls, data_tarfile) -> MemoryMappedData:
@@ -538,71 +581,28 @@ class MemoryMappedData:
     @classmethod
     def from_generator(cls, reads_datum_source, estimated_num_data, estimated_num_reads) -> MemoryMappedData:
         """
-        Write Datum objects to memory maps.  We set the file sizes to initial guesses but if these are outgrown we copy
-        data to larger files, just like the amortized O(N) append operation on lists.
+        Write Datum objects to memory maps, DATA_PER_STACKED_WRITE of them at a time, as from_chunks writes chunks
 
         :param reads_datum_source: an Iterable or Generator of Datum
-        :param estimated_num_data: initial estimate of how much capacity is needed
-        :param estimated_num_reads:
-        :return:
         """
-        num_data, num_reads = 0, 0
-        int_mmap, float_mmap, reads_mmap = None, None, None
-        int_file, float_file, reads_file = None, None, None
 
-        datum: Datum
-        for datum in reads_datum_source:
-            int_array = datum.get_int_array()
-            float_array = datum.get_float_array()
-            reads_array = datum.get_reads_array_re()  # this works both for raw data and compressed reads
-            if len(reads_array) not in (0, datum.get_read_count()):
-                raise ValueError(
-                    f"A datum has {len(reads_array)} reads but ref and alt counts of {datum.get_read_count()}."
-                )
+        def stacked_chunks():
+            data = iter(reads_datum_source)
+            while chunk := list(itertools.islice(data, DATA_PER_STACKED_WRITE)):
+                for datum in chunk:
+                    if len(datum.reads_re) not in (0, datum.get_read_count()):
+                        raise ValueError(
+                            f"A datum has {len(datum.reads_re)} reads but ref and alt counts of {datum.get_read_count()}."
+                        )
+                yield StackedData.of(chunk)
 
-            num_data += 1
-            num_reads += len(reads_array)
-
-            # set capacity to initial estimate or grow it, create new file and mmap, copy old data
-            if num_data > (0 if int_mmap is None else len(int_mmap)):
-                int_mmap, int_file = grown_memory_map(
-                    int_mmap, num_data, estimated_num_data, int_array.shape, int_array.dtype, SUFFIX_FOR_INT_MMAP
-                )
-                float_mmap, float_file = grown_memory_map(
-                    float_mmap,
-                    num_data,
-                    estimated_num_data,
-                    float_array.shape,
-                    float_array.dtype,
-                    SUFFIX_FOR_FLOAT_MMAP,
-                )
-
-            # likewise for reads
-            if num_reads > (0 if reads_mmap is None else len(reads_mmap)):
-                reads_mmap, reads_file = grown_memory_map(
-                    reads_mmap,
-                    num_reads,
-                    estimated_num_reads,
-                    reads_array.shape[1:],
-                    reads_array.dtype,
-                    SUFFIX_FOR_READS_MMAP,
-                )
-
-            # write new data
-            int_mmap[num_data - 1] = int_array
-            float_mmap[num_data - 1] = float_array
-            if len(reads_array) > 0:
-                reads_mmap[num_reads - len(reads_array) : num_reads] = reads_array
-
-        return cls._from_written_memory_maps(
-            num_data, num_reads, (int_mmap, float_mmap, reads_mmap), (int_file, float_file, reads_file)
-        )
+        return cls.from_chunks(stacked_chunks(), estimated_num_data, estimated_num_reads)
 
     @classmethod
     def from_chunks(cls, chunks: Iterable[StackedData], estimated_num_data, estimated_num_reads) -> MemoryMappedData:
         """
-        Like from_generator, but for chunks of data, each of which is written to the memory maps all at once rather than
-        datum by datum
+        Write chunks of data to memory maps, each chunk all at once.  The memory maps' capacities start at the estimates,
+        and if these are outgrown the data are copied to larger memory maps, as a list grows when appended to.
         """
         num_data, num_reads = 0, 0
         int_mmap, float_mmap, reads_mmap = None, None, None
@@ -651,7 +651,7 @@ class MemoryMappedData:
     @classmethod
     def _from_written_memory_maps(cls, num_data, num_reads, memory_maps, files) -> MemoryMappedData:
         """
-        MemoryMappedData of the memory maps that from_generator or from_chunks wrote, reopened read-only, which keeps their
+        MemoryMappedData of the memory maps that from_chunks wrote, reopened read-only, which keeps their
         temporary files
         """
         int_mmap, float_mmap, reads_mmap = memory_maps

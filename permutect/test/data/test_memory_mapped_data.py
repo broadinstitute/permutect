@@ -155,6 +155,15 @@ def test_saved_arrays_are_written_into_the_tarfile_as_np_save_writes_them(tmp_pa
     assert_same_data(MemoryMappedData.load_from_tarfile(tar), data)
 
 
+@pytest.mark.parametrize("size, error", [(9, ValueError), (11, OSError)])
+def test_a_tarfile_member_gets_exactly_its_size(tmp_path, size, error):
+    # the size precedes the bytes in the tarfile, so bytes of another size are an error rather than a member cut short or
+    # a misaligned tarfile
+    with tarfile.open(str(tmp_path / "data.tar"), "w") as tar:
+        with pytest.raises(error):
+            memory_mapped_data_module.add_to_tarfile(tar, "member", [b"x" * 6, b"x" * 4], size=size)
+
+
 def test_uncompressed_tarfile_is_mapped_in_place(tmp_path):
     # rather than extracted, which copied all the data, in every process of distributed training
     data = [make_datum(index, index % 4) for index in range(10)]

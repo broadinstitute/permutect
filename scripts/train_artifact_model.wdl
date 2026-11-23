@@ -87,9 +87,10 @@ task Train {
         Int? mem
     }
 
-    # Mem is in units of GB but our memory runtime value is in MB
-    Int machine_mem = if defined(mem) then mem * 1000 else 16000
     Int num_gpus = select_first([gpu_count, 1])
+    # Mem is in units of GB but our memory runtime value is in MB.  Memory hardly depends on the data, since ReadsDataset
+    # sizes its chunks to the available memory: each GPU's process uses about 2 GB and the chunks about a fifth of the total.
+    Int machine_mem = if defined(mem) then mem * 1000 else (4 + 3 * num_gpus) * 1000
 
     command <<<
         set -e
@@ -106,7 +107,7 @@ task Train {
             ~{"--num_self_attention_layers " + num_self_attention_layers} \
             ~{"--dropout_p " + dropout_p} \
             ~{"--batch_size " + batch_size} \
-            ~{"--num_workers " + num_workers} \
+            --num_workers ~{default="2" num_workers} \
             ~{"--num_epochs " + num_epochs} \
             --output artifact_model.pt \
             --tensorboard_dir tensorboard \
@@ -122,7 +123,8 @@ task Train {
         disks: "local-disk " + select_first([disk_space, 100]) + " SSD"
         preemptible: select_first([preemptible, 0])
         maxRetries: select_first([max_retries, 0])
-        cpu: select_first([cpu, 1])
+        # each GPU's process keeps about one core busy and its DataLoader workers need another: 4 vCPUs (2 cores) per GPU
+        cpu: select_first([cpu, 4 * num_gpus])
         gpuType: "nvidia-tesla-t4"
         gpuCount: num_gpus
         # at least the driver that the docker image's CUDA needs.  Cromwell on Google Batch, and so Terra, ignores this

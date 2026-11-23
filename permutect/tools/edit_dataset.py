@@ -1,10 +1,20 @@
 import argparse
 from enum import Enum
 
+import numpy as np
+
 from permutect import constants
+from permutect.data.datum import FLOAT_DTYPE
+from permutect.data.datum import INTEGER_DTYPE
 from permutect.data.datum import Data
+from permutect.data.datum import set_data_field_column
+from permutect.data.memory_mapped_data import ArrayRows
 from permutect.data.memory_mapped_data import MemoryMappedData
+from permutect.data.memory_mapped_data import write_data_tarfile
 from permutect.utils.enums import Label
+
+# the data that are edited at once
+DATA_PER_EDIT = 100000
 
 
 class EditType(Enum):
@@ -16,36 +26,82 @@ class EditType(Enum):
     KEEP_EVERYTHING = "keep_everything"
 
 
-# generates the data of the original datasets with the edit applied, and with the new source if one is given
-def generate_edited_data(memory_mapped_datas, edit_type: str, source: int):
-    for memory_mapped_data in memory_mapped_datas:
-        for reads_datum in memory_mapped_data.generate():
-            if source is not None:
-                reads_datum.set(Data.SOURCE, source)
+# the labels that each edit removes the data of, or makes UNLABELED
+REMOVED_LABELS = {EditType.REMOVE_ARTIFACTS: [Label.ARTIFACT], EditType.REMOVE_VARIANTS: [Label.VARIANT]}
+UNLABELED_LABELS = {
+    EditType.UNLABEL_ARTIFACTS: [Label.ARTIFACT],
+    EditType.UNLABEL_VARIANTS: [Label.VARIANT],
+    EditType.UNLABEL_EVERYTHING: list(Label),
+}
 
-            original_label = reads_datum.get(Data.LABEL)
 
-            if edit_type == EditType.UNLABEL_ARTIFACTS.value:
-                if original_label == Label.ARTIFACT:
-                    reads_datum.set(Data.LABEL, Label.UNLABELED)
-                yield reads_datum
-            elif edit_type == EditType.UNLABEL_VARIANTS.value:
-                if original_label == Label.VARIANT:
-                    reads_datum.set(Data.LABEL, Label.UNLABELED)
-                yield reads_datum
-            elif edit_type == EditType.UNLABEL_EVERYTHING.value:
-                reads_datum.set(Data.LABEL, Label.UNLABELED)
-                yield reads_datum
-            elif edit_type == EditType.REMOVE_ARTIFACTS.value:
-                if original_label != Label.ARTIFACT:
-                    yield reads_datum
-            elif edit_type == EditType.REMOVE_VARIANTS.value:
-                if original_label != Label.VARIANT:
-                    yield reads_datum
-            elif edit_type == EditType.KEEP_EVERYTHING.value:
-                yield reads_datum
-            else:
-                raise Exception(f"edit type {edit_type} not implemented yet")
+def save_edited_data(memory_mapped_datas, edit_type: str, source: int, output_tarfile) -> tuple[int, int]:
+    """
+    Write the data of the original datasets, with the edit applied and with the new source if one is given, straight
+    into the output tarfile, DATA_PER_EDIT at a time, rather than into memory maps that are then copied into it.  The
+    arrays have the dtypes that a Datum gives them, as they did when the data were edited one at a time.  The size of a
+    tarfile's member precedes it, so the data that are kept are found before each array is written in turn.
+
+    :return: the numbers of data and of reads written
+    """
+    edit = EditType(edit_type)
+    layouts = {
+        (data.int_mmap.shape[1:], data.float_mmap.shape[1:], reads_layout(data))
+        for data in memory_mapped_datas
+        if data.num_data > 0
+    }
+    if len(layouts) > 1:
+        raise ValueError(f"The datasets' arrays have different shapes or dtypes: {layouts}.")
+    int_row_shape, float_row_shape, reads_dtype_and_row_shape = layouts.pop() if layouts else ((0,), (0,), None)
+
+    # the blocks of each dataset's data, and which of their data are kept
+    blocks = [
+        (data, start, end, ~np.isin(data.int_mmap[start:end, Data.LABEL.idx], REMOVED_LABELS.get(edit, [])))
+        for data, start, end in data_blocks(memory_mapped_datas)
+    ]
+
+    def kept_int_array(data: MemoryMappedData, start: int, end: int, keep: np.ndarray) -> np.ndarray:
+        int_array_ve = np.array(data.int_mmap[start:end], dtype=INTEGER_DTYPE)
+        labels = int_array_ve[:, Data.LABEL.idx]  # a view, so that relabeling edits the int array
+        labels[np.isin(labels, UNLABELED_LABELS.get(edit, []))] = Label.UNLABELED
+        if source is not None:
+            set_data_field_column(int_array_ve, None, Data.SOURCE, np.full(end - start, source))
+        return int_array_ve[keep]
+
+    def kept_float_array(data: MemoryMappedData, start: int, end: int, keep: np.ndarray) -> np.ndarray:
+        return np.array(data.float_mmap[start:end], dtype=FLOAT_DTYPE)[keep]
+
+    def kept_reads(data: MemoryMappedData, start: int, end: int, keep: np.ndarray) -> np.ndarray:
+        reads_re = data.reads_mmap[data.read_offsets[start] : data.read_offsets[end]]
+        return reads_re[np.repeat(keep, read_counts(data, start, end))]
+
+    num_data = sum(int(np.sum(keep)) for *_, keep in blocks)
+    int_rows = ArrayRows(INTEGER_DTYPE, num_data, int_row_shape, (kept_int_array(*block) for block in blocks))
+    float_rows = ArrayRows(FLOAT_DTYPE, num_data, float_row_shape, (kept_float_array(*block) for block in blocks))
+    num_reads, reads_rows = 0, None
+    if reads_dtype_and_row_shape is not None:
+        num_reads = sum(int(read_counts(data, start, end)[keep].sum()) for data, start, end, keep in blocks)
+        reads_dtype, reads_row_shape = reads_dtype_and_row_shape
+        reads_rows = ArrayRows(reads_dtype, num_reads, reads_row_shape, (kept_reads(*block) for block in blocks))
+    write_data_tarfile(output_tarfile, int_rows, float_rows, reads_rows)
+    return num_data, num_reads
+
+
+def data_blocks(memory_mapped_datas):
+    """each dataset's data, DATA_PER_EDIT at a time: the dataset, and the start and end of the block"""
+    for data in memory_mapped_datas:
+        for start in range(0, data.num_data, DATA_PER_EDIT):
+            yield data, start, min(start + DATA_PER_EDIT, data.num_data)
+
+
+def read_counts(data: MemoryMappedData, start: int, end: int) -> np.ndarray:
+    """the numbers of reads of a dataset's data from start to end"""
+    return np.diff(data.read_offsets[start : end + 1])
+
+
+def reads_layout(data: MemoryMappedData):
+    """the dtype and row shape of a dataset's reads, or None if it has none"""
+    return None if data.reads_mmap is None else (data.reads_mmap.dtype, data.reads_mmap.shape[1:])
 
 
 def parse_arguments(argv=None):
@@ -85,14 +141,8 @@ def main_without_parsing(args):
     for mmd in memory_mapped_datas:
         print(f"Input dataset with {mmd.num_data} data and {mmd.num_reads} reads.")
 
-    output_data_generator = generate_edited_data(memory_mapped_datas, edit_type, new_source)
-    total_num_data = sum([mmd.num_data for mmd in memory_mapped_datas])
-    total_num_reads = sum([mmd.num_reads for mmd in memory_mapped_datas])
-    MemoryMappedData.from_generator(
-        reads_datum_source=output_data_generator,
-        estimated_num_data=total_num_data,
-        estimated_num_reads=total_num_reads,
-    ).save_to_tarfile(output_tarfile=output_tarfile)
+    num_data, num_reads = save_edited_data(memory_mapped_datas, edit_type, new_source, output_tarfile)
+    print(f"Output dataset with {num_data} data and {num_reads} reads.")
 
 
 def main():

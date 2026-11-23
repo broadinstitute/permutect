@@ -140,6 +140,40 @@ def get_data_field(int_array, float_array, data_field: Data):
         assert False, "Unsupported data type"
 
 
+def set_data_field_column(int_array_ve: np.ndarray, float_array_ve: np.ndarray, data_field: Data, values):
+    """
+    Set a field in every row of 2D int and float arrays with one row per Datum, as Datum.set sets it in one Datum: an
+    integer that int16 can't hold is an error rather than wrapping around.
+    """
+    index = data_field.idx
+    if data_field.dtype == FLOAT_DTYPE:
+        float_array_ve[:, index] = np.asarray(values, dtype=np.float64)
+        return
+    values = np.asarray(values, dtype=np.int64)
+    int16_columns = [values] if data_field.dtype == INTEGER_DTYPE else uint32_to_two_int16s(values)
+    int16_range = np.iinfo(INTEGER_DTYPE)
+    for offset, column in enumerate(int16_columns):
+        if np.any((column < int16_range.min) | (column > int16_range.max)):
+            raise OverflowError(f"{data_field.name} has values that {np.dtype(INTEGER_DTYPE)} can't hold")
+        int_array_ve[:, index + offset] = column
+
+
+def gatk_variant_features(ref_sequence_string: str, ref_allele: str, alt_allele: str) -> tuple:
+    """
+    What a Datum derives from its variant's alleles and reference context: the STR info that follows GATK's info, the
+    ref and alt haplotypes concatenated, and the trimmed ref and alt alleles as base-5 integers
+    """
+    # note: it is very important to trim here, as early as possible, because truncating to 13 or fewer bases
+    # does not commute with trimming!!!  If we are not consistent about trimming first, dataset variants and
+    # VCF variants might get inconsistent encodings!!!
+    trimmed_ref, trimmed_alt = trim_alleles_on_right(ref_allele, alt_allele)
+    str_info = get_str_info_array(ref_sequence_string, trimmed_ref, trimmed_alt)
+    ref_seq_array = make_1d_sequence_tensor(ref_sequence_string)
+    ref_hap, alt_hap = get_ref_and_alt_sequences(ref_seq_array, trimmed_ref, trimmed_alt)
+    assert len(ref_hap) == len(ref_seq_array) and len(alt_hap) == len(ref_seq_array)
+    return str_info, np.hstack((ref_hap, alt_hap)), bases_as_base5_int(trimmed_ref), bases_as_base5_int(trimmed_alt)
+
+
 class Datum:
     """
     TODO: need documentation
@@ -186,28 +220,20 @@ class Datum:
         ref_reads_array_re: np.ndarray,
         alt_reads_array_re: np.ndarray,
     ) -> Datum:
-        # note: it is very important to trim here, as early as possible, because truncating to 13 or fewer bases
-        # does not commute with trimming!!!  If we are not consistent about trimming first, dataset variants and
-        # VCF variants might get inconsistent encodings!!!
-        trimmed_ref, trimmed_alt = trim_alleles_on_right(ref_allele, alt_allele)
-        str_info = get_str_info_array(ref_sequence_string, trimmed_ref, trimmed_alt)
+        str_info, haplotypes, ref_base5, alt_base5 = gatk_variant_features(ref_sequence_string, ref_allele, alt_allele)
         info_array = np.hstack([gatk_info_array, str_info])
-        ref_seq_array = make_1d_sequence_tensor(ref_sequence_string)
-
-        ref_hap, alt_hap = get_ref_and_alt_sequences(ref_seq_array, trimmed_ref, trimmed_alt)
-        assert len(ref_hap) == len(ref_seq_array) and len(alt_hap) == len(ref_seq_array)
-        haplotypes = np.hstack((ref_hap, alt_hap))
-
         haplotypes_length, info_length = len(haplotypes), len(info_array)
         zeroed_int_array = np.zeros(Data.NUM_SCALAR_INT_ELEMENTS + haplotypes_length, dtype=INTEGER_DTYPE)
-        zeroed_float_array = np.zeros(Data.NUM_SCALAR_FLOAT_ELEMENTS + info_length, dtype=FLOAT_DTYPE)
+        # the float fields that GATK doesn't give, such as the allele frequencies and the read orientation counts, are NaN
+        # until they are known
+        nan_float_array = np.full(Data.NUM_SCALAR_FLOAT_ELEMENTS + info_length, np.nan, dtype=FLOAT_DTYPE)
         reads_array_re = (
             np.vstack([ref_reads_array_re, alt_reads_array_re])
             if ref_reads_array_re is not None
             else alt_reads_array_re
         )
 
-        result = cls(int_array=zeroed_int_array, float_array=zeroed_float_array, reads_re=reads_array_re)
+        result = cls(int_array=zeroed_int_array, float_array=nan_float_array, reads_re=reads_array_re)
         result.set(Data.REF_COUNT, 0 if ref_reads_array_re is None else len(ref_reads_array_re))
         result.set(Data.ALT_COUNT, 0 if alt_reads_array_re is None else len(alt_reads_array_re))
         result.set(Data.LABEL, label)
@@ -219,27 +245,14 @@ class Datum:
         result.set(Data.ORIGINAL_NORMAL_ALT_COUNT, original_normal_alt_count)
         result.set(Data.CONTIG, contig)
         result.set(Data.POSITION, position)
-        result.set(Data.REF_ALLELE_AS_BASE_5, bases_as_base5_int(trimmed_ref))
-        result.set(Data.ALT_ALLELE_AS_BASE_5, bases_as_base5_int(trimmed_alt))
+        result.set(Data.REF_ALLELE_AS_BASE_5, ref_base5)
+        result.set(Data.ALT_ALLELE_AS_BASE_5, alt_base5)
         result.int_array[Data.HAPLOTYPES_START_IDX :] = haplotypes
 
         result.set(Data.SEQ_ERROR_LOG_LK, seq_error_log_lk)  # this is -log10ToLog(TLOD) - log(tumorDepth + 1)
         result.set(
             Data.NORMAL_SEQ_ERROR_LOG_LK, normal_seq_error_log_lk
         )  # this is -log10ToLog(NALOD) - log(normalDepth + 1)
-
-        result.set(Data.LOG_ALLELE_FREQUENCY, np.nan)
-        result.set(Data.MAF, np.nan)
-        result.set(Data.NORMAL_MAF, np.nan)
-        result.set(Data.CACHED_ARTIFACT_LOGIT, np.nan)
-        result.set(Data.REPEAT_UNIT_LENGTH, np.nan)
-        result.set(Data.REPEAT_LENGTH, np.nan)
-        result.set(Data.ALT_F1R2_COUNT, np.nan)
-        result.set(Data.ALT_F2R1_COUNT, np.nan)
-        result.set(Data.REPEAT_COUNT_CHANGE, np.nan)
-        result.set(Data.REF_F1R2_COUNT, np.nan)
-        result.set(Data.REF_F2R1_COUNT, np.nan)
-
         result.float_array[Data.INFO_START_IDX :] = info_array
         return result
 
