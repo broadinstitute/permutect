@@ -200,14 +200,16 @@ class Datum:
 
         haplotypes_length, info_length = len(haplotypes), len(info_array)
         zeroed_int_array = np.zeros(Data.NUM_SCALAR_INT_ELEMENTS + haplotypes_length, dtype=INTEGER_DTYPE)
-        zeroed_float_array = np.zeros(Data.NUM_SCALAR_FLOAT_ELEMENTS + info_length, dtype=FLOAT_DTYPE)
+        # the float fields that GATK doesn't give, such as the allele frequencies and the read orientation counts, are NaN
+        # until they are known
+        nan_float_array = np.full(Data.NUM_SCALAR_FLOAT_ELEMENTS + info_length, np.nan, dtype=FLOAT_DTYPE)
         reads_array_re = (
             np.vstack([ref_reads_array_re, alt_reads_array_re])
             if ref_reads_array_re is not None
             else alt_reads_array_re
         )
 
-        result = cls(int_array=zeroed_int_array, float_array=zeroed_float_array, reads_re=reads_array_re)
+        result = cls(int_array=zeroed_int_array, float_array=nan_float_array, reads_re=reads_array_re)
         result.set(Data.REF_COUNT, 0 if ref_reads_array_re is None else len(ref_reads_array_re))
         result.set(Data.ALT_COUNT, 0 if alt_reads_array_re is None else len(alt_reads_array_re))
         result.set(Data.LABEL, label)
@@ -227,19 +229,6 @@ class Datum:
         result.set(
             Data.NORMAL_SEQ_ERROR_LOG_LK, normal_seq_error_log_lk
         )  # this is -log10ToLog(NALOD) - log(normalDepth + 1)
-
-        result.set(Data.LOG_ALLELE_FREQUENCY, np.nan)
-        result.set(Data.MAF, np.nan)
-        result.set(Data.NORMAL_MAF, np.nan)
-        result.set(Data.CACHED_ARTIFACT_LOGIT, np.nan)
-        result.set(Data.REPEAT_UNIT_LENGTH, np.nan)
-        result.set(Data.REPEAT_LENGTH, np.nan)
-        result.set(Data.ALT_F1R2_COUNT, np.nan)
-        result.set(Data.ALT_F2R1_COUNT, np.nan)
-        result.set(Data.REPEAT_COUNT_CHANGE, np.nan)
-        result.set(Data.REF_F1R2_COUNT, np.nan)
-        result.set(Data.REF_F2R1_COUNT, np.nan)
-
         result.float_array[Data.INFO_START_IDX :] = info_array
         return result
 

@@ -63,8 +63,6 @@ from permutect.utils.enums import Variation
 from permutect.utils.math_utils import log_binomial_coefficient
 
 MAX_VALUE = 10000
-EPSILON = 0.00001
-QUANTILE_DATA_COUNT = 10000
 LOG10_TO_LN = 2.30258509299
 
 NUM_RAW_DATA_TO_NORMALIZE_AT_ONCE = 10000
@@ -211,10 +209,10 @@ def normalized_in_order(chunks: list[PlainTextChunk], num_processes: int) -> Ite
 
 
 def read_raw_unnormalized_data(
-    dataset_file, only_artifacts: bool = False, source: int = 0, start: int = 0, generator: torch.Generator = None
+    dataset_file, source: int = 0, start: int = 0, generator: torch.Generator = None
 ) -> Generator[Datum, None, None]:
     """
-    generator that yields data from a plain text dataset file, starting at a byte offset
+    generator that yields the data with alt reads of a plain text dataset file, starting at a byte offset
 
     :param generator: the torch random number generator for downsampling reads beyond the caps on ref and alt counts
     """
@@ -223,7 +221,6 @@ def read_raw_unnormalized_data(
         file = io.TextIOWrapper(binary_file)
         while label_str := file.readline().strip():
             label = Label[label_str]
-            passes_label_filter = label == Label.ARTIFACT or not only_artifacts
 
             # contig:position,ref->alt
             variant_line = file.readline().strip()
@@ -237,15 +234,11 @@ def read_raw_unnormalized_data(
                 int, file.readline().strip().split()
             )
 
-            # the first column is read group index, which we currently discard
-            # later we're going to want to use this
-            ref_tensor = read_2d_array(file, ref_tensor_size)[:, 1:] if ref_tensor_size > 0 else None
-            alt_tensor = read_2d_array(file, alt_tensor_size)[:, 1:] if alt_tensor_size > 0 else None
+            # the ref reads and then the alt reads, one per line, parsed at once.  Their first column, the read group
+            # index, isn't used.
+            reads_re = read_2d_array(file, ref_tensor_size + alt_tensor_size)
 
-            # consume normal reads from the file even though we don't use them;
-            # in the future if the model changes to use normal reads, not just
-            # read counts, here is where we would read them with
-            # normal_ref_tensor = read_2d_tensor(file, normal_ref_tensor_size) etc.
+            # the normal reads aren't used, only their counts
             for _ in range(normal_ref_tensor_size + normal_alt_tensor_size):
                 next(file)
 
@@ -257,7 +250,7 @@ def read_raw_unnormalized_data(
             # this is -log10ToLog(nalod) - log(normalDepth + 1)
             normal_seq_error_log_lk = read_float(file.readline())
 
-            if alt_tensor_size > 0 and passes_label_filter:
+            if alt_tensor_size > 0:
                 datum = Datum.from_gatk(
                     label=label,
                     variant_type=Variation.get_type(ref_allele, alt_allele),
@@ -274,8 +267,8 @@ def read_raw_unnormalized_data(
                     normal_seq_error_log_lk=normal_seq_error_log_lk,
                     ref_sequence_string=ref_sequence_string,
                     gatk_info_array=gatk_info_array,
-                    ref_reads_array_re=ref_tensor,
-                    alt_reads_array_re=alt_tensor,
+                    ref_reads_array_re=reads_re[:ref_tensor_size, 1:] if ref_tensor_size > 0 else None,
+                    alt_reads_array_re=reads_re[ref_tensor_size:, 1:],
                 )
 
                 ref_count = cap_ref_count(datum.get(Data.REF_COUNT))
@@ -298,10 +291,10 @@ def make_normalized_mmap_data(
     dataset_files, sources: List[int] = None, num_processes: int = 1, seed: int = 0
 ) -> MemoryMappedData:
     """
-    given unnormalized plain text dataset files from Mutect2, normalize data and save as tarfile of memory mapped numpy arrays
+    The data with alt reads of unnormalized plain text dataset files from Mutect2, normalized into memory-mapped arrays,
+    which save_to_tarfile saves.  In addition to quantile-normalizing the reads it replaces the info with new features.
 
-    In addition to quantile-normalizing read tensors it also enlarges the info tensors
-    :param dataset_files:
+    :param dataset_files: the plain text files, whose data are taken in order
     :param sources if None, source is set to 0; if singleton list, all files are given that source; otherwise one source per file
     :param num_processes: the number of processes that read and normalize chunks of the data at once
     :param seed: chunk n is normalized with seed + n, so that the data don't depend on the number of processes
@@ -503,8 +496,10 @@ def tokens_to_array(tokens) -> np.ndarray:
     The numbers of a list of strings, or of a list of lists of strings with as many in each, clipped to
     [-MAX_VALUE, MAX_VALUE].  NaN becomes MAX_VALUE, as it did when each number was clipped with Python's min and max.
     """
+    # np.nan_to_num checks for infinities too, which the clipping handles, and took a third of the time for each line
     values = np.array(tokens, dtype=np.float64)
-    return np.clip(np.nan_to_num(values, nan=MAX_VALUE), -MAX_VALUE, MAX_VALUE).astype(FLOAT_DTYPE)
+    values[np.isnan(values)] = MAX_VALUE
+    return np.clip(values, -MAX_VALUE, MAX_VALUE, out=values).astype(FLOAT_DTYPE)
 
 
 def line_to_array(line: str) -> np.ndarray:
