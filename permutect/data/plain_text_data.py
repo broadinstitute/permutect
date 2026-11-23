@@ -39,7 +39,6 @@ import math
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
-from typing import Generator
 from typing import Iterable
 from typing import Iterator
 from typing import List
@@ -55,7 +54,6 @@ from permutect.data.datum import FLOAT_DTYPE
 from permutect.data.datum import INTEGER_DTYPE
 from permutect.data.datum import NUMBER_OF_BYTES_IN_PACKED_READ
 from permutect.data.datum import Data
-from permutect.data.datum import Datum
 from permutect.data.datum import gatk_variant_features
 from permutect.data.datum import get_data_field
 from permutect.data.datum import set_data_field_column
@@ -207,10 +205,10 @@ def normalized_in_order(chunks: list[PlainTextChunk], num_processes: int) -> Ite
 
 def read_raw_stacked_data(segments: Iterable[PlainTextSegment], generator: torch.Generator) -> StackedData:
     """
-    The data of segments of plain text dataset files, in order: StackedData.of the data that read_raw_unnormalized_data
-    gives, but several times faster.  Rather than making a Datum of each datum, it collects the lines of all the data
-    and converts their numbers at once.  The reads beyond the caps on ref and alt counts are dropped as
-    copy_with_downsampled_reads drops them, drawing from the generator in the same order.
+    The data with alt reads of segments of plain text dataset files, in order.  Rather than making a Datum of each
+    datum, it collects the lines of all the data and converts their numbers at once.  A datum with more ref or alt reads
+    than the caps on ref and alt counts keeps a random choice of its ref reads and of its alt reads, drawn from the
+    generator.
     """
     records, read_lines = [], []
     for segment in segments:
@@ -237,8 +235,8 @@ def read_raw_stacked_data(segments: Iterable[PlainTextSegment], generator: torch
     variants = [variant_columns(line, ref_sequence) for line, ref_sequence in zip(variant_lines, ref_sequences)]
     contigs, positions, variant_types, str_info, haplotypes, ref_base5s, alt_base5s = zip(*variants)
 
-    # each datum's reads, or, for those with more ref or alt reads than the caps, the ones copy_with_downsampled_reads
-    # chooses.  The rows of the reads of data in between, which are all kept, are kept in runs.
+    # each datum's reads, or, for those with more ref or alt reads than the caps, a random choice of its ref reads and
+    # of its alt reads.  The rows of the reads of data in between, which are all kept, are kept in runs.
     kept_ref_counts, kept_alt_counts = [cap_ref_count(n) for n in ref_counts], [cap_alt_count(n) for n in alt_counts]
     kept_rows, read_start, all_kept_from = [], 0, 0
     for ref_count, alt_count, kept_ref_count, kept_alt_count in zip(
@@ -254,12 +252,13 @@ def read_raw_stacked_data(segments: Iterable[PlainTextSegment], generator: torch
     # the first column, the read group index, isn't used
     reads_re = lines_to_array(read_lines)[np.concatenate(kept_rows), 1:]
 
-    # the STR info follows GATK's info, as Datum.from_gatk appends it
+    # the STR info follows GATK's info
     info_ve = np.hstack((lines_to_array(info_lines), np.vstack(str_info)))
     num_data, haplotypes_vh = len(records), np.vstack(haplotypes)
     int_array_ve = np.zeros((num_data, Data.NUM_SCALAR_INT_ELEMENTS + haplotypes_vh.shape[1]), dtype=INTEGER_DTYPE)
     int_array_ve[:, Data.HAPLOTYPES_START_IDX :] = haplotypes_vh
-    # the float fields that GATK doesn't give are NaN, as in Datum.from_gatk
+    # the float fields that GATK doesn't give, such as the allele frequencies and the read orientation counts, are NaN
+    # until they are known
     float_array_ve = np.full((num_data, Data.NUM_SCALAR_FLOAT_ELEMENTS + info_ve.shape[1]), np.nan, dtype=FLOAT_DTYPE)
     float_array_ve[:, Data.INFO_START_IDX :] = info_ve
 
@@ -300,75 +299,6 @@ def variant_columns(variant_line: str, ref_sequence: str) -> tuple:
     ref_allele, alt_allele = mutation.strip().split("->")
     features = gatk_variant_features(ref_sequence, ref_allele, alt_allele)
     return contig, position, Variation.get_type(ref_allele, alt_allele), *features
-
-
-def read_raw_unnormalized_data(
-    dataset_file, source: int = 0, start: int = 0, generator: torch.Generator = None
-) -> Generator[Datum, None, None]:
-    """
-    generator that yields the data with alt reads of a plain text dataset file, starting at a byte offset, one Datum at a
-    time.  read_raw_stacked_data reads data much faster.
-
-    :param generator: the torch random number generator for downsampling reads beyond the caps on ref and alt counts
-    """
-    with open(dataset_file, "rb") as binary_file:
-        binary_file.seek(start)
-        file = io.TextIOWrapper(binary_file)
-        while label_str := file.readline().strip():
-            label = Label[label_str]
-
-            # contig:position,ref->alt
-            variant_line = file.readline().strip()
-            locus, mutation = variant_line.split(",")
-            contig, position = map(int, locus.split(":"))  # contig is an integer *index* from a sequence dictionary
-            ref_allele, alt_allele = mutation.strip().split("->")
-
-            ref_sequence_string = file.readline().strip()
-            gatk_info_array = line_to_array(file.readline())
-            ref_tensor_size, alt_tensor_size, normal_ref_tensor_size, normal_alt_tensor_size = map(
-                int, file.readline().strip().split()
-            )
-
-            # the ref reads and then the alt reads, one per line, parsed at once.  Their first column, the read group
-            # index, isn't used.
-            reads_re = read_2d_array(file, ref_tensor_size + alt_tensor_size)
-
-            # the normal reads aren't used, only their counts
-            for _ in range(normal_ref_tensor_size + normal_alt_tensor_size):
-                next(file)
-
-            original_depth, original_alt_count, original_normal_depth, original_normal_alt_count = read_integers(
-                file.readline()
-            )
-            # this is -log10ToLog(tlod) - log(tumorDepth + 1);
-            seq_error_log_lk = read_float(file.readline())
-            # this is -log10ToLog(nalod) - log(normalDepth + 1)
-            normal_seq_error_log_lk = read_float(file.readline())
-
-            if alt_tensor_size > 0:
-                datum = Datum.from_gatk(
-                    label=label,
-                    variant_type=Variation.get_type(ref_allele, alt_allele),
-                    source=source,
-                    original_depth=original_depth,
-                    original_alt_count=original_alt_count,
-                    original_normal_depth=original_normal_depth,
-                    original_normal_alt_count=original_normal_alt_count,
-                    contig=contig,
-                    position=position,
-                    ref_allele=ref_allele,
-                    alt_allele=alt_allele,
-                    seq_error_log_lk=seq_error_log_lk,
-                    normal_seq_error_log_lk=normal_seq_error_log_lk,
-                    ref_sequence_string=ref_sequence_string,
-                    gatk_info_array=gatk_info_array,
-                    ref_reads_array_re=reads_re[:ref_tensor_size, 1:] if ref_tensor_size > 0 else None,
-                    alt_reads_array_re=reads_re[ref_tensor_size:, 1:],
-                )
-
-                ref_count = cap_ref_count(datum.get(Data.REF_COUNT))
-                alt_count = cap_alt_count(datum.get(Data.ALT_COUNT))
-                yield datum.copy_with_downsampled_reads(ref_count, alt_count, generator)
 
 
 def make_read_quantile_transform(raw: StackedData, random_state: int = None):
@@ -598,34 +528,12 @@ def clipped(values: np.ndarray) -> np.ndarray:
     return np.clip(values, -MAX_VALUE, MAX_VALUE, out=values).astype(FLOAT_DTYPE)
 
 
-def tokens_to_array(tokens) -> np.ndarray:
-    """
-    The numbers of a list of strings, or of a list of lists of strings with as many in each, as clipped gives them
-    """
-    return clipped(np.array(tokens, dtype=np.float64))
-
-
 def lines_to_array(lines: list[str]) -> np.ndarray:
     """
-    The numbers of lines with as many in each, as a 2D array with a row for each line, as tokens_to_array gives them.
-    np.loadtxt parses each number as Python's float does, but several times faster.
+    The numbers of lines with as many in each, as a 2D array with a row for each line, as clipped gives them.  np.loadtxt
+    parses each number as Python's float does, but several times faster.
     """
     return clipped(np.loadtxt(lines, dtype=np.float64, ndmin=2, comments=None))
-
-
-def line_to_array(line: str) -> np.ndarray:
-    return tokens_to_array(line.split())
-
-
-def read_2d_array(file, num_lines: int) -> np.ndarray:
-    if num_lines == 0:
-        return None
-    # numpy parses all the lines at once, rather than each number in Python
-    return tokens_to_array([file.readline().split() for _ in range(num_lines)])
-
-
-def read_integers(line: str):
-    return map(int, line.strip().split())
 
 
 def read_float(line: str):

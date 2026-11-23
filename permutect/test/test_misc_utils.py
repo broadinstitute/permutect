@@ -15,9 +15,12 @@ from permutect.architecture.spectra.posterior_model_spectra import PosteriorMode
 from permutect.data.batch import BatchIndexedTensor
 from permutect.data.datum import DEFAULT_CPU_FLOAT
 from permutect.data.datum import DEFAULT_GPU_FLOAT
+from permutect.data.datum import FLOAT_DTYPE
+from permutect.data.datum import INTEGER_DTYPE
 from permutect.data.datum import RAW_READS_ARRAY_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
+from permutect.data.datum import gatk_variant_features
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.metrics.loss_metrics import LossMetrics
@@ -70,28 +73,35 @@ def read_variants(tmp_path, *lines: str) -> list[cyvcf2.Variant]:
 
 
 def make_datum(contig: int, position: int, ref: str, alt: str) -> Datum:
+    """
+    An unlabeled datum with three alt reads, as preprocessing makes it from GATK's plain text data, with the float fields
+    that GATK doesn't give NaN
+    """
     # the ref allele goes in the middle of an odd-length reference context, as in GATK data
     flank = "GATCCTAGGATCCTAGGATC"
     ref_sequence = flank + ref + flank[: len(flank) + 1 - len(ref)]
-    return Datum.from_gatk(
-        label=Label.UNLABELED,
-        variant_type=Variation.get_type(ref, alt),
-        source=0,
-        original_depth=10,
-        original_alt_count=3,
-        original_normal_depth=0,
-        original_normal_alt_count=0,
-        contig=contig,
-        position=position,
-        ref_allele=ref,
-        alt_allele=alt,
-        seq_error_log_lk=0.0,
-        normal_seq_error_log_lk=0.0,
-        ref_sequence_string=ref_sequence,
-        gatk_info_array=np.zeros(3),
-        ref_reads_array_re=None,
-        alt_reads_array_re=np.zeros((3, 5), dtype=RAW_READS_ARRAY_DTYPE),
-    )
+    str_info, haplotypes, ref_base5, alt_base5 = gatk_variant_features(ref_sequence, ref, alt)
+    int_array = np.zeros(Data.NUM_SCALAR_INT_ELEMENTS + len(haplotypes), dtype=INTEGER_DTYPE)
+    int_array[Data.HAPLOTYPES_START_IDX :] = haplotypes
+    float_array = np.full(Data.NUM_SCALAR_FLOAT_ELEMENTS + 3 + len(str_info), np.nan, dtype=FLOAT_DTYPE)
+    float_array[Data.INFO_START_IDX :] = np.hstack([np.zeros(3), str_info])
+    datum = Datum(int_array, float_array, reads_re=np.zeros((3, 5), dtype=RAW_READS_ARRAY_DTYPE))
+    fields = {
+        Data.ALT_COUNT: 3,
+        Data.LABEL: Label.UNLABELED,
+        Data.VARIANT_TYPE: Variation.get_type(ref, alt),
+        Data.ORIGINAL_DEPTH: 10,
+        Data.ORIGINAL_ALT_COUNT: 3,
+        Data.CONTIG: contig,
+        Data.POSITION: position,
+        Data.REF_ALLELE_AS_BASE_5: ref_base5,
+        Data.ALT_ALLELE_AS_BASE_5: alt_base5,
+        Data.SEQ_ERROR_LOG_LK: 0.0,
+        Data.NORMAL_SEQ_ERROR_LOG_LK: 0.0,
+    }
+    for field, value in fields.items():
+        datum.set(field, value)
+    return datum
 
 
 def test_timer_prints_message_on_creation(capsys):
