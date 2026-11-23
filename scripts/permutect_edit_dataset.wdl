@@ -44,9 +44,8 @@ task EditDataset {
     # the input datasets and the edited dataset, which is no bigger than them
     Int default_disk_space = ceil(2 * size(train_tar, "GB")) + 10
 
-    # Mem is in units of GB but our command and memory runtime values are in MB
+    # Mem is in units of GB but our memory runtime value is in MB
     Int machine_mem = if defined(mem) then mem * 1000 else 16000
-    Int command_mem = machine_mem - 500
 
     command <<<
         set -e
