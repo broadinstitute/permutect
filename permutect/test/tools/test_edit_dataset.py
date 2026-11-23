@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from permutect import constants
+from permutect.data import memory_mapped_data as memory_mapped_data_module
 from permutect.data.datum import FLOAT_DTYPE
 from permutect.data.datum import Data
 from permutect.data.memory_mapped_data import MemoryMappedData
@@ -81,3 +82,29 @@ def test_float64_float_arrays_become_float16(tmp_path):
     assert edited.float_mmap.tobytes() == floats_ve.astype(FLOAT_DTYPE).tobytes()
     assert edited.int_mmap.tobytes() == stacked.int_array_ve.tobytes()
     assert edited.reads_mmap.tobytes() == stacked.reads_re.tobytes()
+
+
+def test_edited_data_are_written_straight_into_the_tarfile(tmp_path, monkeypatch):
+    # rather than into temporary memory maps first, which doubled the bytes written
+    labels = [Label.ARTIFACT, Label.VARIANT, Label.UNLABELED] * 3
+    data = [make_datum(index, num_reads=index % 4, label=label) for index, label in enumerate(labels)]
+    tarfile, num_reads = str(tmp_path / "dataset.tar"), sum(len(datum.reads_re) for datum in data)
+    MemoryMappedData.from_generator(data, len(data), num_reads).save_to_tarfile(tarfile)
+
+    def no_temporary_files(*args, **kwargs):
+        raise AssertionError("edit_dataset made a temporary file")
+
+    monkeypatch.setattr(memory_mapped_data_module, "NamedTemporaryFile", no_temporary_files)
+    edited = run_edit_dataset(tmp_path, [tarfile], EditType.REMOVE_ARTIFACTS)
+    assert [datum.get(Data.POSITION) for datum in edited.generate()] == [1, 2, 4, 5, 7, 8]
+
+
+def test_datasets_must_have_the_same_widths(tmp_path):
+    tarfiles = []
+    for n, num_info in enumerate((3, 4)):
+        stacked = StackedData.of([make_datum(index, num_reads=2) for index in range(3)])
+        floats_ve = np.zeros((3, Data.NUM_SCALAR_FLOAT_ELEMENTS + num_info), dtype=FLOAT_DTYPE)
+        tarfiles.append(str(tmp_path / f"dataset{n}.tar"))
+        MemoryMappedData(stacked.int_array_ve, floats_ve, 3, stacked.reads_re, 6).save_to_tarfile(tarfiles[-1])
+    with pytest.raises(ValueError):
+        run_edit_dataset(tmp_path, tarfiles, EditType.KEEP_EVERYTHING)

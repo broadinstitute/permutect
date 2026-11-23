@@ -93,26 +93,85 @@ class BytesChunksReader(io.RawIOBase):
 
 
 def add_to_tarfile(tar: tarfile.TarFile, name: str, chunks, size: int):
-    # the member's size precedes its bytes in the tarfile
+    """
+    Add a member of the bytes of an iterable of byte strings to a tarfile.  Its size precedes its bytes in the tarfile,
+    so more bytes than the size are an error, as are fewer, for which tarfile raises an error.
+    """
     info = tarfile.TarInfo(name)
     info.size, info.mtime, info.mode = size, int(time.time()), 0o644
-    tar.addfile(info, io.BufferedReader(BytesChunksReader(chunks)))
+    file = io.BufferedReader(BytesChunksReader(chunks))
+    tar.addfile(info, file)
+    if file.read(1):
+        raise ValueError(f"{name} has more bytes than its size of {size}.")
 
 
-def add_array_to_tarfile(tar: tarfile.TarFile, name: str, array: np.ndarray):
+class ArrayRows(NamedTuple):
     """
-    Write an array into a tarfile as a .npy file, as np.save writes it, copying a block of its rows into memory at a time
+    An array to write into a tarfile a block of rows at a time, so that it needn't be in memory or a file all at once:
+    its dtype, number of rows and shape of each row, and an iterable of blocks of its rows
     """
+
+    dtype: np.dtype
+    num_rows: int
+    row_shape: tuple
+    blocks: Iterable[np.ndarray]
+
+    @classmethod
+    def of(cls, array: np.ndarray) -> ArrayRows:
+        """the rows of an array, such as a memory map, copied into memory a block at a time"""
+        rows_per_block = max(1, NPY_WRITE_BLOCK_BYTES // max(1, array[:1].nbytes))
+        blocks = (array[start : start + rows_per_block] for start in range(0, len(array), rows_per_block))
+        return cls(array.dtype, len(array), array.shape[1:], blocks)
+
+
+def add_array_to_tarfile(tar: tarfile.TarFile, name: str, rows: ArrayRows):
+    """
+    Write an array into a tarfile as a .npy file, as np.save writes it, a block of its rows at a time
+    """
+    shape = (rows.num_rows, *rows.row_shape)
     header = io.BytesIO()
-    header_data = np.lib.format.header_data_from_array_1_0(array)
+    header_data = {"descr": np.lib.format.dtype_to_descr(np.dtype(rows.dtype)), "fortran_order": False, "shape": shape}
     try:
         np.lib.format.write_array_header_1_0(header, header_data)
     except ValueError:  # as np.save does for a header too long for version 1.0
         np.lib.format.write_array_header_2_0(header, header_data)
 
-    rows_per_block = max(1, NPY_WRITE_BLOCK_BYTES // max(1, array[:1].nbytes))
-    blocks = (array[start : start + rows_per_block].tobytes() for start in range(0, len(array), rows_per_block))
-    add_to_tarfile(tar, name, itertools.chain([header.getvalue()], blocks), size=len(header.getvalue()) + array.nbytes)
+    def block_bytes(block: np.ndarray) -> bytes:
+        if block.dtype != rows.dtype or block.shape[1:] != tuple(rows.row_shape):
+            raise ValueError(f"{name} has a block of {block.dtype} rows of shape {block.shape[1:]}.")
+        return block.tobytes()
+
+    size = len(header.getvalue()) + math.prod(shape) * np.dtype(rows.dtype).itemsize
+    add_to_tarfile(tar, name, itertools.chain([header.getvalue()], map(block_bytes, rows.blocks)), size=size)
+
+
+def write_data_tarfile(output_tarfile, int_rows: ArrayRows, float_rows: ArrayRows, reads_rows: ArrayRows = None):
+    """
+    Write data into a tarfile that MemoryMappedData.load_from_tarfile loads, a block of rows of each array at a time:
+    the rows of their int arrays, of their float arrays, and of their reads, if they have any
+    """
+    # num_data, data dimension; num_reads, reads dimension; the layout of the data arrays
+    metadata = np.array(
+        [
+            int_rows.num_rows,
+            int_rows.row_shape[-1],
+            float_rows.row_shape[-1],
+            0 if reads_rows is None else reads_rows.num_rows,
+            0 if reads_rows is None else reads_rows.row_shape[-1],
+            DATA_LAYOUT_VERSION,
+        ],
+        dtype=np.uint32,
+    )
+    metadata_bytes = io.BytesIO()
+    torch.save(metadata, metadata_bytes)
+
+    with tarfile.open(output_tarfile, "w") as output_tar:
+        metadata_name = "metadata" + SUFFIX_FOR_METADATA
+        add_to_tarfile(output_tar, metadata_name, [metadata_bytes.getvalue()], size=len(metadata_bytes.getvalue()))
+        add_array_to_tarfile(output_tar, "int_array" + SUFFIX_FOR_INT_MMAP, int_rows)
+        add_array_to_tarfile(output_tar, "float_array" + SUFFIX_FOR_FLOAT_MMAP, float_rows)
+        if reads_rows is not None:
+            add_array_to_tarfile(output_tar, "reads_array" + SUFFIX_FOR_READS_MMAP, reads_rows)
 
 
 def grown_memory_map(old_mmap, required_rows: int, estimated_rows: int, row_shape: tuple, dtype, suffix: str):
@@ -465,28 +524,8 @@ class MemoryMappedData:
             4) it's convenient to package things as a single tarfile
         Each array is written straight into the tarfile as a .npy file, without a temporary copy.
         """
-        # num_data, data dimension; num_reads, reads dimension; the layout of the data arrays
-        metadata = np.array(
-            [
-                self.num_data,
-                self.int_mmap.shape[-1],
-                self.float_mmap.shape[-1],
-                self.num_reads,
-                0 if self.reads_mmap is None else self.reads_mmap.shape[-1],
-                DATA_LAYOUT_VERSION,
-            ],
-            dtype=np.uint32,
-        )
-        metadata_bytes = io.BytesIO()
-        torch.save(metadata, metadata_bytes)
-
-        with tarfile.open(output_tarfile, "w") as output_tar:
-            metadata_name = "metadata" + SUFFIX_FOR_METADATA
-            add_to_tarfile(output_tar, metadata_name, [metadata_bytes.getvalue()], size=len(metadata_bytes.getvalue()))
-            add_array_to_tarfile(output_tar, "int_array" + SUFFIX_FOR_INT_MMAP, self.int_mmap)
-            add_array_to_tarfile(output_tar, "float_array" + SUFFIX_FOR_FLOAT_MMAP, self.float_mmap)
-            if self.reads_mmap is not None:
-                add_array_to_tarfile(output_tar, "reads_array" + SUFFIX_FOR_READS_MMAP, self.reads_mmap)
+        reads_rows = None if self.reads_mmap is None else ArrayRows.of(self.reads_mmap)
+        write_data_tarfile(output_tarfile, ArrayRows.of(self.int_mmap), ArrayRows.of(self.float_mmap), reads_rows)
 
     @classmethod
     def load_from_tarfile(cls, data_tarfile) -> MemoryMappedData:
