@@ -18,8 +18,7 @@ from permutect.data.compact_posterior_data import CompactPosteriorData
 from permutect.data.datum import Data
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.metrics.posterior_result import PosteriorResult
-from permutect.misc_utils import encode_datum
-from permutect.misc_utils import encode_variant
+from permutect.misc_utils import allele_key
 from permutect.misc_utils import get_tumor_sample_index
 from permutect.misc_utils import str_repeat_count_change
 from permutect.misc_utils import str_repeat_lengths
@@ -356,7 +355,7 @@ def test_annotated_alt_orientation_counts_come_from_the_vcf():
     vcf = cyvcf2.VCF(MUTECT2_SEQC2_WES_VCF)
     tumor_sample_index = get_tumor_sample_index(vcf)
     vcf_counts = {
-        encode_variant(v): tumor_alt_orientation_counts(v, tumor_sample_index)
+        (v.CHROM, v.POS, allele_key(v.REF, v.ALT[0])): tumor_alt_orientation_counts(v, tumor_sample_index)
         + tumor_ref_orientation_counts(v, tumor_sample_index)
         for v in vcf
     }
@@ -364,7 +363,16 @@ def test_annotated_alt_orientation_counts_come_from_the_vcf():
     assert data
     fields = (Data.ALT_F1R2_COUNT, Data.ALT_F2R1_COUNT, Data.REF_F1R2_COUNT, Data.REF_F2R1_COUNT)
     counts = np.array([[datum.get(field) for field in fields] for datum in data])
-    expected_counts = np.array([vcf_counts[encode_datum(datum, contig_names)] for datum in data])
+    expected_counts = np.array(
+        [
+            vcf_counts[
+                contig_names[datum.get(Data.CONTIG)],
+                datum.get(Data.POSITION),
+                allele_key(datum.get_ref_allele(), datum.get_alt_allele()),
+            ]
+            for datum in data
+        ]
+    )
     assert np.array_equal(counts, expected_counts, equal_nan=True)
     # Mutect2 annotates every variant, and most have alt reads of both orientations
     assert not np.isnan(counts).any() and np.mean(counts.min(axis=1) > 0) > 0.5

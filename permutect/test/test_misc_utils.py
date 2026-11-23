@@ -1,4 +1,3 @@
-import itertools
 import math
 import time
 from types import SimpleNamespace
@@ -27,9 +26,6 @@ from permutect.metrics.loss_metrics import LossMetrics
 from permutect.misc_utils import Timer
 from permutect.misc_utils import VcfEditor
 from permutect.misc_utils import allele_key
-from permutect.misc_utils import encode
-from permutect.misc_utils import encode_datum
-from permutect.misc_utils import encode_variant
 from permutect.misc_utils import float_dtype
 from permutect.misc_utils import get_first_numeric_element
 from permutect.misc_utils import get_tumor_sample_index
@@ -168,100 +164,28 @@ def test_get_first_numeric_element_edge_cases(tmp_path):
         get_first_numeric_element(missing, "POPAF")
 
 
-def test_encode():
-    assert encode("chr1", 100, "A", "T") == "chr1:100:A:T"
-    assert encode("chr1", 100, "ACG", "A") == "chr1:100:ACG:A"
-    assert encode("chr1", 100, "A", "AGT") == "chr1:100:A:AGT"
-    assert encode("chrX", 123456789, "C", "G") == "chrX:123456789:C:G"
+def test_allele_keys():
+    # the ref allele distinguishes variants at one position with the same alt allele, eg from a split multiallelic site
+    assert allele_key("AT", "A") != allele_key("ATT", "A") and allele_key("A", "AT") != allele_key("AC", "AT")
 
+    # non-minimal representations have the keys of minimal ones, and trimming keeps the anchor base of an indel
+    assert allele_key("CGG", "TGG") == allele_key("C", "T") and allele_key("ACGT", "AT") == allele_key("ACG", "A")
+    assert allele_key("CTT", "CT") == allele_key("CT", "C") != allele_key("C", "C")
 
-def test_encode_distinguishes_ref_alleles():
-    # different variants at one position with the same alt allele, eg from a split multiallelic site
-    assert encode("1", 100, "AT", "A") != encode("1", 100, "ATT", "A")
-    assert encode("1", 100, "A", "AT") != encode("1", 100, "AC", "AT")
-
-
-def test_encode_trims_alleles():
-    # non-minimal representations encode the same as minimal ones
-    assert encode("chr1", 100, "CGG", "TGG") == encode("chr1", 100, "C", "T")
-    assert encode("chr1", 100, "ACGT", "AT") == encode("chr1", 100, "ACG", "A")
-    assert encode("chr1", 100, "AT", "ACGT") == encode("chr1", 100, "A", "ACG")
-
-    # trimming stops at one base, so the anchor base of an indel is kept
-    assert encode("chr1", 100, "CTT", "CT") == "chr1:100:CT:C"
-
-
-def test_encode_truncates_long_alleles():
     # alleles of 13 bases are kept whole, and longer ones are truncated to 13 bases
     insertion_13 = "A" + "C" * 12
-    assert encode("chr1", 100, "A", insertion_13) == "chr1:100:A:" + insertion_13
-    assert encode("chr1", 100, "A", insertion_13 + "G") == "chr1:100:A:" + insertion_13
-
+    assert allele_key("A", insertion_13 + "G") == allele_key("A", insertion_13) != allele_key("A", insertion_13[:-1])
     long_insertion = "A" + "CGT" * 10
-    assert encode("chr1", 100, "A", long_insertion) == "chr1:100:A:" + long_insertion[:13]
-    assert encode("chr1", 100, long_insertion, "A") == "chr1:100:" + long_insertion[:13] + ":A"
+    assert allele_key("A", long_insertion) == allele_key("A", long_insertion[:13] + "A")
+    assert allele_key(long_insertion, "A") == allele_key(long_insertion[:13] + "A", "A")
 
-    # trimming happens before truncation.  Truncating first would give CAAAAAAAAAAAG, which trimming against the
-    # ref allele CG would then shorten to CAAAAAAAAAAA
-    assert encode("chr1", 100, "CG", "C" + "A" * 11 + "GTG") == "chr1:100:C:C" + "A" * 11 + "G"
+    # trimming comes before truncation.  Truncating first would give CAAAAAAAAAAAG, which trimming against the ref allele
+    # CG would then shorten to CAAAAAAAAAAA.
+    assert allele_key("CG", "C" + "A" * 11 + "GTG") == allele_key("C", "C" + "A" * 11 + "G")
+    assert allele_key("CG", "C" + "A" * 11 + "GTG") != allele_key("C", "C" + "A" * 11)
 
-
-def test_encode_datum():
-    contig_names = {0: "chr1", 1: "chrX"}
-    assert encode_datum(make_datum(0, 100, "C", "T"), contig_names) == "chr1:100:C:T"
-    assert encode_datum(make_datum(1, 100, "C", "T"), contig_names) == "chrX:100:C:T"
-    assert encode_datum(make_datum(0, 200, "CAG", "C"), contig_names) == "chr1:200:CAG:C"
-    assert encode_datum(make_datum(0, 300, "C", "CTT"), contig_names) == "chr1:300:C:CTT"
-
-
-def test_encode_datum_edge_cases():
-    contig_names = {0: "chr1"}
-
-    # the datum stores positions as two 16-bit integers, so check positions that need the high bits
-    assert encode_datum(make_datum(0, 2**16 + 1, "C", "T"), contig_names) == f"chr1:{2**16 + 1}:C:T"
-    assert encode_datum(make_datum(0, 4_000_000_000, "C", "T"), contig_names) == "chr1:4000000000:C:T"
-
-    # non-minimal and long alleles
-    assert encode_datum(make_datum(0, 100, "CGG", "TGG"), contig_names) == "chr1:100:C:T"
-    long_insertion = "C" + "AGT" * 6
-    assert encode_datum(make_datum(0, 100, "C", long_insertion), contig_names) == "chr1:100:C:" + long_insertion[:13]
-
-    # a contig index missing from the map
-    with pytest.raises(KeyError):
-        encode_datum(make_datum(5, 100, "C", "T"), contig_names)
-
-
-def test_encode_variant(tmp_path):
-    snv, deletion, insertion = read_variants(
-        tmp_path,
-        vcf_line("A", "T", pos=100),
-        vcf_line("ACG", "A", pos=200),
-        vcf_line("C", "CTT", pos=300, chrom="chrX"),
-    )
-    # the one-based VCF position, not cyvcf2's zero-based start
-    assert encode_variant(snv) == "chr1:100:A:T"
-    assert encode_variant(deletion) == "chr1:200:ACG:A"
-    assert encode_variant(insertion) == "chrX:300:C:CTT"
-
-
-def test_encode_variant_edge_cases(tmp_path):
-    long_insertion = "A" + "CGT" * 10
-    multiallelic, non_minimal, long, first_base = read_variants(
-        tmp_path,
-        vcf_line("G", "C,T", pos=100),
-        vcf_line("CGG", "TGG", pos=200),
-        vcf_line("A", long_insertion, pos=300),
-        vcf_line("A", "T", pos=1),
-    )
-    # only the first alt allele is encoded
-    assert encode_variant(multiallelic) == "chr1:100:G:C"
-
-    # alleles are trimmed and truncated
-    assert encode_variant(non_minimal) == "chr1:200:C:T"
-    assert encode_variant(long) == "chr1:300:A:" + long_insertion[:13]
-
-    # the first base of a contig
-    assert encode_variant(first_base) == "chr1:1:A:T"
+    # alleles with a base other than A, C, G or T, which no datum has, have no key
+    assert allele_key("N", "A") is None and allele_key("A", "AN") is None
 
 
 # variants whose records in a VCF and data in a dataset must match, in the order of a sorted VCF
@@ -282,28 +206,10 @@ MATCHED_VARIANTS = [
 ]
 
 
-def test_vcf_and_dataset_encodings_agree(tmp_path):
-    # filter_variants and memory_mapped_data match dataset variants to VCF variants by encoding, so these must agree
-    contig_names = {0: "chr1", 1: "chrX"}
-    contig_indices = {name: index for index, name in contig_names.items()}
-
-    vcf_variants = read_variants(
-        tmp_path, *[vcf_line(ref, alt, pos=pos, chrom=chrom) for chrom, pos, ref, alt in MATCHED_VARIANTS]
-    )
-    assert len(vcf_variants) == len(MATCHED_VARIANTS)
-    encodings = []
-    for (chrom, pos, ref, alt), v in zip(MATCHED_VARIANTS, vcf_variants):
-        datum = make_datum(contig_indices[chrom], pos, ref, alt)
-        assert encode_variant(v) == encode_datum(datum, contig_names)
-        encodings.append(encode_datum(datum, contig_names))
-
-    # different variants must not share an encoding, or one's allele frequency, filters and posterior go to the other
-    assert len(set(encodings)) == len(MATCHED_VARIANTS)
-
-
 def test_vcf_and_dataset_keys_agree(tmp_path):
-    # filter_variants matches the results of dataset variants to VCF variants by position and allele keys, so these must
-    # agree like the encodings, distinct variants must have distinct keys, and the keys must sort like the VCF
+    # filter_variants and memory_mapped_data match dataset variants to VCF variants by position and allele keys, so these
+    # must agree, distinct variants must have distinct keys, or one's allele frequency, filters and posterior go to the
+    # other, and the keys must sort like the VCF
     contig_names = {0: "chr1", 1: "chrX"}
     contig_indices = {name: index for index, name in contig_names.items()}
     vcf_variants = read_variants(
@@ -319,17 +225,6 @@ def test_vcf_and_dataset_keys_agree(tmp_path):
         keys.append(vcf_key)
     assert len(set(keys)) == len(MATCHED_VARIANTS)
     assert [key for key, _ in keys] == sorted(key for key, _ in keys)
-
-
-def test_allele_keys_match_like_encodings():
-    # two variants have the same allele key if and only if encode gives them the same alleles
-    alleles = [(ref, alt) for _, _, ref, alt in MATCHED_VARIANTS] + [("A", "AC" * 7), ("A", "AC" * 8), ("ATT", "AT")]
-    for (ref1, alt1), (ref2, alt2) in itertools.product(alleles, repeat=2):
-        same_encoding = encode("chr1", 1, ref1, alt1) == encode("chr1", 1, ref2, alt2)
-        assert (allele_key(ref1, alt1) == allele_key(ref2, alt2)) == same_encoding, (ref1, alt1, ref2, alt2)
-
-    # alleles with a base other than A, C, G or T, which no datum has, have no key
-    assert allele_key("N", "A") is None and allele_key("A", "AN") is None
 
 
 def test_vcf_contig_ranks(tmp_path):
