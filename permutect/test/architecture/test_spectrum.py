@@ -5,7 +5,6 @@ import torch
 from matplotlib import pyplot as plt
 
 from permutect.architecture.spectra.artifact_spectra import ArtifactSpectra
-from permutect.architecture.spectra.overdispersed_binomial_mixture import OverdispersedBinomialMixture
 from permutect.architecture.spectra.somatic_spectrum import SomaticSpectrum
 from permutect.architecture.spectra.spectrum import allele_fraction_grid
 from permutect.architecture.spectra.spectrum import smeared_densities
@@ -17,8 +16,6 @@ matplotlib.use("Agg")
 SPECTRA = {
     "somatic": (lambda: SomaticSpectrum(num_components=5), ()),
     "artifact": (lambda: ArtifactSpectra(), (Variation.SNV, 30)),
-    "beta binomial mixture": (lambda: OverdispersedBinomialMixture(num_components=3), (Variation.INSERTION, 30)),
-    "binomial mixture": (lambda: OverdispersedBinomialMixture(num_components=3, mode="none"), (Variation.SNV, 30)),
 }
 
 

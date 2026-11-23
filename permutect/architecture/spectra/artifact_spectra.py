@@ -71,7 +71,6 @@ class ArtifactSpectra(Spectrum):
         densities_f = torch.exp(Beta(alpha_1, beta_1).log_prob(fractions_f))
         return fractions_f, densities_f
 
-    # this works for ArtifactSpectra and OverdispersedBinomialMixture
     def plot_artifact_spectra(self, depth: int = None):
         # plot AF spectra in two-column grid with as many rows as needed
         art_spectra_fig, art_spectra_axs = plt.subplots(math.ceil(len(Variation) / 2), 2, sharex="all", sharey="all")

@@ -40,24 +40,6 @@ def beta_binomial_log_lk(n, k, alpha, beta):
     )
 
 
-def gamma_binomial_log_lk(n, k, alpha, beta):
-    # log likelihood of the gamma binomial distribution
-    # same as the beta binomial, but with a gamma distribution overdispersion for the binomial distribution rather
-    # than a beta distribution
-    # WARNING: the approximations here only work if Gamma(f|alpha, beta) has very little density for f > 1
-    # see pp 2 - 4 of my notebook
-    alpha_tilde = (k + 1) * (n + 2) / (n - k + 1)
-    beta_tilde = (n + 1) * (n + 2) / (n - k + 1)
-
-    exponent_term = (
-        alpha_tilde * torch.log(beta_tilde)
-        + alpha * torch.log(beta)
-        - (alpha + alpha_tilde - 1) * torch.log(beta + beta_tilde)
-    )
-    gamma_term = torch.lgamma(alpha + alpha_tilde - 1) - torch.lgamma(alpha) - torch.lgamma(alpha_tilde)
-    return exponent_term + gamma_term - torch.log(n + 1)
-
-
 def _incomplete_beta_coeff(n: int, a: Tensor, b: Tensor, x: Tensor):
     """
     helper function for the incomplete beta continued fraction expansion
