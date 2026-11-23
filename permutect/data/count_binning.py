@@ -90,10 +90,6 @@ def count_from_alt_bin_index(count_bin_index):
     return MIN_ALT_COUNT + COUNT_BIN_SKIP * count_bin_index + (COUNT_BIN_SKIP - 1) // 2
 
 
-def round_ref_count_to_bin_center(count: int) -> int:
-    return count_from_ref_bin_index(ref_count_bin_index(count))
-
-
 def round_alt_count_to_bin_center(count: int) -> int:
     return count_from_alt_bin_index(alt_count_bin_index(count))
 

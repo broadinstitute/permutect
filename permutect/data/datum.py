@@ -224,11 +224,6 @@ class Datum:
     def get_haplotypes_array_size(self):
         return len(self.int_array) - Data.NUM_SCALAR_INT_ELEMENTS
 
-    def get_haplotypes_1d(self) -> np.ndarray:
-        # 1D array of integer array reference and alt haplotypes concatenated -- A, C, G, T, deletion = 0, 1, 2, 3, 4
-        assert len(self.int_array) > Data.NUM_SCALAR_INT_ELEMENTS, "trying to get ref seq array when none exists"
-        return self.int_array[Data.HAPLOTYPES_START_IDX :]
-
     def get_info_1d(self) -> np.ndarray:
         assert len(self.float_array) > Data.NUM_SCALAR_FLOAT_ELEMENTS, "trying to get info array when none exists"
         return self.float_array[Data.INFO_START_IDX :]
@@ -239,37 +234,17 @@ class Datum:
     def set_info_1d(self, new_info: np.ndarray):
         self.float_array = np.hstack((self.float_array[: Data.INFO_START_IDX], new_info))
 
-    def set_haplotypes_1d(self, new_haplotypes: np.ndarray):
-        self.int_array = np.hstack((self.int_array[: Data.HAPLOTYPES_START_IDX], new_haplotypes))
-
     def get_int_array(self) -> np.ndarray:
         return self.int_array
 
     def get_float_array(self) -> np.ndarray:
         return self.float_array
 
-    def get_reads_array_re(self) -> np.ndarray:
-        return self.reads_re
-
     def get_ref_reads_re(self) -> np.ndarray:
         return self.reads_re[: -self.get(Data.ALT_COUNT)]
 
     def get_alt_reads_re(self) -> np.ndarray:
         return self.reads_re[-self.get(Data.ALT_COUNT) :]
-
-    # only applies after normalization and compression
-    def get_compressed_ref_reads_re(self) -> np.ndarray:
-        assert self.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
-        return self.reads_re[: -self.get(Data.ALT_COUNT)]
-
-    # only applies after normalization and compression
-    def get_compressed_alt_reads_re(self) -> np.ndarray:
-        assert self.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
-        return self.reads_re[-self.get(Data.ALT_COUNT) :]
-
-    def get_compressed_reads_re(self) -> np.ndarray:
-        assert self.reads_re.dtype == COMPRESSED_READS_ARRAY_DTYPE
-        return self.reads_re
 
     # this is the number of read features in a PyTorch float tensor, after unpacking the compressed binaries
     def num_read_features(self) -> int:
@@ -283,6 +258,3 @@ class Datum:
             return 8 * NUMBER_OF_BYTES_IN_PACKED_READ + num_nonbinary_features
         else:
             assert False, "Unsupported data type"
-
-    def get_nbytes(self) -> int:
-        return self.int_array.nbytes + self.float_array.nbytes + self.reads_re.nbytes

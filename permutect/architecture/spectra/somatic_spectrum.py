@@ -13,9 +13,6 @@ from permutect.architecture.spectra.spectrum import smeared_densities
 from permutect.utils.stats_utils import beta_binomial_log_lk
 from permutect.utils.stats_utils import uniform_binomial_log_lk
 
-# exclude obvious germline, artifact, sequencing error etc from M step for speed
-MIN_POSTERIOR_FOR_M_STEP = 0.2
-
 
 class SomaticSpectrum(Spectrum):
     """

@@ -121,33 +121,6 @@ class RaggedSets:
     def split_in_two_by_features(self) -> tuple[ThisClass, ThisClass]:
         return self.chunk_over_features(num_chunks=2)
 
-    def softmax_within_sets(self) -> ThisClass:
-        """
-        take the softmax over the elements of each set, independently.
-
-        Conceptually this is just softmax(X_bsf, dim=-2).  However, this is impossible with our flattened representation,
-        so instead we
-        i) take the featurewise max within each set
-        ii) expand the maxes (repeat the bth maximum size[b] times)
-        iii) subtract the set maxima for numerical stability
-        iv) exponentiate
-        v) sum over the exponentiated values within each set
-        vi) expand
-        vii) divide iv) by vi)
-        :return: a RaggedSets object with the same shape, but with softmax "normalization" applied
-        """
-        maxes_bf = torch.segment_reduce(
-            self.flattened_tensor_nf, reduce="max", axis=0, lengths=self.lengths_b, unsafe=True
-        )
-        maxes_nf = self.expand_from_b_to_n(maxes_bf)
-
-        stable_nf = self.flattened_tensor_nf - maxes_nf
-        exp_nf = torch.exp(stable_nf)
-        denom_bf = torch.segment_reduce(exp_nf, reduce="sum", lengths=self.lengths_b, axis=0, unsafe=True)
-        denom_nf = self.expand_from_b_to_n(denom_bf)
-        result_nf = exp_nf / denom_nf
-        return RaggedSets(result_nf, self.lengths_b)
-
     def means_over_sets(self, regularizer_f: Tensor = None, regularizer_weight: float = 0.0001) -> Tensor:
         """
         mean element of each set, with a regularizer to handle sets with zero or few elements.  The very small default

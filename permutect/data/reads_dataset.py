@@ -27,8 +27,6 @@ from permutect.misc_utils import report_memory_usage
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
 
-WEIGHT_PSEUDOCOUNT = 10
-
 # the number of data counted at once, which bounds the memory of the copies of their columns
 COUNTING_BLOCK_SIZE = 2**18
 
@@ -40,18 +38,6 @@ def last_fold_only(num_folds: int):
 
 def all_but_last_fold(num_folds: int):
     return list(range(num_folds - 1))
-
-
-def all_but_one_fold(num_folds: int, fold_to_exclude: int):
-    return list(range(fold_to_exclude)) + list(range(fold_to_exclude + 1, num_folds))
-
-
-def all_folds(num_folds: int):
-    return list(range(num_folds))
-
-
-def ratio_with_pseudocount(a, b):
-    return (a + WEIGHT_PSEUDOCOUNT) / (b + WEIGHT_PSEUDOCOUNT)
 
 
 def count_totals_shape(num_sources: int) -> tuple[int, ...]:
@@ -147,8 +133,6 @@ class ReadsDataset(IterableDataset):
         self._num_info_features = None if first_datum is None else len(first_datum.get_info_1d())
         self._haplotypes_length = None if first_datum is None else first_datum.get_haplotypes_array_size()
 
-        self.totals_by_label_l = self.totals_slvra.get_marginal(BatchProperty.LABEL)  # totals by label
-
     def _in_folds(self, original_indices: np.ndarray) -> np.ndarray:
         return np.isin(original_indices % self._num_folds, self._folds)
 
@@ -158,9 +142,6 @@ class ReadsDataset(IterableDataset):
         num_folds consecutive data has one datum of each fold.
         """
         return (index // len(self._folds)) * self._num_folds + self._folds[index % len(self._folds)]
-
-    def totals_by_label(self):
-        return self.totals_by_label_l
 
     def num_read_features(self) -> int:
         return self._num_read_features
@@ -274,7 +255,6 @@ class ReadsDataset(IterableDataset):
                     reads_re=chunk_reads_re[chunk_read_offsets[idx] : chunk_read_offsets[idx + 1]],
                     compressed=True,
                 )
-                # assert datum.get_ref_count() + datum.get_alt_count() == len(datum.get_reads_array_re())
                 yield datum
 
             # free this chunk's arrays before the next chunk is copied into RAM, rather than only when the names are

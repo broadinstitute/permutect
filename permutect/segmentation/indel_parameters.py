@@ -28,7 +28,6 @@ from torch import nn
 # repeat classes, by the length of the repeat unit of the STR that an indel is in
 NOT_IN_STR, HOMOPOLYMER, DINUCLEOTIDE, LONGER_UNIT = 0, 1, 2, 3
 NUM_REPEAT_CLASSES = 4
-REPEAT_CLASS_NAMES = ("not in an STR", "homopolymer", "dinucleotide", "longer unit")
 
 # the defaults, by repeat class: the shortfall scale, offset and slope, and the concentration bins' upper bounds and log
 # concentrations.  Outside STRs the shortfall is 0.005 and the concentration 9.6.  In homopolymers the shortfall is 0.04

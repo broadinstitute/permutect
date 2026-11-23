@@ -124,7 +124,3 @@ def find_near_stem_loop(
     candidates = [s for s in stem_loops if s.contains_near(contig, position, dist=dist) and s.total_energy < max_energy]
     best = min(candidates, key=lambda stem_loop: stem_loop.total_energy, default=None)
     return None if best is None else (best, best.distance_to_stem(contig, position))
-
-
-def is_near_stem_loop(reference, contig: str, position: int, dist: int = 3, max_energy: float = 1.5) -> bool:
-    return find_near_stem_loop(reference, contig, position, dist=dist, max_energy=max_energy) is not None

@@ -10,6 +10,3 @@ class GradientReversal(nn.Module):
 
     def forward(self, x):
         return revgrad(x, self.alpha)
-
-    def set_alpha(self, alpha_new):
-        self.alpha = alpha_new
