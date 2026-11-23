@@ -11,11 +11,9 @@ from permutect.architecture.artifact_model import load_model
 from permutect.test.test_file_names import *
 from permutect.tools import train_artifact_model
 
-MAKE_NEW_ARTIFACT_MODEL = False
-
 
 def test_train_artifact_model(capsys):
-    saved_model = tempfile.NamedTemporaryFile() if not MAKE_NEW_ARTIFACT_MODEL else SMALL_ARTIFACT_MODEL
+    saved_model = tempfile.NamedTemporaryFile()
     training_tensorboard_dir = tempfile.TemporaryDirectory()
 
     argv = ["--" + constants.READ_LAYERS_NAME, "10", "10", "10"]
@@ -46,7 +44,7 @@ def test_train_artifact_model(capsys):
     argv += ["--" + constants.WEIGHT_DECAY_NAME, "0.01"]
 
     # path to saved model
-    argv += ["--" + constants.OUTPUT_NAME, saved_model if MAKE_NEW_ARTIFACT_MODEL else saved_model.name]
+    argv += ["--" + constants.OUTPUT_NAME, saved_model.name]
     argv += ["--" + constants.TENSORBOARD_DIR_NAME, training_tensorboard_dir.name]
 
     train_artifact_model.main_without_parsing(train_artifact_model.parse_arguments(argv))
