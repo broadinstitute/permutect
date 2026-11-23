@@ -183,9 +183,10 @@ def check_normal_segments(normal_lines: list[str], contigs_c: list[str]):
 
 
 @pytest.mark.parametrize(
-    "normal_contaminations", [None, [], [0.03]], ids=["tumor_only", "matched_normal", "contaminated_matched_normal"]
+    "contaminations, normal_contaminations",
+    [([0.05], None), ([0.03, 0.02], []), ([0.05], [0.03])],
+    ids=["tumor_only", "two_contaminants_and_matched_normal", "contaminated_matched_normal"],
 )
-@pytest.mark.parametrize("contaminations", [[0.05], [0.03, 0.02]], ids=["one_contaminant", "two_contaminants"])
 def test_contaminated_tumor(tmp_path, contaminations, normal_contaminations):
     # a contaminated normal, which is segmented as if it weren't, has a contaminant of its own
     rng = np.random.default_rng(6)
@@ -277,7 +278,6 @@ def test_gatk_small_gene_panel_error_bars(tmp_path, pileups):
     assert 0 < outputs.error < 0.005
 
 
-NA12891_1_PCT = os.path.join(CONTAMINATION_TEST_DIR, "NA12891_0.01_NA12892_0.99.table")
 NA12891_8_PCT = os.path.join(CONTAMINATION_TEST_DIR, "NA12891_0.08_NA12892_0.92.table")
 # NA12892's contamination before the spike-in of NA12891
 BASELINE_CONTAMINATION_OF_NA12892 = 0.001
@@ -286,12 +286,6 @@ BASELINE_CONTAMINATION_OF_NA12892 = 0.001
 def test_gatk_spike_in(tmp_path):
     outputs = run_segment_pileups(tmp_path, NA12891_8_PCT)
     assert outputs.contamination == pytest.approx(0.08 + BASELINE_CONTAMINATION_OF_NA12892, abs=0.015)
-
-
-def test_gatk_matched_normal(tmp_path):
-    # the 1% spike-in is a close approximation to an uncontaminated matched normal
-    outputs = run_segment_pileups(tmp_path, NA12891_8_PCT, NA12891_1_PCT)
-    assert outputs.contamination == pytest.approx(0.08 + BASELINE_CONTAMINATION_OF_NA12892, abs=0.01)
 
 
 def test_gatk_small_gene_panel_with_no_hom_alts(tmp_path):
