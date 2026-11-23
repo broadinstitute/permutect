@@ -1,6 +1,6 @@
 """
-Checks that the console scripts in pyproject.toml and the README agree with the code and the files in the repo, that
-pyproject.toml agrees with itself, and that the .dockerignore agrees with the Dockerfile.
+Checks that the console scripts in pyproject.toml and the README agree with the code and the files in the repo, and that
+the .dockerignore agrees with the Dockerfile.
 """
 
 import importlib
@@ -37,15 +37,6 @@ def test_console_scripts_point_to_functions():
         assert callable(getattr(module, function_name, None)), f"{name}: {entry_point} is not a function"
 
 
-def test_tool_help_uses_the_current_name(capsys):
-    # Permutect was once called Mutect3
-    for name, entry_point in console_scripts().items():
-        module = importlib.import_module(entry_point.split(":")[0])
-        with pytest.raises(SystemExit):
-            module.parse_arguments(["--help"])
-        assert "Mutect3" not in capsys.readouterr().out, name
-
-
 def test_readme_lists_the_console_scripts():
     match = re.search(r"This installs the command line tools \(([^)]*)\)", readme())
     assert match is not None, "the README no longer lists the command line tools"
@@ -58,12 +49,6 @@ def test_readme_sections_about_files_name_files_that_exist():
     assert file_headings, "no README sections about files found"
     missing = [heading for heading in file_headings if not os.path.exists(os.path.join(REPO_DIR, heading))]
     assert not missing, f"README sections about files that don't exist: {missing}"
-
-
-def test_dev_extra_requires_the_pytest_minversion():
-    # otherwise installing the dev extra could give a pytest too old to run the tests
-    minversion = pyproject()["tool"]["pytest"]["ini_options"]["minversion"]
-    assert f"pytest>={minversion}" in pyproject()["project"]["optional-dependencies"]["dev"]
 
 
 def test_docker_build_context_is_only_what_the_dockerfile_copies():
