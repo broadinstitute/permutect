@@ -579,9 +579,11 @@ def normalize_raw_data(raw: StackedData, read_quantile_transform) -> StackedData
         float_read_columns_re, boolean_output_array_re, raw.read_offsets, ref_counts
     )
 
-    # the float arrays keep their scalar elements, and their info becomes the new features
+    # the float arrays keep their scalar elements, and their info becomes the new features.  They are stored as a Datum
+    # holds them, as FLOAT_DTYPE, rather than as the float64 that the new features are computed in, which took four
+    # times the space.
     new_info_ve = np.hstack((all_info_transformed_ve, alt_distance_medians_ve, alt_boolean_means_ve))
-    normalized_float_array_ve = np.hstack((float_array_ve[:, : Data.INFO_START_IDX], new_info_ve))
+    normalized_float_array_ve = np.hstack((float_array_ve[:, : Data.INFO_START_IDX], new_info_ve)).astype(FLOAT_DTYPE)
     # the compressed reads are the raw reads row for row, so they have the same offsets
     return StackedData(int_array_ve, normalized_float_array_ve, output_uint8_reads_array, raw.read_offsets)
 

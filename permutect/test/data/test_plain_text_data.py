@@ -9,6 +9,7 @@ import torch
 from permutect.data import memory_mapped_data
 from permutect.data import plain_text_data
 from permutect.data.datum import FLOAT_DTYPE
+from permutect.data.datum import INTEGER_DTYPE
 from permutect.data.datum import Data
 from permutect.data.datum import Datum
 from permutect.data.datum import get_data_field
@@ -102,6 +103,14 @@ def test_preprocessing_writes_only_the_normalized_memory_maps(monkeypatch):
     monkeypatch.setattr(memory_mapped_data, "grown_memory_map", counting_grown_memory_map)
     plain_text_data.make_normalized_mmap_data([SMALL_PLAIN_TEXT_DATA])
     assert len(created_memory_maps) == 3, created_memory_maps
+
+
+def test_normalized_data_have_the_dtypes_of_a_datum():
+    # the float arrays used to be float64, four times the space, although a Datum made of them holds float16
+    normalized = plain_text_data.make_normalized_mmap_data([SMALL_PLAIN_TEXT_DATA])
+    assert normalized.int_mmap.dtype == INTEGER_DTYPE and normalized.float_mmap.dtype == FLOAT_DTYPE
+    datum = normalized.get_datum(0)
+    assert datum.int_array.dtype == INTEGER_DTYPE and datum.float_array.dtype == FLOAT_DTYPE
 
 
 def test_file_index_finds_each_datum_with_alt_reads():
