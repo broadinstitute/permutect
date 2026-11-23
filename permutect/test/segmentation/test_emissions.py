@@ -93,7 +93,9 @@ def test_compiled_log_likelihoods_match_torch(contamination):
     compiled_nk = model.compiled_log_likelihoods(pileups, mafs_k)
     assert compiled_nk.dtype == np.float64
     assert np.allclose(compiled_nk, expected_nk, rtol=1e-12, atol=1e-12)
-    assert model.compiled_log_likelihoods(pileups, mafs_k, dtype=np.float32).dtype == np.float32
+    # float32, as the segmenter's log emissions are by default, to float32 precision
+    float32_nk = model.compiled_log_likelihoods(pileups, mafs_k, dtype=np.float32)
+    assert float32_nk.dtype == np.float32 and np.allclose(float32_nk, expected_nk, rtol=1e-6, atol=1e-5)
 
 
 def test_ref_alt_symmetry():

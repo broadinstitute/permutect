@@ -260,7 +260,5 @@ class GermlineModel(nn.Module):
     def load(cls, path) -> "GermlineModel":
         state = torch.load(path, map_location="cpu", weights_only=True)
         tumor, normal = (SampleSegmentation.from_state(state[sample]) for sample in ("tumor", "normal"))
-        # models saved before indels had their own parameters get the defaults
-        indel_state = state.get("indel_parameters")
-        indel_parameters = None if indel_state is None else IndelParameters.from_state(indel_state)
+        indel_parameters = IndelParameters.from_state(state["indel_parameters"])
         return cls(tumor, normal, state["contamination"], state["contamination_error"], indel_parameters)

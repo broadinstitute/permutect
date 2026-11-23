@@ -293,7 +293,10 @@ def test_save_and_load(tmp_path):
 
     # the outlier weight at its cap, which the EmissionModel constructor would reject, is restored exactly
     assert loaded.tumor.emission_model.outlier_weight.item() == model.tumor.emission_model.outlier_weight.item()
-    assert all(not parameter.requires_grad for parameter in loaded.parameters())
+    # the parameters are frozen, since the germline model is fit to the pileups before filtering
+    for germline_model in (model, loaded):
+        parameters = list(germline_model.parameters())
+        assert parameters and all(not parameter.requires_grad for parameter in parameters)
 
 
 def test_default_model(tmp_path):
@@ -304,12 +307,6 @@ def test_default_model(tmp_path):
     model.save(path)
     loaded = GermlineModel.load(path)
     assert loaded.tumor.segments == [] and math.isnan(loaded.tumor.jump_rate)
-
-
-def test_parameters_are_frozen():
-    model = GermlineModel(sample_segmentation("tumor"))
-    parameters = list(model.parameters())
-    assert parameters and all(not parameter.requires_grad for parameter in parameters)
 
 
 def indel_parameters(shortfall_scale: float, log_concentration: float) -> IndelParameters:
@@ -370,9 +367,3 @@ def test_save_and_load_the_indel_parameters(tmp_path):
     path = tmp_path / "germline_model.pt"
     model.save(path)
     assert GermlineModel.load(path).indel_parameters.state() == model.indel_parameters.state()
-
-    # a model saved before indels had their own parameters loads with the defaults
-    state = torch.load(path, weights_only=True)
-    del state["indel_parameters"]
-    torch.save(state, path)
-    assert GermlineModel.load(path).indel_parameters.state() == IndelParameters.default().state()

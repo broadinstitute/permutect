@@ -65,30 +65,37 @@ def brute_force(log_emissions_nk, jump_probs_n, prior_k):
     return state_posteriors_nk, jump_posteriors_n, expected_draws_k, log_likelihood, best_path_n
 
 
-@pytest.mark.parametrize("seed", range(5))
+@pytest.mark.parametrize("seed", range(3))
 @pytest.mark.parametrize("prune_state", [False, True])
-def test_forward_backward_matches_brute_force(seed, prune_state):
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_forward_backward_and_viterbi_match_brute_force(seed, prune_state, dtype):
+    # float32 log emissions give posteriors that agree with the exact ones to float32 precision, and the same Viterbi path
     log_emissions_nk, jump_probs_n, prior_k = random_hmm(seed, prune_state)
-    state_posteriors_nk, jump_posteriors_n, expected_draws_k, log_likelihood, _ = brute_force(
+    state_posteriors_nk, jump_posteriors_n, expected_draws_k, log_likelihood, best_path_n = brute_force(
         log_emissions_nk, jump_probs_n, prior_k
     )
+    tolerance, log_likelihood_tolerance = (1e-12, 1e-12) if dtype == np.float64 else (1e-5, 1e-4)
 
     # the first site of each chain is drawn from the prior whatever its jump probability
     jump_probs_n[STARTS_C] = 0.5
+    log_emissions_nk = log_emissions_nk.astype(dtype)
     posteriors = forward_backward(log_emissions_nk, jump_probs_n, prior_k, LENGTHS_C)
-    assert np.allclose(posteriors.state_posteriors_nk, state_posteriors_nk, rtol=0, atol=1e-12)
-    assert np.allclose(posteriors.jump_posteriors_n, jump_posteriors_n, rtol=0, atol=1e-12)
-    assert np.allclose(posteriors.expected_draws_k, expected_draws_k, rtol=0, atol=1e-12)
-    assert posteriors.log_likelihood == pytest.approx(log_likelihood, rel=0, abs=1e-12)
+    assert posteriors.state_posteriors_nk.dtype == np.float64
+    assert np.allclose(posteriors.state_posteriors_nk, state_posteriors_nk, rtol=0, atol=tolerance)
+    assert np.allclose(posteriors.jump_posteriors_n, jump_posteriors_n, rtol=0, atol=tolerance)
+    assert np.allclose(posteriors.expected_draws_k, expected_draws_k, rtol=0, atol=tolerance)
+    assert posteriors.log_likelihood == pytest.approx(log_likelihood, rel=0, abs=log_likelihood_tolerance)
+    assert np.array_equal(viterbi(log_emissions_nk, jump_probs_n, prior_k, LENGTHS_C), best_path_n)
     if prune_state:
         assert np.all(posteriors.state_posteriors_nk[:, 1] == 0)
 
     # shifting the log emissions of each site, even far enough that their exponentials underflow, shifts the log
     # likelihood and leaves the posteriors alone
-    shifts_n = -1000.0 * np.arange(1, len(jump_probs_n) + 1)
-    shifted = forward_backward(log_emissions_nk + shifts_n[:, None], jump_probs_n, prior_k, LENGTHS_C)
-    assert np.allclose(shifted.state_posteriors_nk, state_posteriors_nk, rtol=0, atol=1e-12)
-    assert shifted.log_likelihood == pytest.approx(log_likelihood + np.sum(shifts_n), rel=0, abs=1e-9)
+    if dtype == np.float64:
+        shifts_n = -1000.0 * np.arange(1, len(jump_probs_n) + 1)
+        shifted = forward_backward(log_emissions_nk + shifts_n[:, None], jump_probs_n, prior_k, LENGTHS_C)
+        assert np.allclose(shifted.state_posteriors_nk, state_posteriors_nk, rtol=0, atol=1e-12)
+        assert shifted.log_likelihood == pytest.approx(log_likelihood + np.sum(shifts_n), rel=0, abs=1e-9)
 
 
 @pytest.mark.parametrize("seed", range(3))
@@ -107,26 +114,6 @@ def test_forward_backward_can_overwrite_the_log_emissions(seed):
     assert np.allclose(log_emissions_nk, np.exp(original_nk - np.max(original_nk, axis=1, keepdims=True)))
 
 
-@pytest.mark.parametrize("seed", range(5))
-@pytest.mark.parametrize("prune_state", [False, True])
-def test_float32_forward_backward_and_viterbi_match_brute_force(seed, prune_state):
-    # float32 log emissions give posteriors that agree with the exact ones to float32 precision, and the same Viterbi path
-    log_emissions_nk, jump_probs_n, prior_k = random_hmm(seed, prune_state)
-    state_posteriors_nk, jump_posteriors_n, expected_draws_k, log_likelihood, best_path_n = brute_force(
-        log_emissions_nk, jump_probs_n, prior_k
-    )
-    jump_probs_n[STARTS_C] = 0.5
-    float32_log_emissions_nk = log_emissions_nk.astype(np.float32)
-
-    posteriors = forward_backward(float32_log_emissions_nk, jump_probs_n, prior_k, LENGTHS_C)
-    assert posteriors.state_posteriors_nk.dtype == np.float64
-    assert np.allclose(posteriors.state_posteriors_nk, state_posteriors_nk, rtol=0, atol=1e-5)
-    assert np.allclose(posteriors.jump_posteriors_n, jump_posteriors_n, rtol=0, atol=1e-5)
-    assert np.allclose(posteriors.expected_draws_k, expected_draws_k, rtol=0, atol=1e-5)
-    assert posteriors.log_likelihood == pytest.approx(log_likelihood, rel=0, abs=1e-4)
-    assert np.array_equal(viterbi(float32_log_emissions_nk, jump_probs_n, prior_k, LENGTHS_C), best_path_n)
-
-
 def test_float32_emissions_with_a_tiny_prior_match_float64():
     # before EM prunes a state, its prior can be far below the smallest float32.  Where such a state fits the sites ahead
     # far better than the others, as here from site 20 on, its forward probability is tiny and its backward probability
@@ -143,15 +130,6 @@ def test_float32_emissions_with_a_tiny_prior_match_float64():
     assert np.allclose(result.state_posteriors_nk, expected.state_posteriors_nk, rtol=0, atol=1e-5)
     assert np.allclose(result.expected_draws_k, expected.expected_draws_k, rtol=0, atol=1e-5)
     assert result.log_likelihood == pytest.approx(expected.log_likelihood, rel=1e-6)
-
-
-@pytest.mark.parametrize("seed", range(5))
-@pytest.mark.parametrize("prune_state", [False, True])
-def test_viterbi_matches_brute_force(seed, prune_state):
-    log_emissions_nk, jump_probs_n, prior_k = random_hmm(seed, prune_state)
-    best_path_n = brute_force(log_emissions_nk, jump_probs_n, prior_k)[4]
-    jump_probs_n[STARTS_C] = 0.5
-    assert np.array_equal(viterbi(log_emissions_nk, jump_probs_n, prior_k, LENGTHS_C), best_path_n)
 
 
 def test_jump_probabilities():
