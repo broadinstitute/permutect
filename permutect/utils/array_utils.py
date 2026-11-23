@@ -1,6 +1,5 @@
 from typing import Tuple
 
-import numpy as np
 import torch
 from torch import IntTensor
 from torch import Tensor
@@ -46,13 +45,6 @@ def add_at_index(tens: Tensor, idx: Tuple[IntTensor, ...], values: Tensor) -> Te
         # a non-contiguous tensor, eg a transpose, has no flattened view
         tens.index_put_(idx, values, accumulate=True)
     return tens
-
-
-def downsample_tensor(tensor2d: np.ndarray, new_length: int):
-    if tensor2d is None or new_length >= len(tensor2d):
-        return tensor2d
-    perm = np.random.permutation(len(tensor2d))
-    return tensor2d[perm[:new_length]]
 
 
 def select_and_sum(x: Tensor, select: dict[int, int] = {}, sum: Tuple[int, ...] = ()):

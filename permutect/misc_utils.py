@@ -39,23 +39,6 @@ def seed_random_number_generators(seed: int = 0):
     torch.manual_seed(seed)
 
 
-class ConsistentValue:
-    """
-    Tracks a value that once initialized, is consistent among eg all members of a dataset.  For example, all tensors
-    must have the same number of columns.
-    """
-
-    def __init__(self, value=None):
-        self.value = value
-
-    def check(self, value):
-        if self.value is None:
-            self.value = value
-        elif self.value != value:
-            # an error rather than an assert, which python -O skips
-            raise ValueError(f"inconsistent values: {value} differs from the earlier {self.value}")
-
-
 def gpu_if_available(exploit_mps=False) -> torch.device:
     if torch.cuda.is_available():
         d = "cuda"
@@ -151,37 +134,6 @@ def unfreeze(parameters):
     for parameter in parameters:
         if parameter.dtype.is_floating_point:  # an integer parameter isn't trainable by gradient descent
             parameter.requires_grad = True
-
-
-class StreamingAverage:
-    def __init__(self):
-        self._count = 0.0
-        self._sum = 0.0
-
-    def is_empty(self) -> bool:
-        return self._count == 0.0
-
-    def get(self) -> float:
-        return 0.0 if self.is_empty() else self._sum / self._count
-
-    def record(self, value: float, weight: float = 1):
-        self._count += weight
-        self._sum += value * weight
-
-    def record_sum(self, value_sum: float | Tensor, count):
-        self._count += count
-        self._sum += value_sum
-
-    # record only values masked as true
-    def record_with_mask(self, values: Tensor, mask: Tensor):
-        self._count += torch.sum(mask).item()
-        self._sum += torch.sum(values * mask).item()
-
-    # record values with different weights
-    # values and mask should live on same device as self._sum
-    def record_with_weights(self, values: Tensor, weights: Tensor):
-        self._count += torch.sum(weights).item()
-        self._sum += torch.sum(values * weights).item()
 
 
 class Timer:

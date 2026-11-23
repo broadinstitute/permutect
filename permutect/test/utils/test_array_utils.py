@@ -5,7 +5,6 @@ from torch import LongTensor
 from torch import Tensor
 
 from permutect.utils.array_utils import add_at_index
-from permutect.utils.array_utils import downsample_tensor
 from permutect.utils.array_utils import flattened_indices
 from permutect.utils.array_utils import index_tensor
 from permutect.utils.array_utils import select_and_sum
@@ -120,49 +119,6 @@ def test_add_at_index_edge_cases():
     x = torch.zeros(3, 4).t()
     add_at_index(x, (LongTensor([0, 3, 3]), LongTensor([1, 2, 2])), Tensor([1, 2, 3]))
     assert x[0, 1] == 1 and x[3, 2] == 5 and torch.sum(x) == 6
-
-
-def test_downsample_tensor():
-    x = np.arange(20).reshape(10, 2)
-    result = downsample_tensor(x, 4)
-    assert result.shape == (4, 2)
-
-    # every row comes from the original and no row is chosen twice
-    original_rows = {tuple(row) for row in x}
-    result_rows = [tuple(row) for row in result]
-    assert all(row in original_rows for row in result_rows)
-    assert len(set(result_rows)) == 4
-
-
-def test_downsample_tensor_is_random():
-    x = np.arange(100).reshape(50, 2)
-    # ten draws all being the same ordered 5 of 50 rows has probability about 10^-76
-    subsets = {tuple(downsample_tensor(x, 5)[:, 0]) for _ in range(10)}
-    assert len(subsets) > 1
-
-
-def test_downsample_tensor_edge_cases():
-    x = np.arange(20).reshape(10, 2)
-
-    # None passes through
-    assert downsample_tensor(None, 5) is None
-
-    # no downsampling when new_length is at least the current length
-    assert downsample_tensor(x, 10) is x
-    assert downsample_tensor(x, 100) is x
-
-    # downsampling to zero keeps the trailing dimension
-    assert downsample_tensor(x, 0).shape == (0, 2)
-
-    # empty input
-    empty = np.zeros((0, 2))
-    assert downsample_tensor(empty, 0) is empty
-    assert downsample_tensor(empty, 3) is empty
-
-    # downsampling to one row
-    result = downsample_tensor(x, 1)
-    assert result.shape == (1, 2)
-    assert tuple(result[0]) in {tuple(row) for row in x}
 
 
 def test_select_and_sum():

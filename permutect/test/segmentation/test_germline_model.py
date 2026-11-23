@@ -146,30 +146,6 @@ def test_without_a_normal_haplotype_no_alt_allele_is_on_the_minor_haplotype_alon
     assert germline(HOMOZYGOUS_NORMAL_MAF / 10) < -50
 
 
-def test_emission_log_likelihoods_are_the_segmentation_emissions():
-    segmentation = sample_segmentation("tumor")
-    alt_counts_n = torch.tensor([0.0, 3.0, 12.0, 30.0, 38.0], dtype=torch.float64)
-    depths_n = torch.tensor([40.0, 40.0, 25.0, 60.0, 40.0], dtype=torch.float64)
-    allele_frequencies_n = torch.tensor([0.05, 0.3, 0.5, 0.2, 0.9], dtype=torch.float64)
-    mafs_n = torch.tensor([0.5, 0.3, 0.1, 0.5, 0.4], dtype=torch.float64)
-    result_n = segmentation.emission_log_likelihoods(alt_counts_n, depths_n, allele_frequencies_n, mafs_n)
-    for n in range(len(mafs_n)):
-        site = Pileups(alt_counts_n[n : n + 1], depths_n[n : n + 1], allele_frequencies_n[n : n + 1])
-        expected = segmentation.emission_model.log_likelihoods(site, mafs_n[n : n + 1])
-        assert result_n[n].item() == pytest.approx(expected.item(), rel=1e-12)
-
-    # with the Hardy-Weinberg weights of hom ref, het and hom alt, a normalized distribution of the alt count
-    alt_counts_nk, depths_nk = all_alt_counts(40, len(mafs_n))
-    log_likelihoods_nk = torch.stack(
-        [
-            segmentation.emission_log_likelihoods(alt_counts_nk[:, k], depths_nk[:, k], allele_frequencies_n, mafs_n)
-            for k in range(41)
-        ],
-        dim=1,
-    )
-    assert torch.allclose(torch.logsumexp(log_likelihoods_nk, dim=1), torch.zeros(len(mafs_n), dtype=torch.float64))
-
-
 def test_without_a_normal_germline_log_likelihoods_are_the_carrier_part_of_the_tumors_emissions():
     # the emission is a mixture of hom refs, carriers and outliers, with weights (1 - w)(1 - q)^2, (1 - w) q (2 - q) and w
     model = germline_model()
@@ -183,7 +159,7 @@ def test_without_a_normal_germline_log_likelihoods_are_the_carrier_part_of_the_t
     w = emission_model.outlier_weight
     expected_n = (1 - w) * ((1 - q_n) ** 2 * torch.exp(hom_ref_n) + q_n * (2 - q_n) * torch.exp(carrier_n))
     expected_n += w / (depths_n + 1)
-    emission_n = model.tumor.emission_log_likelihoods(alt_counts_n, depths_n, q_n, mafs_n)
+    emission_n = emission_model.log_likelihoods(Pileups(alt_counts_n, depths_n, q_n), mafs_n[:, None]).squeeze(1)
     assert torch.allclose(torch.exp(emission_n), expected_n)
 
 

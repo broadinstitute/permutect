@@ -108,15 +108,6 @@ def fold_sequence(sequence: str, contig: str, start_position: int) -> list[StemL
     return consolidate_adjacent_stacks(structures, contig, start_position, sequence)
 
 
-def contains_near_stem_loop(
-    stem_loops: list[StemLoop], contig: str, position: int, dist: int = 3, max_energy: float = 1.5
-) -> bool:
-    return any(
-        stem_loop.contains_near(contig, position, dist=dist) and stem_loop.total_energy < max_energy
-        for stem_loop in stem_loops
-    )
-
-
 def find_near_stem_loop(
     reference, contig: str, position: int, dist: int = 3, max_energy: float = 1.5
 ) -> tuple[StemLoop, int] | None:

@@ -275,9 +275,6 @@ class Datum:
     def get_read_count(self) -> int:
         return self.get(Data.ALT_COUNT) + self.get(Data.REF_COUNT)
 
-    def is_labeled(self):
-        return self.get(Data.LABEL) != Label.UNLABELED
-
     def get_ref_allele(self) -> str:
         return bases5_as_base_string(self.get(Data.REF_ALLELE_AS_BASE_5))
 

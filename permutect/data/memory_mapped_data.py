@@ -352,30 +352,6 @@ class MemoryMappedData:
         is_compressed = reads_arr.dtype == COMPRESSED_READS_ARRAY_DTYPE
         return Datum(self.int_mmap[idx], self.float_mmap[idx], reads_re=reads_arr, compressed=is_compressed)
 
-    def _restrict(self, reads_datum_source, estimated_proportion: float) -> MemoryMappedData:
-        """
-        New memory-mapped data holding the data from a generator over a subset of this one's data.  The estimated
-        proportion of data kept sets the initial capacity, which grows as needed if the estimate is too low.
-        """
-        fudge_factor = 1.1
-        estimated_num_data = int(self.num_data * estimated_proportion * fudge_factor)
-        estimated_num_reads = int(self.num_reads * estimated_proportion * fudge_factor)
-        return MemoryMappedData.from_generator(reads_datum_source, estimated_num_data, estimated_num_reads)
-
-    def restrict_to_labeled_only(self) -> MemoryMappedData:
-        print("Restricting dataset to labeled data only.")
-        labeled_count, total = 0, 0
-        # estimated the proportion of labeled data
-        for n, datum in enumerate(self.generate()):
-            if n > 1000:
-                break
-            total += 1
-            labeled_count += 1 if datum.is_labeled() else 0
-
-        labeled_proportion = labeled_count / total if total > 0 else 0
-        reads_datum_source = (datum for datum in self.generate() if datum.is_labeled())
-        return self._restrict(reads_datum_source, estimated_proportion=labeled_proportion)
-
     """
     Add log allele frequency (AF), minor allele frequency (MAF), normal minor allele frequency (normal MAF), the
     lengths of the repeat unit and of the reference STR, the change in the STR's repeat count, and the tumor's counts of

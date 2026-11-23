@@ -7,7 +7,6 @@ import cyvcf2
 import numpy as np
 import pytest
 import torch
-from torch import Tensor
 
 from permutect import misc_utils
 from permutect.architecture.posterior_model import PosteriorModel
@@ -22,8 +21,6 @@ from permutect.data.datum import Datum
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.metrics.loss_metrics import AccuracyMetrics
 from permutect.metrics.loss_metrics import LossMetrics
-from permutect.misc_utils import ConsistentValue
-from permutect.misc_utils import StreamingAverage
 from permutect.misc_utils import Timer
 from permutect.misc_utils import VcfEditor
 from permutect.misc_utils import allele_key
@@ -95,151 +92,6 @@ def make_datum(contig: int, position: int, ref: str, alt: str) -> Datum:
         ref_reads_array_re=None,
         alt_reads_array_re=np.zeros((3, 5), dtype=RAW_READS_ARRAY_DTYPE),
     )
-
-
-def test_consistent_value():
-    cv = ConsistentValue()
-    assert cv.value is None
-
-    # the first check sets the value; later checks must match it
-    cv.check(5)
-    assert cv.value == 5
-    cv.check(5)
-    cv.check(5)
-    assert cv.value == 5
-
-    with pytest.raises(ValueError):
-        cv.check(6)
-
-
-def test_consistent_value_with_initial_value():
-    cv = ConsistentValue(3)
-    cv.check(3)
-    with pytest.raises(ValueError):
-        cv.check(4)
-
-
-def test_consistent_value_edge_cases():
-    # zero is a real value, not "uninitialized"
-    cv = ConsistentValue()
-    cv.check(0)
-    assert cv.value == 0
-    with pytest.raises(ValueError):
-        cv.check(1)
-
-    # a failed check doesn't change the stored value
-    cv = ConsistentValue()
-    cv.check(7)
-    with pytest.raises(ValueError):
-        cv.check(8)
-    assert cv.value == 7
-
-    # non-integer values that support ==
-    cv = ConsistentValue()
-    cv.check((2, 3))
-    cv.check((2, 3))
-    with pytest.raises(ValueError):
-        cv.check((3, 2))
-
-
-def test_streaming_average_record():
-    avg = StreamingAverage()
-    for value in [1.0, 2.0, 3.0, 4.0]:
-        avg.record(value)
-    assert not avg.is_empty()
-    assert avg.get() == pytest.approx(2.5, rel=1e-3)
-
-
-def test_streaming_average_record_with_weights():
-    avg = StreamingAverage()
-    avg.record(1.0, weight=3)
-    avg.record(5.0, weight=1)
-    assert avg.get() == pytest.approx((3 * 1.0 + 5.0) / 4, rel=1e-3)
-
-
-def test_streaming_average_record_sum():
-    # this is how the posterior model records the loss of each batch
-    avg = StreamingAverage()
-    avg.record_sum(value_sum=10.0, count=4)
-    avg.record_sum(value_sum=20.0, count=6)
-    assert avg.get() == pytest.approx(30.0 / 10, rel=1e-3)
-
-
-def test_streaming_average_record_with_mask():
-    avg = StreamingAverage()
-    values = Tensor([1, 2, 3, 100])
-    avg.record_with_mask(values, torch.tensor([True, True, True, False]))
-    assert avg.get() == pytest.approx(2.0, rel=1e-3)
-
-    # a float mask of zeros and ones behaves the same as a boolean mask
-    avg = StreamingAverage()
-    avg.record_with_mask(values, Tensor([1, 1, 1, 0]))
-    assert avg.get() == pytest.approx(2.0, rel=1e-3)
-
-
-def test_streaming_average_record_with_tensor_weights():
-    avg = StreamingAverage()
-    avg.record_with_weights(Tensor([1, 5]), Tensor([3, 1]))
-    assert avg.get() == pytest.approx(2.0, rel=1e-3)
-
-
-def test_streaming_average_combines_recording_methods():
-    avg = StreamingAverage()
-    avg.record(1.0)  # sum 1, count 1
-    avg.record(2.0, weight=2)  # sum 5, count 3
-    avg.record_sum(value_sum=10.0, count=2)  # sum 15, count 5
-    avg.record_with_mask(Tensor([3, 100]), torch.tensor([True, False]))  # sum 18, count 6
-    avg.record_with_weights(Tensor([6]), Tensor([2]))  # sum 30, count 8
-    assert avg.get() == pytest.approx(30.0 / 8, rel=1e-3)
-
-
-def test_streaming_average_matches_mean_of_many_values():
-    values = torch.randn(10000, generator=torch.Generator().manual_seed(0))
-    avg = StreamingAverage()
-    for value in values.tolist():
-        avg.record(value)
-    assert avg.get() == pytest.approx(values.mean().item(), rel=1e-3, abs=1e-6)
-
-
-def test_streaming_average_with_small_total_weight():
-    # the exact mean, not one biased towards zero
-    avg = StreamingAverage()
-    avg.record(5.0, weight=0.001)
-    assert avg.get() == pytest.approx(5.0)
-
-
-def test_streaming_average_edge_cases():
-    # empty: no division by zero
-    avg = StreamingAverage()
-    assert avg.is_empty()
-    assert avg.get() == 0.0
-
-    # recording a value of zero makes it non-empty
-    avg = StreamingAverage()
-    avg.record(0.0)
-    assert not avg.is_empty()
-    assert avg.get() == 0.0
-
-    # zero weight records nothing
-    avg = StreamingAverage()
-    avg.record(5.0, weight=0)
-    assert avg.is_empty()
-
-    # an all-false mask records nothing
-    avg = StreamingAverage()
-    avg.record_with_mask(Tensor([1, 2, 3]), torch.tensor([False, False, False]))
-    assert avg.is_empty()
-
-    # empty tensors record nothing
-    avg = StreamingAverage()
-    avg.record_with_weights(Tensor([]), Tensor([]))
-    assert avg.is_empty()
-
-    # negative values
-    avg = StreamingAverage()
-    avg.record(-2.0)
-    avg.record(-4.0)
-    assert avg.get() == pytest.approx(-3.0, rel=1e-3)
 
 
 def test_timer_prints_message_on_creation(capsys):

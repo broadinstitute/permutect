@@ -333,19 +333,6 @@ def test_reads_dataset_shards_share_the_memory(monkeypatch, capsys):
     assert chunk_messages == ["Worker 0 will divide its portion of the data into 3 chunks."] * 2
 
 
-def test_restrict_to_labeled_only_when_first_data_are_unlabeled():
-    # the labeled proportion is estimated from the first 1001 data, which are all unlabeled here
-    data = [make_datum(index, 1) for index in range(1002)]
-    labeled = [make_datum(2000, 2, Label.ARTIFACT), make_datum(2001, 1, Label.VARIANT)]
-    memory_mapped_data = MemoryMappedData.from_generator(
-        data + labeled, estimated_num_data=2000, estimated_num_reads=2000
-    )
-    assert_same_data(memory_mapped_data.restrict_to_labeled_only(), labeled)
-
-    empty = MemoryMappedData.from_generator(iter([]), estimated_num_data=0, estimated_num_reads=0)
-    assert_same_data(empty.restrict_to_labeled_only(), [])
-
-
 def annotated_mafs(tmp_path, **segmentations) -> list:
     # the MAF and normal MAF that VCF annotation gives an SNV at chr1:100 and a deletion at chr1:200
     vcf = tmp_path / "variants.vcf"

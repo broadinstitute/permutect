@@ -39,18 +39,6 @@ def f_score(precision, recall, beta: float = 1.0):
     return (1 + beta_sqr) * recall * precision / (recall + (beta_sqr * precision) + 0.0001)
 
 
-def subtract_in_log_space(x: Tensor, y: Tensor):
-    """
-    implement result = log(exp(x) - exp(y)) in a numerically stable way by extracting the elementwise max:
-    with M = torch.maximum(x,y); result = log(exp(M)exp(x-M) - exp(M)exp(y-M)) = M + log(exp(x-M) - exp(y-M))
-
-    note: this only works if x > y, elementwise!
-    :return:
-    """
-    m = torch.maximum(x, y)
-    return m + torch.log(torch.exp(x - m) - torch.exp(y - m))
-
-
 def log1mexp(x: Tensor):
     """
     implement result = log(1 - exp(x)) for x <= 0 in a numerically stable way.  Following Machler (2012), use

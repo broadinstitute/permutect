@@ -7,7 +7,6 @@ from permutect.utils.math_utils import LOGIT_EPS
 from permutect.utils.math_utils import find_factors
 from permutect.utils.math_utils import log1mexp
 from permutect.utils.math_utils import prob_to_logit
-from permutect.utils.math_utils import subtract_in_log_space
 
 
 def test_find_factors():
@@ -25,15 +24,6 @@ def test_prob_to_logit():
         assert prob_to_logit(prob) == pytest.approx(math.log(prob / (1 - prob)), rel=1e-9)
     max_logit = math.log((1 - LOGIT_EPS) / LOGIT_EPS)
     assert prob_to_logit(0.0) == pytest.approx(-max_logit) and prob_to_logit(1.0) == pytest.approx(max_logit)
-
-
-def test_subtract_in_log_space():
-    y = torch.rand((4, 5))
-    x = y + torch.rand((4, 5))  # this guarantees y < x, elementwise and both are positive
-    logx, logy = torch.log(x), torch.log(y)
-    exact = x - y
-    calc = torch.exp(subtract_in_log_space(logx, logy))
-    assert torch.sum(torch.abs(exact - calc)).item() < 10 ** (-5)
 
 
 def test_log1mexp():
