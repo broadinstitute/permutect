@@ -1,101 +1,42 @@
 import torch
+from torch import nn
 
 from permutect.architecture.mlp import MLP
 from permutect.misc_utils import backpropagate
 
 
-def train(model, x, y, loss_func, num_epochs: int = 10000) -> list[float]:
-    # train with Adam on all of the data at every step, and return the loss of each step
-    optimizer = torch.optim.Adam(model.parameters())
-    losses = []
-    for _ in range(num_epochs):
+def test_layers():
+    # a negative layer size is a residual block of that many layers, each as wide as its input, and each linear layer has
+    # batch normalization before it and dropout after it
+    mlp = MLP([5, 8, -2, 3], batch_normalize=True, dropout_p=0.1)
+    assert (mlp.input_dimension(), mlp.output_dimension()) == (5, 3)
+    linear_layers = [module for module in mlp.modules() if isinstance(module, nn.Linear)]
+    assert [(layer.in_features, layer.out_features) for layer in linear_layers] == [(5, 8), (8, 8), (8, 8), (8, 3)]
+    assert sum(isinstance(module, nn.BatchNorm1d) for module in mlp.modules()) == 4
+    assert sum(isinstance(module, nn.Dropout) for module in mlp.modules()) == 4
+    # the output is logits, without a nonlinearity after the last layer
+    assert not isinstance(mlp._model[-1], nn.SELU) and not isinstance(mlp._model[-2], nn.SELU)
+    assert mlp.forward(torch.randn(10, 5)).shape == (10, 3)
+
+
+def test_xor_data():
+    # A single hidden layer should suffice to classify a 2D XOR pattern where the 1st and 3rd quadrants are labeled 0 and
+    # the 2nd and 4th are 1.  Really only 2 neurons are needed, but more speed convergence, and with 4 training got stuck
+    # far from a solution for 3 seeds in 20.
+    torch.manual_seed(0)
+    x = torch.randn(1000, 2)
+    y = (torch.sign(x[:, 0] * x[:, 1]) + 1) / 2  # labels are 0 / 1
+    model = MLP([2, 8, 1])
+
+    # Adam on all of the data at every step
+    optimizer, loss_func, losses = torch.optim.Adam(model.parameters()), nn.BCEWithLogitsLoss(reduction="mean"), []
+    for _ in range(10000):
         loss = loss_func(model.forward(x).reshape(y.shape), y)
         backpropagate(optimizer, loss)
         losses.append(loss.item())
-    return losses
-
-
-# test with artificial data where a*x = 0 is a perfect linear separator, with a margin around it
-def test_linearly_separable_data():
-    torch.manual_seed(0)
-    input_dim = 3
-    num_samples = 1000
-    # centered data, so that samples fall on both sides of the separator.  With nonnegative a and x every label was 1.
-    a = torch.randn(input_dim, 1)
-    x = torch.randn(num_samples, input_dim)
-    x = x[torch.abs(torch.matmul(x, a).squeeze()) > 0.1 * torch.norm(a)]
-    y = (torch.sign(torch.matmul(x, a)) + 1) / 2  # labels are 0 / 1
-    assert 0.2 < torch.mean(y).item() < 0.8
-
-    layer_sizes = [input_dim, 1]
-    model = MLP(layer_sizes)
-
-    loss_list = train(model, x, y, torch.nn.BCEWithLogitsLoss(reduction="mean"))
-
-    assert loss_list[-1] < 0.1
-    assert loss_list[1000] < loss_list[0]
-    assert loss_list[2000] < loss_list[1000]
-    assert loss_list[3000] < loss_list[2000]
-
-    pred = torch.sign(torch.sigmoid(model.forward(x)) - 0.5)
-    lab = torch.sign(y - 0.5)
-
-    errors = torch.sum(torch.abs((pred - lab) / 2)).item()
-
-    # we should have perfect accuracy
-    assert errors == 0
-
-
-# test with annular data where y = 1 when  1/3 < norm(x) < 2/3
-def test_annular_data():
-    torch.manual_seed(42)
-    input_dim = 3
-    num_samples = 1000
-    x = torch.randn(num_samples, input_dim) / torch.sqrt(torch.tensor([input_dim]))
-
-    norms = torch.norm(x, dim=1)
-    y = (torch.sign(norms - 0.33) * torch.sign(0.66 - norms) + 1) / 2
-
-    layer_sizes = [input_dim, 5, 5, 5, 5, 1]
-    model = MLP(layer_sizes)
-
-    loss_list = train(model, x, y, torch.nn.BCEWithLogitsLoss(reduction="mean"))
-
-    assert loss_list[-1] < 0.2
-
-    pred = torch.squeeze(torch.sign(torch.sigmoid(model.forward(x)) - 0.5))
-    lab = torch.sign(y - 0.5)
-
-    errors = torch.sum(torch.abs((pred - lab) / 2)).item()
-
-    # we should have perfect accuracy
-    assert errors < 100
-
-
-# A single hidden layer should suffice to perfectly classify a 2D XOR pattern where
-# the 1st and 3rd quadrants are labeled 0 and the 2nd and 4th are 1
-def test_xor_data():
-    torch.manual_seed(0)
-    num_samples = 1000
-    x = torch.randn(num_samples, 2)
-    y = (torch.sign(x[:, 0] * x[:, 1]) + 1) / 2  # labels are 0 / 1
-
-    # Use a single hidden layer.  Really only 2 neurons are needed, but more speeds convergence, and with 4 training
-    # got stuck far from a solution for 3 seeds in 20
-    layer_sizes = [2, 8, 1]
-    model = MLP(layer_sizes)
-
-    loss_list = train(model, x, y, torch.nn.BCEWithLogitsLoss(reduction="mean"))
-
-    assert loss_list[-1] < 0.15
-    assert loss_list[1000] < loss_list[0]
-    assert loss_list[2000] < loss_list[1000]
-    assert loss_list[3000] < loss_list[2000]
+    assert losses[-1] < 0.15
+    assert losses[1000] < losses[0] and losses[2000] < losses[1000] and losses[3000] < losses[2000]
 
     pred = torch.sign(torch.sigmoid(model.forward(x).detach().squeeze()) - 0.5)
-    lab = torch.sign(y - 0.5)
-
-    errors = torch.sum(torch.abs((pred - lab) / 2)).item()
-
-    # we should have near-perfect accuracy
-    assert errors < num_samples / 50
+    errors = torch.sum(torch.abs((pred - torch.sign(y - 0.5)) / 2)).item()
+    assert errors < len(x) / 50

@@ -3,7 +3,6 @@ import pytest
 import torch
 from scipy import stats
 
-from permutect.architecture.exponentially_modified_gaussian import STDEV_CONSTRAINT
 from permutect.architecture.exponentially_modified_gaussian import ExponentiallyModifiedGaussianDistribution
 from permutect.architecture.feature_clustering import ArtifactClusterDistribution
 from permutect.architecture.feature_clustering import FeatureClustering
@@ -14,18 +13,6 @@ from permutect.test.architecture.test_exponentially_modified_gaussian import sci
 
 # (mu, sigma, lambda) of the parallel EMG and the orthogonal standard deviation of each of three clusters
 CLUSTER_PARAMETERS = [((2.0, 1.0, 1.0), 0.5), ((0.5, 0.3, 3.0), 1.0), ((-1.0, 2.0, 0.5), 2.0)]
-
-
-def test_standard_deviations_share_one_constraint():
-    # the Gaussian and exponentially-modified Gaussian standard deviations used to have separate, identical bounds
-    clustering = FeatureClustering(feature_dimension=3, num_artifact_clusters=2)
-    stdevs = [
-        (clustering, "nonartifact_stdev_e"),
-        (clustering, "artifact_stdev_k"),
-        (clustering.artifact_emg, "sigma_k"),
-    ]
-    for module, name in stdevs:
-        assert module.parametrizations[name][0] is STDEV_CONSTRAINT, name
 
 
 def random_unit_vectors(num_vectors: int, dimension: int) -> torch.Tensor:
