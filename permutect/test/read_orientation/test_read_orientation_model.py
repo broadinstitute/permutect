@@ -18,6 +18,7 @@ from permutect.read_orientation.maf_mixtures import MAF_GRID
 from permutect.read_orientation.read_orientation_model import CONTEXT_INDICES
 from permutect.read_orientation.read_orientation_model import FLAT_PRIOR
 from permutect.read_orientation.read_orientation_model import GERMLINE_HET
+from permutect.read_orientation.read_orientation_model import NEWTON_TOLERANCE
 from permutect.read_orientation.read_orientation_model import NUM_BASES
 from permutect.read_orientation.read_orientation_model import NUM_CONTEXTS
 from permutect.read_orientation.read_orientation_model import NUM_GENOTYPES
@@ -26,7 +27,10 @@ from permutect.read_orientation.read_orientation_model import PAIR_CONTEXTS
 from permutect.read_orientation.read_orientation_model import PAIRS_C
 from permutect.read_orientation.read_orientation_model import POSSIBLE_PROCESSES_P
 from permutect.read_orientation.read_orientation_model import SOMATIC_HET
+from permutect.read_orientation.read_orientation_model import SQUAREM_OBJECTIVE_TOLERANCE
+from permutect.read_orientation.read_orientation_model import SQUAREM_TOLERANCE
 from permutect.read_orientation.read_orientation_model import VARIANT_ALLELE_FRACTION_PSEUDOCOUNTS_V2
+from permutect.read_orientation.read_orientation_model import EMState
 from permutect.read_orientation.read_orientation_model import GermlineHetLikelihoods
 from permutect.read_orientation.read_orientation_model import HistogramMarginals
 from permutect.read_orientation.read_orientation_model import OrientationEM
@@ -260,6 +264,50 @@ def test_em_recovers_simulated_damage():
     for context in ("ACG", "ACA"):
         priors_s = model.genotype_priors_cs[CONTEXT_INDICES[context]]
         assert priors_s.tolist() == pytest.approx(SIMULATED_GENOTYPE_PRIORS, rel=0.25, abs=3e-4), context
+
+
+def simulated_em(seed: int) -> OrientationEM:
+    counts = simulated_counts(np.random.default_rng(seed), ("ACG", "ACA"), 20_000, 60, CAPTURE, DAMAGE, BACKGROUND)
+    sites = SiteTable.of(counts.sites)
+    return OrientationEM(sites, learned_pairs_w(sites), CAPTURE)
+
+
+def test_damage_m_step_reaches_each_pairs_minimum():
+    # From EM's starting point, far from the optimum, Newton's method leaves each pair of a process and its other
+    # strand's process at a minimum of its objective: the Hessian is positive definite there, Newton's step is within
+    # its tolerance, and no pair's objective is worse than where it started
+    em = simulated_em(11)
+    state = em.initial_state()
+    hyper = (state.hyper_mean_2, state.hyper_variance_2)
+    posteriors = em.e_step(state.priors_ws, state.unconstrained_q2)
+    u_q2, _ = em.damage_m_step(state.unconstrained_q2, posteriors, *hyper)
+    objectives_w, gradient_q2, block_w44 = em.objectives_gradient_and_hessian_blocks(u_q2, posteriors, *hyper)
+    assert torch.all(torch.linalg.eigvalsh(block_w44)[:, 0] > 0)
+    gradient_w4 = torch.cat([gradient_q2[em.firsts_w], gradient_q2[em.seconds_w]], dim=-1)
+    newton_step_w4 = torch.linalg.solve(block_w44, gradient_w4.unsqueeze(-1)).squeeze(-1)
+    assert newton_step_w4.abs().max() <= NEWTON_TOLERANCE
+    assert torch.all(objectives_w <= em.pair_objectives(state.unconstrained_q2, posteriors, *hyper))
+
+
+def test_squarem_reaches_the_fixed_point_of_em():
+    # SQUAREM's result is where plain EM stays, and it fits at least as well as as many iterations of plain EM, which
+    # haven't converged by then
+    em = simulated_em(12)
+    result = em.run(convergence_threshold=1e-6, max_iterations=100)
+    assert result.converged
+    state = EMState(
+        result.priors_ws,
+        result.damage_unconstrained_p2[em.learned_processes_q],
+        result.hyper_mean_2,
+        result.hyper_variance_2,
+    )
+    next_state = em.em_map(state)
+    assert torch.allclose(next_state.priors_ws, state.priors_ws, rtol=0, atol=1e-6)
+    assert abs(em.log_posterior(next_state) - em.log_posterior(state)) <= SQUAREM_OBJECTIVE_TOLERANCE
+    plain_state = em.initial_state()
+    for _ in range(result.num_iterations):
+        plain_state = em.em_map(plain_state)
+    assert em.log_posterior(state) >= em.log_posterior(plain_state) - SQUAREM_TOLERANCE
 
 
 def mirrored(counts: F1R2Counts) -> F1R2Counts:

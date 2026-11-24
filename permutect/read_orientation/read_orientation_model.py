@@ -112,14 +112,20 @@ posteriori expectation maximization (EM), all contexts at once:
   u ~ Normal(m, diag(s^2)), so that processes with few damaged reads borrow strength from the others.  After each M
   step, m is the mean of the processes' u, and each component of s^2 has a weak inverse-gamma hyperprior and is
   updated to its posterior mode given the processes' expected squared deviations, which include their Laplace
-  (posterior) variances, so that processes with little data don't collapse s^2 toward 0.
+  (posterior) variances, so that processes with little data don't collapse s^2 toward 0.  A site's reads of one base
+  depend only on the damage of its two strands, so the M step's objective is a sum over the pairs of a process and its
+  other strand's process, and Newton's method maximizes each pair's in its 4 coordinates.  The M step is exact: an
+  approximate one, such as a few iterations of a general optimizer, makes successive EM iterations differ so little
+  that EM seems to converge far from its fixed point.
 - The bounds keep genotypes identifiable: a damage distribution's mean is at most MAX_DAMAGE_MEAN, so that damage
   can't imitate a het, and its concentration at least MIN_DAMAGE_CONCENTRATION, so that its density is finite near 1.
 
-As in GATK, a pair of contexts without both sites without alt reads and sites with two or more keeps the flat prior,
-and EM stops when no context's prior changes by more than a threshold (Euclidean distance) and no process's u by more
-than DAMAGE_TOLERANCE, or after a maximum number of iterations.  Processes of such pairs, and processes that can't
-happen (to the base a context already has), get the damage distribution at the mean m.
+EM converges slowly, and SQUAREM (Varadhan and Roland 2008) accelerates it by extrapolating along its path.  As in GATK,
+a pair of contexts without both sites without alt reads and sites with two or more keeps the flat prior, and EM stops
+when no context's prior changes by more than a threshold (Euclidean distance) and either no process's u changes by
+more than DAMAGE_TOLERANCE or the log posterior by more than SQUAREM_OBJECTIVE_TOLERANCE, or after a maximum number of
+iterations.  Processes of such pairs, and processes that can't happen (to the base a context already has), get the
+damage distribution at the mean m.
 
 FILTERING
 
@@ -189,10 +195,25 @@ INITIAL_DAMAGE_CONCENTRATION = 100.0
 INITIAL_DAMAGE_VARIANCE = 1.0
 DAMAGE_VARIANCE_SHAPE = 1.0
 DAMAGE_VARIANCE_SCALE = 0.5
-# EM's tolerance of changes in the damage distributions' unconstrained coordinates, and the maximum number of
-# iterations of L-BFGS in each M step of the damage distributions
+# EM's tolerance of changes in the damage distributions' unconstrained coordinates
 DAMAGE_TOLERANCE = 1e-3
+# Newton's method in each M step of the damage distributions: its maximum number of iterations; its tolerance of the
+# largest change in a coordinate of a step; the largest change in a coordinate that one step makes, a trust region; the
+# largest change of the steps taken without a line search, whose comparisons of objectives, sums over millions of sites,
+# rounding makes unreliable near the optimum; and the Armijo constant and maximum number of halvings of the line search of
+# the other steps
 DAMAGE_M_STEP_ITERATIONS = 20
+NEWTON_TOLERANCE = 1e-4
+MAX_NEWTON_STEP = 1.0
+NEWTON_REGION = 0.1
+ARMIJO_CONSTANT = 1e-4
+MAX_STEP_HALVINGS = 10
+# SQUAREM's tolerance of a loss of EM's objective, in nats; the factor by which its maximum extrapolation grows after an
+# extrapolation at the maximum and shrinks after one that fails; and the change in the objective of a cycle that has
+# converged
+SQUAREM_TOLERANCE = 1.0
+SQUAREM_STEP_FACTOR = 4.0
+SQUAREM_OBJECTIVE_TOLERANCE = 0.1
 # the number of a site's F1R2 reads where it isn't known, as for the sites of the histograms
 UNKNOWN_F1R2_DEPTH = -1
 
@@ -456,6 +477,19 @@ class EMResult:
     converged: bool
 
 
+@dataclass(frozen=True)
+class EMState:
+    """
+    What an iteration of EM updates: the genotype priors of each pair of contexts, the unconstrained damage coordinates
+    of the learned processes, and the mean and variance of their hierarchical prior
+    """
+
+    priors_ws: Tensor
+    unconstrained_q2: Tensor
+    hyper_mean_2: Tensor
+    hyper_variance_2: Tensor
+
+
 class OrientationEM:
     """
     The data and the steps of EM for the sites of the pairs of contexts with enough data to learn from (see the module
@@ -478,6 +512,16 @@ class OrientationEM:
         self.numbers_p[self.learned_processes_q] = torch.arange(len(self.learned_processes_q))
         # the other strand's process of each, which is learned too, since it's of the same pair of contexts
         self.other_strand_q = self.numbers_p[OTHER_STRAND_PROCESSES_P[self.learned_processes_q]]
+        # The objective of the damage M step is a sum over pairs of a process and its other strand's process, numbered
+        # 0, 1, . . . W - 1: each pair's first process, of the lower number, and its second, and each process's pair
+        self.firsts_w = (torch.arange(len(self.other_strand_q)) < self.other_strand_q).nonzero().flatten()
+        self.seconds_w = self.other_strand_q[self.firsts_w]
+        self.pairs_q = torch.zeros(len(self.other_strand_q), dtype=torch.int64)
+        self.pairs_q[self.firsts_w] = torch.arange(len(self.firsts_w))
+        self.pairs_q[self.seconds_w] = torch.arange(len(self.firsts_w))
+        # the pairs of contexts whose genotype priors are learned
+        self.learned_w = torch.zeros(NUM_PAIRS, dtype=torch.bool)
+        self.learned_w[PAIRS_C[self.learned_processes_q // NUM_BASES]] = True
 
         self.histogram, self.alt_table = sites.select(~sites.known_n), sites.select(sites.known_n)
         self.has_alt_reads_n = self.histogram.alt_counts_n > 0
@@ -495,6 +539,7 @@ class OrientationEM:
         self.num_depths, num_kinds = len(depths_d), len(self.learned_processes_q)
         patterns_n = torch.where(h.alt_f1r2_counts_n == 1, 1, 2)
         kinds_n = self.numbers_p[h.processes_n].clamp_min(0)
+        self.histogram_kinds_n = kinds_n
         self.alt_cells_n = (patterns_n * num_kinds + kinds_n) * self.num_depths + depth_indices_n
         bases_1b = torch.arange(NUM_BASES).unsqueeze(0)
         absent_nb = (bases_1b != REF_BASES_C[h.contexts_n].unsqueeze(-1)) & (
@@ -551,45 +596,41 @@ class OrientationEM:
             counts_ws.index_add_(0, PAIRS_C[part.contexts_n], part.counts_n.double().unsqueeze(-1) * posteriors_ng)
         return counts_ws / counts_ws.sum(dim=-1, keepdim=True)
 
-    def damage_objective(self, unconstrained_q2: Tensor, posteriors, hyper_mean_2, hyper_variance_2) -> Tensor:
+    def pair_objectives(self, unconstrained_q2: Tensor, posteriors, hyper_mean_2, hyper_variance_2) -> Tensor:
         """
-        The negative of the expected log likelihood of the reads that damage explains, plus the log prior of the damage
-        distributions, up to a constant: alt reads at HOM_REF sites, weighted by their posterior probability, and the
-        absent reads of other bases at the histogram sites
+        The objective of the damage M step of each pair of a process and its other strand's process: the negative of
+        the expected log likelihood of the reads that damage explains, plus the log prior of the damage distributions,
+        up to a constant: alt reads at HOM_REF sites, weighted by their posterior probability, and the absent reads of
+        other bases at the histogram sites.  A site's reads of one base depend on the damage distributions of its kind
+        and of its kind's other strand's process, so the objective is the sum of the pairs'.
         """
         table, histogram_n, alt_n = self.damage_log_likelihoods(unconstrained_q2)
         histogram_hom_ref_n, alt_hom_ref_n = (posteriors_ng[:, HOM_REF] for posteriors_ng in posteriors)
-        log_lk = torch.sum(self.absent_cell_weights * table)
-        log_lk = log_lk + torch.sum(self.histogram.counts_n.double() * histogram_hom_ref_n * histogram_n)
-        log_lk = log_lk + torch.sum(self.alt_table.counts_n.double() * alt_hom_ref_n * alt_n)
-        log_prior = -torch.sum((unconstrained_q2 - hyper_mean_2) ** 2 / (2 * hyper_variance_2))
-        return -(log_lk + log_prior)
-
-    def damage_m_step(self, unconstrained_q2, posteriors, hyper_mean_2, hyper_variance_2) -> tuple[Tensor, Tensor]:
-        """
-        The maximum a posteriori damage distributions' unconstrained coordinates, by L-BFGS from the current ones, and
-        their Laplace approximations' variances, the diagonals of the inverse of the Hessian of the objective.  The data
-        of a process are those of the sites whose + or - strand it damages, so the objective couples each process only
-        with its other strand's process, and its Hessian is block diagonal, with a 4 x 4 block for each such pair.
-        """
-        scale = 1 / max(sum(part.counts_n.sum().item() for part in (self.histogram, self.alt_table)), 1)
-        u = unconstrained_q2.detach().clone().requires_grad_(True)
-        optimizer = torch.optim.LBFGS([u], max_iter=DAMAGE_M_STEP_ITERATIONS, line_search_fn="strong_wolfe")
-
-        def closure():
-            optimizer.zero_grad()
-            loss = scale * self.damage_objective(u, posteriors, hyper_mean_2, hyper_variance_2)
-            loss.backward()
-            return loss
-
-        optimizer.step(closure)
-        u = u.detach().requires_grad_(True)
-        (gradient,) = torch.autograd.grad(
-            self.damage_objective(u, posteriors, hyper_mean_2, hyper_variance_2), u, create_graph=True
+        num_kinds = len(unconstrained_q2)
+        absent_tqd = (self.absent_cell_weights * table).reshape(len(HistogramMarginals.PATTERNS), num_kinds, -1)
+        log_lk_q = absent_tqd.sum(dim=(0, 2))
+        log_lk_q = log_lk_q.index_add(
+            0, self.histogram_kinds_n, self.histogram.counts_n.double() * histogram_hom_ref_n * histogram_n
         )
-        # A pair's first process is the one of lower number.  The Hessian times a vector of 1s in component j of every
-        # pair's first (or second) process gives column j of the first (second) process's block in every pair's rows.
-        first_q = torch.arange(len(u)) < self.other_strand_q
+        log_lk_q = log_lk_q.index_add(0, self.alt_kinds_n, self.alt_table.counts_n.double() * alt_hom_ref_n * alt_n)
+        log_prior_q = -torch.sum((unconstrained_q2 - hyper_mean_2) ** 2 / (2 * hyper_variance_2), dim=-1)
+        objectives_q = -(log_lk_q + log_prior_q)
+        return torch.zeros(len(self.firsts_w), dtype=objectives_q.dtype).index_add(0, self.pairs_q, objectives_q)
+
+    def objectives_gradient_and_hessian_blocks(self, unconstrained_q2, posteriors, hyper_mean_2, hyper_variance_2):
+        """
+        The pairs' objectives, the gradient of the objective, and the 4 x 4 block of its Hessian of each pair, at the
+        given unconstrained coordinates, a (W, 4, 4) tensor in the order of the first process's coordinates, then the
+        second's.  The objective couples each process only with its other strand's process, so its Hessian is block
+        diagonal.
+        """
+        u = unconstrained_q2.detach().requires_grad_(True)
+        objectives_w = self.pair_objectives(u, posteriors, hyper_mean_2, hyper_variance_2)
+        (gradient,) = torch.autograd.grad(objectives_w.sum(), u, create_graph=True)
+        # The Hessian times a vector of 1s in component j of every pair's first (or second) process gives column j of the
+        # first (second) process's block in every pair's rows.
+        first_q = torch.zeros(len(u), dtype=torch.bool)
+        first_q[self.firsts_w] = True
         own_q22 = torch.zeros(len(u), 2, 2, dtype=torch.float64)  # [q, i, j]: d2 / du_qi du_qj
         cross_q22 = torch.zeros_like(own_q22)  # [q, i, j]: d2 / du_qi du_oj, o the other strand's process of q
         for role_q in (first_q, ~first_q):
@@ -599,17 +640,75 @@ class OrientationEM:
                 (column_q2,) = torch.autograd.grad(gradient, u, grad_outputs=vector_q2, retain_graph=True)
                 own_q22[role_q, :, j] = column_q2[role_q].detach()
                 cross_q22[~role_q, :, j] = column_q2[~role_q].detach()
-        # each pair's 4 x 4 block [[A, B], [B^T, C]], with A the first process's, and the diagonal of its inverse
-        firsts_w = first_q.nonzero().flatten()
-        seconds_w = self.other_strand_q[firsts_w]
-        a, b, c = own_q22[firsts_w], cross_q22[firsts_w], own_q22[seconds_w]
+        # each pair's 4 x 4 block [[A, B], [B^T, C]], with A the first process's
+        a, b, c = own_q22[self.firsts_w], cross_q22[self.firsts_w], own_q22[self.seconds_w]
         block_w44 = torch.cat([torch.cat([a, b], -1), torch.cat([b.transpose(1, 2), c], -1)], 1)
+        return objectives_w.detach(), gradient.detach(), block_w44
+
+    def damage_m_step(self, unconstrained_q2, posteriors, hyper_mean_2, hyper_variance_2) -> tuple[Tensor, Tensor]:
+        """
+        The maximum a posteriori damage distributions' unconstrained coordinates, by Newton's method from the current
+        ones, and their Laplace approximations' variances, the diagonals of the inverse of the Hessian of the objective.
+        The objective is a sum over pairs of a process and its other strand's process (see pair_objectives), so each pair
+        takes its own Newton step, in its own 4 coordinates, with its 4 x 4 block of the Hessian, whose eigenvalues are
+        replaced by their absolute values so that the step descends where the objective isn't convex, and its own
+        backtracking line search.
+        """
+        firsts_w, seconds_w = self.firsts_w, self.seconds_w
+        u = unconstrained_q2.detach().clone()
+        for _ in range(DAMAGE_M_STEP_ITERATIONS):
+            objectives_w, gradient_q2, block_w44 = self.objectives_gradient_and_hessian_blocks(
+                u, posteriors, hyper_mean_2, hyper_variance_2
+            )
+            gradient_w4 = torch.cat([gradient_q2[firsts_w], gradient_q2[seconds_w]], dim=-1)
+            eigenvalues_w4, vectors_w44 = torch.linalg.eigh(block_w44)
+            floor_w1 = 1e-10 * eigenvalues_w4.abs().amax(dim=-1, keepdim=True).clamp_min(1e-300)
+            magnitudes_w4 = torch.maximum(eigenvalues_w4.abs(), floor_w1)
+            projections_w4 = (vectors_w44.transpose(1, 2) @ gradient_w4.unsqueeze(-1)).squeeze(-1)
+            step_w4 = -(vectors_w44 @ (projections_w4 / magnitudes_w4).unsqueeze(-1)).squeeze(-1)
+            largest_w = step_w4.abs().amax(dim=-1)
+            if largest_w.max() <= NEWTON_TOLERANCE:
+                break
+            # a trust region: in nearly flat directions, eg a concentration that the data hardly constrain, Newton's step
+            # can be huge, so it is scaled to change no coordinate by more than MAX_NEWTON_STEP
+            step_w4 = step_w4 * (MAX_NEWTON_STEP / largest_w).clamp(max=1).unsqueeze(-1)
+
+            # pairs near their optimum take the full step; the others halve theirs until their objective decreases by
+            # the Armijo condition
+            trusted_w = (eigenvalues_w4[:, 0] > 0) & (largest_w <= NEWTON_REGION)
+            slopes_w = (gradient_w4 * step_w4).sum(dim=-1)
+            fractions_w = torch.ones(len(firsts_w), dtype=torch.float64)
+            new_u = u.clone()
+            new_u[firsts_w[trusted_w]] += step_w4[trusted_w, :2]
+            new_u[seconds_w[trusted_w]] += step_w4[trusted_w, 2:]
+            pending_w = ~trusted_w
+            for _ in range(MAX_STEP_HALVINGS if pending_w.any() else 0):
+                trial_w4 = fractions_w.unsqueeze(-1) * step_w4
+                trial = u.clone()
+                trial[firsts_w] += trial_w4[:, :2]
+                trial[seconds_w] += trial_w4[:, 2:]
+                with torch.no_grad():
+                    trial_objectives_w = self.pair_objectives(trial, posteriors, hyper_mean_2, hyper_variance_2)
+                accepted_w = pending_w & (trial_objectives_w <= objectives_w + ARMIJO_CONSTANT * fractions_w * slopes_w)
+                new_u[firsts_w[accepted_w]] = trial[firsts_w[accepted_w]]
+                new_u[seconds_w[accepted_w]] = trial[seconds_w[accepted_w]]
+                pending_w &= ~accepted_w
+                if not pending_w.any():
+                    break
+                fractions_w = torch.where(pending_w, fractions_w / 2, fractions_w)
+            if torch.equal(new_u, u):
+                break  # no pair can improve, which happens only where rounding hides the decrease
+            u = new_u
+        else:
+            # the loop ran out of iterations after a step, so the Hessian for the variances is at the final coordinates
+            _, _, block_w44 = self.objectives_gradient_and_hessian_blocks(u, posteriors, hyper_mean_2, hyper_variance_2)
+
         valid_w = torch.linalg.eigvalsh(block_w44)[:, 0] > 0
         diagonal_w4 = torch.diagonal(torch.linalg.inv(block_w44[valid_w]), dim1=-2, dim2=-1)
         variances_q2 = hyper_variance_2.expand_as(u).clone()
         variances_q2[firsts_w[valid_w]] = diagonal_w4[:, :2]
         variances_q2[seconds_w[valid_w]] = diagonal_w4[:, 2:]
-        return u.detach(), variances_q2
+        return u, variances_q2
 
     @staticmethod
     def hyperparameters(unconstrained_q2: Tensor, variances_q2: Tensor) -> tuple[Tensor, Tensor]:
@@ -622,27 +721,110 @@ class OrientationEM:
         num = len(unconstrained_q2)
         return mean_2, (squares_2 + 2 * DAMAGE_VARIANCE_SCALE) / (num + 2 * DAMAGE_VARIANCE_SHAPE + 2)
 
-    def run(self, convergence_threshold: float, max_iterations: int) -> EMResult:
-        priors_ws = flat_priors_ws()
+    def initial_state(self) -> EMState:
+        """EM's starting point: flat priors, and every process's damage distribution at the hierarchical prior's mean"""
         hyper_mean_2 = unconstrained_damage(INITIAL_DAMAGE_MEAN, INITIAL_DAMAGE_CONCENTRATION)
         hyper_variance_2 = torch.full((2,), INITIAL_DAMAGE_VARIANCE, dtype=torch.float64)
         u_q2 = hyper_mean_2.expand(len(self.learned_processes_q), 2).clone()
-        learned_w = torch.zeros(NUM_PAIRS, dtype=torch.bool)
-        learned_w[PAIRS_C[self.learned_processes_q // NUM_BASES]] = True
+        return EMState(flat_priors_ws(), u_q2, hyper_mean_2, hyper_variance_2)
+
+    def em_map(self, state: EMState) -> EMState:
+        """one iteration of EM"""
+        posteriors = self.e_step(state.priors_ws, state.unconstrained_q2)
+        new_priors_ws = self.priors_m_step(posteriors)
+        new_u_q2, variances_q2 = self.damage_m_step(
+            state.unconstrained_q2, posteriors, state.hyper_mean_2, state.hyper_variance_2
+        )
+        return EMState(new_priors_ws, new_u_q2, *self.hyperparameters(new_u_q2, variances_q2))
+
+    def log_posterior(self, state: EMState) -> float:
+        """
+        What EM increases, up to a constant: the log likelihood of the sites, each a sum over its genotypes, and of the
+        absent reads, plus the log priors of the damage coordinates under the hierarchical prior, of the hierarchical
+        prior's variances under their inverse-gamma hyperprior, and of the learned genotype priors under the flat
+        pseudocounts
+        """
+        u_q2, mean_2, variance_2 = state.unconstrained_q2, state.hyper_mean_2, state.hyper_variance_2
+        with torch.no_grad():
+            table, histogram_n, alt_n = self.damage_log_likelihoods(u_q2)
+            log_lk = torch.sum(self.absent_cell_weights * table)
+            for part, hom_ref_n, variant_nv in zip(
+                (self.histogram, self.alt_table), (histogram_n, alt_n), self.variant_nv
+            ):
+                log_priors_ng = state.priors_ws[PAIRS_C[part.contexts_n]].log()
+                log_lks_ng = torch.cat([hom_ref_n.unsqueeze(-1), variant_nv], dim=-1) + log_priors_ng
+                log_lk = log_lk + torch.sum(part.counts_n.double() * torch.logsumexp(log_lks_ng, dim=-1))
+            log_prior = torch.sum(
+                -((u_q2 - mean_2) ** 2) / (2 * variance_2) - 0.5 * torch.log(2 * math.pi * variance_2)
+            )
+            log_prior = log_prior + torch.sum(
+                -(DAMAGE_VARIANCE_SHAPE + 1) * variance_2.log() - DAMAGE_VARIANCE_SCALE / variance_2
+            )
+            log_prior = log_prior + FLAT_PRIOR * state.priors_ws[self.learned_w].log().sum()
+        return (log_lk + log_prior).item()
+
+    @staticmethod
+    def to_vector(state: EMState) -> Tensor:
+        """the state in unconstrained coordinates, in which SQUAREM extrapolates: log priors and log variances"""
+        log_priors = state.priors_ws.log().flatten()
+        return torch.cat(
+            [log_priors, state.unconstrained_q2.flatten(), state.hyper_mean_2, state.hyper_variance_2.log()]
+        )
+
+    def from_vector(self, vector: Tensor) -> EMState:
+        """the state of a vector of to_vector's unconstrained coordinates"""
+        num_priors, num_u = NUM_PAIRS * NUM_GENOTYPES, 2 * len(self.learned_processes_q)
+        priors_ws = torch.softmax(vector[:num_priors].reshape(NUM_PAIRS, NUM_GENOTYPES), dim=-1)
+        u_q2 = vector[num_priors : num_priors + num_u].reshape(-1, 2)
+        mean_2, log_variance_2 = vector[num_priors + num_u : num_priors + num_u + 2], vector[num_priors + num_u + 2 :]
+        return EMState(priors_ws, u_q2, mean_2, log_variance_2.exp())
+
+    def run(self, convergence_threshold: float, max_iterations: int) -> EMResult:
+        """
+        EM accelerated by SQUAREM (Varadhan and Roland 2008, scheme S3).  From the state x0, two iterations of EM give x1
+        and x2, and with r = x1 - x0 and v = x2 - 2 x1 + x0, the extrapolation x0 + 2 a r + a^2 v, with a = |r| / |v|
+        between 1 and a maximum, is followed by an iteration of EM that stabilizes it.  If that loses more than
+        SQUAREM_TOLERANCE of the log posterior, the next state is x2 instead and the maximum shrinks; an extrapolation at
+        the maximum raises it, as in the R package SQUAREM.  max_iterations counts iterations of EM.  EM has converged
+        when no learned pair's prior changes by more than convergence_threshold in a cycle and either no damage coordinate
+        changes by more than DAMAGE_TOLERANCE or the log posterior by more than SQUAREM_OBJECTIVE_TOLERANCE: extrapolation
+        keeps moving the coordinates that hardly change the log posterior a little.
+        """
+        state = self.initial_state()
         num_iterations, converged = 0, len(self.learned_processes_q) == 0
+        step_max = 1.0
+        log_posterior = 0.0 if converged else self.log_posterior(state)
         while not converged and num_iterations < max_iterations:
-            num_iterations += 1
-            posteriors = self.e_step(priors_ws, u_q2)
-            new_priors_ws = self.priors_m_step(posteriors)
-            new_u_q2, variances_q2 = self.damage_m_step(u_q2, posteriors, hyper_mean_2, hyper_variance_2)
-            hyper_mean_2, hyper_variance_2 = self.hyperparameters(new_u_q2, variances_q2)
-            prior_change = torch.linalg.vector_norm(new_priors_ws - priors_ws, dim=-1)[learned_w].max().item()
-            damage_change = (new_u_q2 - u_q2).abs().max().item()
-            priors_ws, u_q2 = new_priors_ws, new_u_q2
-            converged = prior_change <= convergence_threshold and damage_change <= DAMAGE_TOLERANCE
-        u_p2 = hyper_mean_2.expand(NUM_PROCESSES, 2).clone()
-        u_p2[self.learned_processes_q] = u_q2
-        return EMResult(priors_ws, u_p2, hyper_mean_2, hyper_variance_2, num_iterations, converged)
+            x0 = self.to_vector(state)
+            state1 = self.em_map(state)
+            state2 = self.em_map(state1)
+            num_iterations += 2
+            r, v = self.to_vector(state1) - x0, self.to_vector(state2) - 2 * self.to_vector(state1) + x0
+            alpha = (r.norm() / v.norm().clamp_min(1e-300)).clamp(min=1.0, max=step_max).item()
+            if alpha > 1.0 and num_iterations < max_iterations:
+                new_state = self.em_map(self.from_vector(x0 + 2 * alpha * r + alpha**2 * v))
+                num_iterations += 1
+            else:
+                new_state = state2  # the extrapolation with a = 1
+            new_log_posterior = self.log_posterior(new_state)
+            if not (math.isfinite(new_log_posterior) and new_log_posterior >= log_posterior - SQUAREM_TOLERANCE):
+                new_state, new_log_posterior = state2, self.log_posterior(state2)
+                if alpha == step_max:
+                    step_max = max(1.0, step_max / SQUAREM_STEP_FACTOR)
+                alpha = 1.0
+            if alpha == step_max:
+                step_max *= SQUAREM_STEP_FACTOR
+
+            prior_change = torch.linalg.vector_norm(new_state.priors_ws - state.priors_ws, dim=-1)[self.learned_w].max()
+            damage_change = (new_state.unconstrained_q2 - state.unconstrained_q2).abs().max()
+            log_posterior_change = abs(new_log_posterior - log_posterior)
+            state, log_posterior = new_state, new_log_posterior
+            converged = prior_change.item() <= convergence_threshold and (
+                damage_change.item() <= DAMAGE_TOLERANCE or log_posterior_change <= SQUAREM_OBJECTIVE_TOLERANCE
+            )
+        u_p2 = state.hyper_mean_2.expand(NUM_PROCESSES, 2).clone()
+        u_p2[self.learned_processes_q] = state.unconstrained_q2
+        return EMResult(state.priors_ws, u_p2, state.hyper_mean_2, state.hyper_variance_2, num_iterations, converged)
 
 
 def learned_pairs_w(sites: SiteTable) -> Tensor:
