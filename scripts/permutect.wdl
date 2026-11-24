@@ -368,6 +368,9 @@ workflow Permutect {
     # in MB as Cromwell counts them, 2^20 bytes, so a little more than the estimate
     Int machine_mem = if defined(mem) then mem * 1000 else ceil((peak_gb + 1.5) * 1000)
     Int command_mem = machine_mem - 500
+    # the reference, the test dataset and its normalized copy, in temporary memory maps, which is smaller, and the VCF, as
+    # given, pre-filtered and filtered
+    Int default_disk_space = ceil(size(ref_fasta, "GB") + 2 * size(test_dataset, "GB") + 3 * size(mutect2_vcf, "GB")) + 10
 
     command <<<
         set -euo pipefail
@@ -402,7 +405,7 @@ workflow Permutect {
         docker: permutect_docker
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
-        disks: "local-disk " + select_first([disk_space, 100]) + " SSD"
+        disks: "local-disk " + select_first([disk_space, default_disk_space]) + " SSD"
         preemptible: select_first([preemptible, 0])
         maxRetries: select_first([max_retries, 0])
         cpu: num_cpus
@@ -431,7 +434,7 @@ task SplitMultiallelics {
         String gatk_docker
         Int? preemptible
         Int max_retries = 0
-        Int disk_space = 100
+        Int? disk_space
         Int cpu = 1
         Int mem = 4
     }
@@ -439,6 +442,8 @@ task SplitMultiallelics {
     # Mem is in units of GB but our command and memory runtime values are in MB
     Int machine_mem = mem * 1000
     Int command_mem = machine_mem - 500
+    # the reference, and the VCF, its split copy and the output
+    Int default_disk_space = ceil(size(ref_fasta, "GB") + 3 * size(input_vcf, "GB")) + 10
 
     command <<<
         set -euo pipefail
@@ -456,7 +461,7 @@ task SplitMultiallelics {
         docker: gatk_docker
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
-        disks: "local-disk " + disk_space + " SSD"
+        disks: "local-disk " + select_first([disk_space, default_disk_space]) + " SSD"
         preemptible: select_first([preemptible, 0])
         maxRetries: max_retries
         cpu: cpu
@@ -483,7 +488,12 @@ task Concordance {
     	# runtime
     	String gatk_docker = "us.gcr.io/broad-gatk/gatk"
     	Int preemptible = 0
+        Int? disk_space
 	}
+
+    # The VCFs and Concordance's outputs and the records extracted from them, about twice the VCFs' uncompressed size, which
+    # is up to about five times a bgzipped VCF's
+    Int default_disk_space = ceil(10 * (size(truth_vcf, "GB") + size(eval_vcf, "GB"))) + 10
 
     command <<<
         eval_vcf="~{eval_vcf}"
@@ -534,7 +544,7 @@ task Concordance {
         memory: "5 GB"
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         docker: "${gatk_docker}"
-        disks: "local-disk " + 100 + " HDD"
+        disks: "local-disk " + select_first([disk_space, default_disk_space]) + " HDD"
         preemptible: select_first([preemptible, 2])
     }
 

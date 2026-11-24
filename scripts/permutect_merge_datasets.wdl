@@ -55,7 +55,7 @@ task EditDataset {
 
     runtime {
         docker: permutect_docker
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + select_first([disk_space, default_disk_space]) + if use_ssd then " SSD" else " HDD"
         preemptible: select_first([preemptible, 10])

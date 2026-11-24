@@ -91,6 +91,8 @@ task Train {
     # Mem is in units of GB but our memory runtime value is in MB.  Memory hardly depends on the data, since ReadsDataset
     # sizes its chunks to the available memory: each GPU's process uses about 2 GB and the chunks about a fifth of the total.
     Int machine_mem = if defined(mem) then mem * 1000 else (4 + 3 * num_gpus) * 1000
+    # the dataset, which training memory-maps where it lies, or extracts if it is compressed, and the pretrained model
+    Int default_disk_space = ceil(2 * size(train_tar, "GB") + size(pretrained_model, "GB")) + 10
 
     command <<<
         set -e
@@ -120,7 +122,7 @@ task Train {
         docker: permutect_docker
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
-        disks: "local-disk " + select_first([disk_space, 100]) + " SSD"
+        disks: "local-disk " + select_first([disk_space, default_disk_space]) + " SSD"
         preemptible: select_first([preemptible, 0])
         maxRetries: select_first([max_retries, 0])
         # each GPU's process keeps about one core busy and its DataLoader workers need another: 4 vCPUs (2 cores) per GPU
