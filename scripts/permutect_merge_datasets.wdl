@@ -40,8 +40,10 @@ task EditDataset {
     # the input datasets and the edited dataset, which is no bigger than them
     Int default_disk_space = ceil(2 * size(train_tar, "GB")) + 10
 
-    # Mem is in units of GB but our memory runtime value is in MB
-    Int machine_mem = if defined(mem) then mem * 1000 else 16000
+    # Mem is in units of GB but our memory runtime value is in MB.  edit_dataset memory-maps the datasets and edits them
+    # 100,000 data at a time, so its memory doesn't grow with them: in November 2026 merging four 1.4 GB datasets used at
+    # most 1.2 GB of the machine's memory.
+    Int machine_mem = if defined(mem) then mem * 1000 else 4000
 
     command <<<
         set -e
