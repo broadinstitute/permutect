@@ -626,11 +626,21 @@ task LearnReadOrientationModel {
         String permutect_docker
         Int? preemptible
         Int? max_retries
+        Int? cpu
+        # memory in GB, which overrides the estimate below
         Int? mem
     }
 
-    # Mem is in units of GB but our runtime value is in MB.  The tool reads the counts without extracting them.
-    Int machine_mem = if defined(mem) then mem * 1000 else 4000
+    # torch uses a thread per core: in November 2026 4 vCPUs (2 cores) were 1.6-1.8 times as fast as 2, at the same cost
+    Int num_cpus = select_first([cpu, 4])
+
+    # Without mem, an estimate of the peak memory from measurements in November 2026, plus 1.5 GB of margin: about 1.35 GB
+    # plus, per GB of F1R2 counts, 81 GB with a germline model, whose minor allele fraction mixtures multiply the distinct
+    # sites, or 32 GB without.  An FFPE genome's 80 MB of counts peaked at 7.8 GB with its germline model.
+    Float peak_gb = 1.35 + (if defined(germline_model) then 81 else 32) * size(f1r2_counts, "GB")
+    # in MB as Cromwell counts them, 2^20 bytes, so a little more than the estimate
+    Int machine_mem = if defined(mem) then mem * 1000 else ceil((peak_gb + 1.5) * 1000)
+    # the counts, which the tool reads without extracting them, and the germline model
     Int disk_space = ceil(size(f1r2_counts, "GB") + size(germline_model, "GB")) + 10
 
     command <<<
@@ -646,7 +656,7 @@ task LearnReadOrientationModel {
         disks: "local-disk " + disk_space + " SSD"
         preemptible: select_first([preemptible, 0])
         maxRetries: select_first([max_retries, 0])
-        cpu: 1
+        cpu: num_cpus
     }
 
     output {
