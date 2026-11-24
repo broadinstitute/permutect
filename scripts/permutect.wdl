@@ -578,12 +578,21 @@ task SegmentPileups {
         Int? preemptible
         Int? max_retries
         Int? cpu
+        # memory in GB, which overrides the estimate below
         Int? mem
     }
 
-    # Mem is in units of GB but our runtime value is in MB.  TODO: the segmentation's memory grows with the number of
-    # sites, and for the tens of millions of common SNPs of a genome each sites x MAF states array takes about 11 GB.
-    Int machine_mem = if defined(mem) then mem * 1000 else 16000
+    # numba parallelizes the E-step: in November 2026 a genome took 17% less time with 8 vCPUs than with 4, at about 40%
+    # more cost, and 16 vCPUs were no faster than 8
+    Int num_cpus = select_first([cpu, 4])
+
+    # Without mem, an estimate of the peak memory from measurements in November 2026, plus 1.5 GB of margin: about 2 GB
+    # plus 0.8-1 GB per million sites of the larger sample, whose pileups table holds 32 (hg38) to 41 (b37) million
+    # sites per GB.  The runtime value is in MB.
+    Float tumor_gb = size(tumor_pileups, "GB")
+    Float normal_gb = size(normal_pileups, "GB")
+    Float peak_gb = 2.0 + 33 * (if tumor_gb > normal_gb then tumor_gb else normal_gb)
+    Int machine_mem = if defined(mem) then mem * 1000 else ceil((peak_gb + 1.5) * 1000)
     Int disk_space = ceil(2 * size(tumor_pileups, "GB") + 2 * size(normal_pileups, "GB")) + 10
 
     command <<<
@@ -606,7 +615,7 @@ task SegmentPileups {
         disks: "local-disk " + disk_space + " SSD"
         preemptible: select_first([preemptible, 0])
         maxRetries: select_first([max_retries, 0])
-        cpu: select_first([cpu, 4])
+        cpu: num_cpus
     }
 
     output {
