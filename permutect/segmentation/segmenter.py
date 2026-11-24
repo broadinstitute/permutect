@@ -15,6 +15,7 @@ that raises the log likelihood and returns to 1 after one that lowers it.  On a 
 iterations to 21, with the same segments.
 """
 
+import copy
 import math
 from dataclasses import dataclass
 
@@ -38,6 +39,8 @@ INITIAL_JUMP_RATE = 1e-8
 MAX_FITTING_SITES = 100_000
 # L-BFGS iterations of each emission M-step, which starts from the parameters of the previous one
 EMISSION_FIT_ITERATIONS = 5
+# the emission M-step leaves out pairs of a site and a MAF state whose posterior is below this
+MIN_FITTING_POSTERIOR = 1e-6
 # EM stops when the log likelihood changes by less than this per site
 CONVERGENCE_THRESHOLD = 1e-6
 # the over-relaxation step size grows by this factor after each iteration that raises the log likelihood, up to the max
@@ -68,6 +71,20 @@ class Segmentation:
     jump_rate: float
     emission_model: EmissionModel
     log_likelihood: float
+    # the number of iterations of EM, ie of E-steps
+    num_iterations: int
+
+
+@dataclass
+class WarmStart:
+    """
+    The fitted parameters of an earlier segmentation of the same sites, eg with a different contamination, from which EM
+    can start: the prior of the MAF states, the states it pruned having prior 0, the jump rate and the emission model
+    """
+
+    prior_k: np.ndarray
+    jump_rate: float
+    emission_model: EmissionModel
 
 
 @dataclass
@@ -102,23 +119,34 @@ def segment(
     max_jump_rate: float,
     prior_concentration: float,
     max_iterations: int,
+    warm_start: WarmStart = None,
 ) -> Segmentation:
     """
     Segment sites given their pileups and positions, where the sites of each contig are consecutive, with lengths_c[c]
-    sites in contig c, and in order of position
+    sites in contig c, and in order of position.  Given a warm start, EM starts from its parameters, with the given
+    contamination, and since its states are already pruned, it starts past the iterations before pruning.
     """
     num_sites = len(positions_n)
     mafs_k = np.linspace(0, 0.5, num_maf_states)
     distances_n = site_distances(positions_n, lengths_c)
-    prior_k = np.full(num_maf_states, 1 / num_maf_states)
-    jump_rate = min(INITIAL_JUMP_RATE, max_jump_rate)
-    emission_model = EmissionModel(contamination=contamination)
+    if warm_start is None:
+        prior_k = np.full(num_maf_states, 1 / num_maf_states)
+        jump_rate = min(INITIAL_JUMP_RATE, max_jump_rate)
+        emission_model = EmissionModel(contamination=contamination)
+        first_iteration = 0
+    else:
+        assert len(warm_start.prior_k) == num_maf_states
+        prior_k, jump_rate = warm_start.prior_k.copy(), warm_start.jump_rate
+        emission_model = copy.deepcopy(warm_start.emission_model)
+        emission_model.contamination = contamination
+        first_iteration = NUM_ITERATIONS_BEFORE_PRUNING + 1
     rng = np.random.default_rng(0)
     fitting_sites = np.sort(rng.choice(num_sites, min(num_sites, MAX_FITTING_SITES), replace=False))
     fitting_pileups = pileups.subset(torch.from_numpy(fitting_sites))
 
-    previous_log_likelihood, previous_num_states, step_size = -math.inf, num_maf_states, 1.0
-    for iteration in range(max_iterations):
+    previous_log_likelihood, previous_num_states, step_size = -math.inf, np.count_nonzero(prior_k), 1.0
+    last_iteration = first_iteration + max_iterations - 1
+    for iteration in range(first_iteration, last_iteration + 1):
         # E-step, restricted to the states that haven't been pruned
         active_k = np.flatnonzero(prior_k)
         log_emissions_nk = log_emissions(emission_model, pileups, mafs_k[active_k])
@@ -140,7 +168,7 @@ def segment(
             and change < CONVERGENCE_THRESHOLD * num_sites
             and len(active_k) == previous_num_states
         )
-        if converged or iteration == max_iterations - 1:
+        if converged or iteration == last_iteration:
             break
         if iteration > NUM_ITERATIONS_BEFORE_PRUNING:
             improved = posteriors.log_likelihood >= previous_log_likelihood
@@ -156,7 +184,14 @@ def segment(
         jump_rate = fit_jump_rate(posteriors.jump_posteriors_n, distances_n, max_jump_rate)
         fitting_posteriors_nk = torch.from_numpy(posteriors.state_posteriors_nk[fitting_sites])
         fitting_mafs_k = torch.from_numpy(mafs_k[active_k])
-        emission_model.fit(fitting_pileups, fitting_posteriors_nk, fitting_mafs_k, EMISSION_FIT_ITERATIONS, step_size)
+        emission_model.fit(
+            fitting_pileups,
+            fitting_posteriors_nk,
+            fitting_mafs_k,
+            EMISSION_FIT_ITERATIONS,
+            step_size,
+            min_posterior=MIN_FITTING_POSTERIOR,
+        )
         # release this iteration's site-by-state arrays before the next E-step allocates its own
         log_emissions_nk = posteriors = None
 
@@ -187,6 +222,7 @@ def segment(
         jump_rate=jump_rate,
         emission_model=emission_model,
         log_likelihood=log_likelihood,
+        num_iterations=iteration - first_iteration + 1,
     )
 
 

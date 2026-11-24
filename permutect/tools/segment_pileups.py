@@ -17,6 +17,7 @@ from permutect.segmentation.pileup_summaries import PileupSummaries
 from permutect.segmentation.pileup_summaries import read_pileup_summaries
 from permutect.segmentation.plotting import plot_segmentation
 from permutect.segmentation.segmenter import Segment
+from permutect.segmentation.segmenter import WarmStart
 from permutect.segmentation.segmenter import make_segments
 from permutect.segmentation.segmenter import segment
 
@@ -151,13 +152,27 @@ def segmentation_sites(pileup_summaries: PileupSummaries) -> SegmentationSites:
 
 
 def segment_sites(
-    sample: str, sites: SegmentationSites, contamination: float, **segmentation_arguments
+    sample: str,
+    sites: SegmentationSites,
+    contamination: float,
+    warm_start: SampleSegmentation = None,
+    **segmentation_arguments,
 ) -> SampleSegmentation:
-    """the segments of a sample's sites and the parameters learned in finding them"""
+    """
+    the segments of a sample's sites and the parameters learned in finding them, starting from those of an earlier
+    segmentation of the same sites if given
+    """
     if len(sites.positions_n) == 0:
         return SampleSegmentation(sample, emission_model=EmissionModel(contamination=contamination))
+    if warm_start is not None:
+        warm_start = WarmStart(warm_start.maf_prior_k.numpy(), warm_start.jump_rate, warm_start.emission_model)
     segmentation = segment(
-        sites.pileups, sites.positions_n, sites.lengths_c, contamination=contamination, **segmentation_arguments
+        sites.pileups,
+        sites.positions_n,
+        sites.lengths_c,
+        contamination=contamination,
+        warm_start=warm_start,
+        **segmentation_arguments,
     )
     args = (sites.contigs_c, sites.lengths_c, sites.positions_n, segmentation.run_starts_r, segmentation.run_mafs_r3)
     hmm_parameters = (torch.from_numpy(segmentation.mafs_k), torch.from_numpy(segmentation.prior_k))
@@ -214,9 +229,11 @@ def segment_pileups(
         normal_segmentation = segment_sites(normal_pileup_summaries.sample, normal_sites, 0.0, **segmentation_arguments)
         normal_segments = normal_segmentation.segments
 
-    contamination = 0.0
+    # each segmentation after the first starts from the previous one's parameters, since the contamination hardly changes
+    # them
+    contamination, tumor_segmentation = 0.0, None
     for iteration in range(num_contamination_iterations):
-        tumor_segmentation = segment_sites(sample, sites, contamination, **segmentation_arguments)
+        tumor_segmentation = segment_sites(sample, sites, contamination, tumor_segmentation, **segmentation_arguments)
         contamination, error = calculate_contamination(
             pileup_summaries, tumor_segmentation.segments, normal_pileup_summaries, normal_segments
         )

@@ -2,10 +2,12 @@ import dataclasses
 
 import numpy as np
 import pytest
+import torch
 
 from permutect.segmentation import segmenter
 from permutect.segmentation.emissions import EmissionModel
 from permutect.segmentation.segmenter import Segment
+from permutect.segmentation.segmenter import WarmStart
 from permutect.segmentation.segmenter import find_runs
 from permutect.segmentation.segmenter import make_segments
 from permutect.segmentation.segmenter import run_mafs
@@ -18,7 +20,7 @@ from permutect.test.segmentation.test_emissions import simulate_pileups
 CONTAMINATION = 0.02
 
 
-def segment_simulated_sample(sample: SimulatedSample):
+def segment_simulated_sample(sample: SimulatedSample, warm_start: WarmStart = None):
     return segment(
         sample.pileups,
         sample.positions_n,
@@ -28,6 +30,7 @@ def segment_simulated_sample(sample: SimulatedSample):
         max_jump_rate=1e-7,
         prior_concentration=0.1,
         max_iterations=30,
+        warm_start=warm_start,
     )
 
 
@@ -63,6 +66,22 @@ def test_simulated_tumor():
     model = segmentation.emission_model
     assert model.error_rate.item() == pytest.approx(simulation.ERROR_RATE, rel=0.1)
     assert model.reference_bias.item() == pytest.approx(simulation.REFERENCE_BIAS, rel=0.02)
+
+
+def test_warm_start_from_a_converged_segmentation():
+    # EM started from a converged segmentation's parameters, with the same contamination, stops within a few iterations
+    # with the same segments, and leaves the earlier segmentation's emission model alone
+    sample = simulate_sample(
+        np.random.default_rng(0), purity=0.7, cell_fractions=[1.0, 0.5], contaminations=[CONTAMINATION]
+    )
+    cold = segment_simulated_sample(sample)
+    cold_parameters = [parameter.detach().clone() for parameter in cold.emission_model.parameters()]
+    warm = segment_simulated_sample(sample, WarmStart(cold.prior_k, cold.jump_rate, cold.emission_model))
+    assert warm.num_iterations <= 4 < cold.num_iterations
+    assert np.array_equal(warm.states_n, cold.states_n)
+    assert warm.log_likelihood >= cold.log_likelihood - 1e-6 * len(sample.positions_n)
+    for parameter, before in zip(cold.emission_model.parameters(), cold_parameters):
+        assert torch.equal(parameter, before)
 
 
 def test_normal_has_one_segment_per_contig():
