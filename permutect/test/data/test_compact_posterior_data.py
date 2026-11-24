@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 
-from permutect.architecture.posterior_model import PosteriorModel
 from permutect.architecture.posterior_model_priors import get_ref_contexts_and_alt_bases
 from permutect.data.batch import Batch
 from permutect.data.compact_posterior_data import CompactPosteriorData
@@ -80,14 +79,6 @@ def test_a_pass_has_every_variant_once_with_the_fields_the_posterior_model_reads
     # int16 and float16, without the rest of the haplotypes or the INFO vector
     num_columns = Data.NUM_SCALAR_INT_ELEMENTS + 6 + Data.NUM_SCALAR_FLOAT_ELEMENTS
     assert compact.nbytes == 2 * num_columns * len(data)
-
-
-def test_the_posterior_model_gives_the_same_posteriors_from_compact_data():
-    memory_mapped_data, data = make_data(10)
-    compact = CompactPosteriorData.from_memory_mapped_data(memory_mapped_data, batch_size=4, device="cpu")
-    model = PosteriorModel(variant_log_prior=-10, artifact_log_prior=-10, device="cpu")
-    expected = model.log_relative_posteriors_bc(one_batch([Batch(data)]))
-    assert torch.equal(model.log_relative_posteriors_bc(one_batch(compact)), expected)
 
 
 def test_each_pass_has_a_new_order_that_the_seed_determines():

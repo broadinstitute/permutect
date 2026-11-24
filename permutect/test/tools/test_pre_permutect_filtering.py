@@ -23,10 +23,14 @@ def record_filters(record) -> set:
     return set(record.FILTER.split(";")) if record.FILTER else set()
 
 
-def test_hairpin_filtering_on_seqc2_wes_chr20():
-    output_vcf = run_pre_permutect_filtering(MUTECT2_SEQC2_WES_VCF, HG38_CHR20_REFERENCE)
+@pytest.fixture(scope="module")
+def filtered_seqc2_vcf():
+    # with the default settings, shared by the tests that check them
+    return run_pre_permutect_filtering(MUTECT2_SEQC2_WES_VCF, HG38_CHR20_REFERENCE)
 
-    target_records = [v for v in cyvcf2.VCF(output_vcf.name) if v.CHROM == "chr20" and v.POS == 4932703]
+
+def test_hairpin_filtering_on_seqc2_wes_chr20(filtered_seqc2_vcf):
+    target_records = [v for v in cyvcf2.VCF(filtered_seqc2_vcf.name) if v.CHROM == "chr20" and v.POS == 4932703]
     assert len(target_records) == 1
     record = target_records[0]
     assert pre_permutect_filtering.HAIRPIN_FILTER in record.FILTER.split(";"), (
@@ -45,12 +49,11 @@ def test_no_hairpin_filter():
     assert not any(pre_permutect_filtering.HAIRPIN_FILTER in record_filters(v) for v in records)
 
 
-def test_multiallelic_indel_filter_matches_mutect2():
+def test_multiallelic_indel_filter_matches_mutect2(filtered_seqc2_vcf):
     # FilterMutectCalls has filtered this VCF, whose records are not split, so the multiallelic indel filter should
     # filter exactly the records with an indel allele that FilterMutectCalls filtered as multiallelic
-    output_vcf = run_pre_permutect_filtering(MUTECT2_SEQC2_WES_VCF, HG38_CHR20_REFERENCE)
     num_filtered = 0
-    for v in cyvcf2.VCF(output_vcf.name):
+    for v in cyvcf2.VCF(filtered_seqc2_vcf.name):
         filters = record_filters(v)
         expected = "multiallelic" in filters and pre_permutect_filtering.has_indel_allele(v)
         assert (pre_permutect_filtering.MULTIALLELIC_INDEL_FILTER in filters) == expected, f"{v.CHROM}:{v.POS}"
@@ -92,9 +95,16 @@ def test_multiallelic_indel_filter_on_split_records(tmp_path):
     assert filtered == {(1000000, "CT", "C"), (1000000, "C", "CT"), (3000000, "A", "AG")}
 
 
-def test_vcf_without_format_dp_header():
-    # like the output of SplitMultiallelics in permutect.wdl, this VCF has FORMAT/DP values but no FORMAT/DP header line
-    output_vcf = run_pre_permutect_filtering(MUTECT2_CHR20_FILTERED_VCF, HG19_CHR20_REFERENCE)
+def test_vcf_without_format_dp_header(tmp_path):
+    # like the output of SplitMultiallelics in permutect.wdl, a VCF with FORMAT/DP values but no FORMAT/DP header line
+    input_vcf = tmp_path / "without_format_dp_header.vcf"
+    with open(MUTECT2_SEQC2_WES_VCF) as file:
+        lines = [line for line in file if not line.startswith("##FORMAT=<ID=DP,")]
+    input_vcf.write_text("".join(lines))
+    num_input_records = sum(1 for line in lines if not line.startswith("#"))
+    assert num_input_records > 0
 
-    num_input_records = sum(1 for _ in cyvcf2.VCF(MUTECT2_CHR20_FILTERED_VCF))
+    output_vcf = run_pre_permutect_filtering(
+        str(input_vcf), HG38_CHR20_REFERENCE, ("--" + constants.NO_HAIRPIN_FILTER_NAME,)
+    )
     assert sum(1 for _ in cyvcf2.VCF(output_vcf.name)) == num_input_records

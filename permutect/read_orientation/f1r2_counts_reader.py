@@ -45,7 +45,6 @@ from permutect.utils.gatk_table import read_gatk_table
 # in this order the complement of the base with index b has index 3 - b
 BASES = "ACGT"
 BASE_INDICES = {base: n for n, base in enumerate(BASES)}
-ORIENTATIONS = ("F1R2", "F2R1")
 # every 3-base reference context, in lexicographic order
 CONTEXTS = tuple(a + b + c for a in BASES for b in BASES for c in BASES)
 

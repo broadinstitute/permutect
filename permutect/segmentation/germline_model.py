@@ -16,7 +16,6 @@ from torch import nn
 from permutect import constants
 from permutect.misc_utils import freeze
 from permutect.segmentation.emissions import EmissionModel
-from permutect.segmentation.emissions import Pileups
 from permutect.segmentation.indel_parameters import IndelParameters
 from permutect.segmentation.segmenter import Segment
 from permutect.utils.math_utils import log1mexp
@@ -61,16 +60,6 @@ class SampleSegmentation(nn.Module):
             if not math.isnan(segment.maf):
                 result[segment.contig][segment.start : segment.end + 1] = segment.maf  # intervals are half-open
         return result
-
-    def emission_log_likelihoods(
-        self, alt_counts: Tensor, depths: Tensor, allele_frequencies: Tensor, mafs: Tensor
-    ) -> Tensor:
-        """
-        The segmentation's log likelihood of each site's alt count given its depth, population allele frequency and MAF:
-        hom ref, het and hom alt genotypes with their Hardy-Weinberg probabilities, and outliers
-        """
-        pileups = Pileups(alt_counts, depths, allele_frequencies)
-        return self.emission_model.log_likelihoods(pileups, mafs[:, None]).squeeze(1)
 
     def contamination_log_likelihoods(
         self, alt_counts: Tensor, depths: Tensor, log_allele_frequencies: Tensor
@@ -271,7 +260,5 @@ class GermlineModel(nn.Module):
     def load(cls, path) -> "GermlineModel":
         state = torch.load(path, map_location="cpu", weights_only=True)
         tumor, normal = (SampleSegmentation.from_state(state[sample]) for sample in ("tumor", "normal"))
-        # models saved before indels had their own parameters get the defaults
-        indel_state = state.get("indel_parameters")
-        indel_parameters = None if indel_state is None else IndelParameters.from_state(indel_state)
+        indel_parameters = IndelParameters.from_state(state["indel_parameters"])
         return cls(tumor, normal, state["contamination"], state["contamination_error"], indel_parameters)

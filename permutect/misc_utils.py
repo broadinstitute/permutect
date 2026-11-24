@@ -17,8 +17,6 @@ from tqdm.autonotebook import tqdm
 
 from permutect.data.datum import DEFAULT_CPU_FLOAT
 from permutect.data.datum import DEFAULT_GPU_FLOAT
-from permutect.data.datum import Data
-from permutect.data.datum import Datum
 from permutect.utils.allele_utils import bases_as_base5_int
 from permutect.utils.allele_utils import trim_alleles_on_right
 from permutect.utils.allele_utils import truncate_bases_if_necessary
@@ -37,23 +35,6 @@ def seed_random_number_generators(seed: int = 0):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-
-
-class ConsistentValue:
-    """
-    Tracks a value that once initialized, is consistent among eg all members of a dataset.  For example, all tensors
-    must have the same number of columns.
-    """
-
-    def __init__(self, value=None):
-        self.value = value
-
-    def check(self, value):
-        if self.value is None:
-            self.value = value
-        elif self.value != value:
-            # an error rather than an assert, which python -O skips
-            raise ValueError(f"inconsistent values: {value} differs from the earlier {self.value}")
 
 
 def gpu_if_available(exploit_mps=False) -> torch.device:
@@ -153,37 +134,6 @@ def unfreeze(parameters):
             parameter.requires_grad = True
 
 
-class StreamingAverage:
-    def __init__(self):
-        self._count = 0.0
-        self._sum = 0.0
-
-    def is_empty(self) -> bool:
-        return self._count == 0.0
-
-    def get(self) -> float:
-        return 0.0 if self.is_empty() else self._sum / self._count
-
-    def record(self, value: float, weight: float = 1):
-        self._count += weight
-        self._sum += value * weight
-
-    def record_sum(self, value_sum: float | Tensor, count):
-        self._count += count
-        self._sum += value_sum
-
-    # record only values masked as true
-    def record_with_mask(self, values: Tensor, mask: Tensor):
-        self._count += torch.sum(mask).item()
-        self._sum += torch.sum(values * mask).item()
-
-    # record values with different weights
-    # values and mask should live on same device as self._sum
-    def record_with_weights(self, values: Tensor, weights: Tensor):
-        self._count += torch.sum(weights).item()
-        self._sum += torch.sum(values * weights).item()
-
-
 class Timer:
     def __init__(self, message: str = None):
         if message is not None:
@@ -233,32 +183,13 @@ def str_repeat_count_change(variant) -> int:
     return int(repeats_per_allele[1]) - int(repeats_per_allele[0])
 
 
-def encode(contig: str, position: int, ref: str, alt: str):
-    # contig is a name such as chr1; encode_datum converts a Datum's contig index to its name
-    # both alleles are needed to distinguish eg AT>A from ATT>A.  They are truncated like the alleles stored in a Datum.
-    trimmed_ref, trimmed_alt = trim_alleles_on_right(ref, alt)
-    encoded_alleles = truncate_bases_if_necessary(trimmed_ref) + ":" + truncate_bases_if_necessary(trimmed_alt)
-    return contig + ":" + str(position) + ":" + encoded_alleles
-
-
-def encode_datum(datum: Datum, contig_index_to_name_map):
-    contig_name = contig_index_to_name_map[datum.get(Data.CONTIG)]
-    return encode(contig_name, datum.get(Data.POSITION), datum.get_ref_allele(), datum.get_alt_allele())
-
-
-def encode_variant(v: cyvcf2.Variant):
-    # the one-based VCF position, as in a Datum, not cyvcf2's zero-based v.start
-    alt = v.ALT[0]  # TODO: we're assuming biallelic
-    ref = v.REF
-    return encode(v.CHROM, v.POS, ref, alt)
-
-
 def allele_key(ref: str, alt: str) -> int | None:
     """
-    A variant's alleles as one integer, for sorting and matching variants by position and alleles: two variants have
-    the same key if and only if encode gives them the same alleles.  The key is the base-5 integers of the ref and alt
-    alleles, trimmed on the right and truncated as in encode, side by side.  It is None for an allele with a base other
-    than A, C, G or T, such as N, which a Datum's alleles, decoded from base 5, never have.
+    A variant's alleles as one integer, for sorting and matching variants by position and alleles: the base-5 integers
+    of the ref and alt alleles, trimmed on the right and truncated to the 13 bases that a Datum stores, side by side.
+    Both alleles are needed to distinguish eg AT>A from ATT>A.  Trimming comes first, since truncating first and then
+    trimming can give different alleles.  The key is None for an allele with a base other than A, C, G or T, such as N,
+    which a Datum's alleles, decoded from base 5, never have.
     """
     trimmed_ref, trimmed_alt = trim_alleles_on_right(ref, alt)
     ref_bases, alt_bases = truncate_bases_if_necessary(trimmed_ref), truncate_bases_if_necessary(trimmed_alt)

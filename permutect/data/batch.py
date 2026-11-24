@@ -135,25 +135,6 @@ class Batch:
     def get_reads_re(self) -> Tensor:
         return self.reads_re
 
-    # useful for regenerating original data, for example in pruning.  Each original datum has its own reads_2d of ref
-    # followed by alt
-    def get_list_of_reads_re(self):
-        ref_counts, alt_counts = self.get(Data.REF_COUNT), self.get(Data.ALT_COUNT)
-        total_ref = torch.sum(ref_counts).item()
-        ref_reads_re, alt_reads_re = (
-            self.get_reads_re()[:total_ref],
-            self.get_reads_re()[total_ref:],
-        )
-        ref_splits, alt_splits = (
-            torch.cumsum(ref_counts, dim=0)[:-1],
-            torch.cumsum(alt_counts, dim=0)[:-1],
-        )
-        ref_list, alt_list = (
-            torch.tensor_split(ref_reads_re, ref_splits),
-            torch.tensor_split(alt_reads_re, alt_splits),
-        )
-        return [torch.vstack((refs, alts)).numpy() for refs, alts in zip(ref_list, alt_list)]
-
     # pin memory for all tensors that are sent to the GPU
     def pin_memory(self):
         self.int_tensor = self.int_tensor.pin_memory()

@@ -17,9 +17,6 @@ class Adversarial(torch.nn.Module):
         self.wrapped_module = wrapped_module
         self.gradient_reversal = GradientReversal(alpha=adversarial_strength)
 
-    def set_adversarial_strength(self, new_alpha):
-        self.gradient_reversal.set_alpha(new_alpha)
-
     def forward(self, x):
         return self.wrapped_module.forward(self.gradient_reversal(x))
 

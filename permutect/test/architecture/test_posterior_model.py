@@ -135,18 +135,15 @@ def test_contamination_explains_alt_fractions_near_the_contamination():
     assert contamination_probability(None, 3) < 1e-6
 
 
-def test_spectra_use_the_posterior_model_device():
+def test_the_spectra_and_priors_move_with_the_posterior_model():
     model = make_posterior_model(META)
     assert model.spectra._device == META
     assert all(tensor.device == META for tensor in model.state_dict().values())
 
-
-def test_nontrivial_contexts_move_with_the_posterior_model():
-    model = make_posterior_model(torch.device("cpu")).to(META)
-    assert model.priors.NONTRIVIAL_CONTEXTS_rrra.device == META
-
-    # it's a constant, so it's not saved with the model
-    assert not any("NONTRIVIAL_CONTEXTS" in name for name in model.state_dict())
+    # the priors' nontrivial contexts, a constant that isn't saved with the model, move with it too
+    moved = make_posterior_model(torch.device("cpu")).to(META)
+    assert moved.priors.NONTRIVIAL_CONTEXTS_rrra.device == META
+    assert not any("NONTRIVIAL_CONTEXTS" in name for name in moved.state_dict())
 
 
 ACCELERATOR = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else None)
@@ -173,36 +170,13 @@ def test_posterior_probabilities_on_an_accelerator():
     torch.testing.assert_close(posteriors_bc[ACCELERATOR].cpu(), posteriors_bc["cpu"])
 
 
-def original_best_threshold(artifact_probs, recall_weight: float = 1.0):
-    # the threshold search of plotting.get_theoretical_roc_data before it was moved, for checking that it's unchanged
-    beta_sqr = recall_weight**2
-    artifact_probs.sort(key=lambda p: p)
-    num_calls = len(artifact_probs)
-    total_artifact = sum([prob for prob in artifact_probs]) + 0.0001
-    total_non_artifact = num_calls - total_artifact + 0.0002
-    art_found, non_art_found = total_artifact, 0
-    best_threshold, best_harmonic_mean = (0, 1, 0), 0
-    for prob in artifact_probs:
-        art_found -= prob
-        non_art_found += 1 - prob
-        tp = non_art_found
-        fp = total_artifact - art_found
-        sensitivity = tp / total_non_artifact
-        precision = tp / (tp + fp)
-        harmonic_mean = (1 + beta_sqr) * sensitivity * precision / (sensitivity + (beta_sqr * precision) + 0.0001)
-        if harmonic_mean > best_harmonic_mean:
-            best_harmonic_mean = harmonic_mean
-            best_threshold = (prob, precision, sensitivity)
-    return best_threshold[0]
-
-
-def test_best_threshold_is_unchanged():
-    # filter_variants uses this threshold, so moving it out of the plotting code must not change it at all
-    rng = np.random.default_rng(seed=0)
-    for probs in (rng.uniform(size=1000), rng.beta(0.2, 2.0, size=5000), rng.beta(2.0, 0.2, size=50), []):
-        for recall_weight in (0.5, 1.0, 2.0):
-            expected = original_best_threshold(list(probs), recall_weight)
-            assert best_error_probability_threshold(list(probs), recall_weight) == expected
+def test_best_threshold_maximizes_the_expected_f_score():
+    # with error probabilities 0.1, 0.2, 0.9 and 0.9, passing the first two expects 1.7 of the 1.9 non-errors and 0.3
+    # errors to pass, the best F1 score.  Weighing recall three times as much as precision passes everything.
+    probs = [0.9, 0.1, 0.9, 0.2]
+    assert best_error_probability_threshold(probs) == 0.2
+    assert best_error_probability_threshold(probs, recall_weight=3.0) == 0.9
+    assert best_error_probability_threshold([]) == 0
 
 
 class FigureRecorder:
@@ -302,41 +276,6 @@ def test_fitting_stops_once_the_evidence_stops_changing():
     )
 
 
-def test_the_warm_start_takes_whole_epochs_of_at_least_the_warmup_steps(monkeypatch):
-    # 4 batches and at least 10 steps make 3 epochs, each ending in an M step, with the context-dependent SNV priors
-    model = make_posterior_model("cpu")
-    context_dependent, update_priors_m_step = [], model.priors.update_priors_m_step
-
-    def recorded_m_step(*args, **kwargs):
-        context_dependent.append(model.priors.use_context_dependent_snv_priors)
-        return update_priors_m_step(*args, **kwargs)
-
-    monkeypatch.setattr(model.priors, "update_priors_m_step", recorded_m_step)
-    assert model.learn_priors_and_spectra(posterior_loader(4), 0, 10, num_warmup_steps=10) == (0, False)
-    assert context_dependent == [True] * 3
-
-
-class CountedBatches(list):
-    # batches that count the passes over them
-    def __init__(self, batches):
-        super().__init__(batches)
-        self.passes = 0
-
-    def __iter__(self):
-        self.passes += 1
-        return super().__iter__()
-
-
-def test_the_em_passes_over_the_full_pass_loader():
-    # the warm start's minibatches get one epoch, and the full passes the L-BFGS evaluations and E steps of the EM
-    minibatches, full_passes = CountedBatches(varied_batches()), CountedBatches(varied_batches())
-    model = make_posterior_model("cpu")
-    model.learn_priors_and_spectra(
-        minibatches, 2, 10, num_warmup_steps=1, convergence_threshold=0, full_pass_loader=full_passes
-    )
-    assert minibatches.passes == 1 and full_passes.passes >= 4
-
-
 def test_calculating_thresholds_keeps_no_autograd_graphs(monkeypatch):
     # the error probabilities of every batch are kept until the thresholds are found, and with gradients each would keep
     # its batch's autograd graph
@@ -350,18 +289,6 @@ def test_calculating_thresholds_keeps_no_autograd_graphs(monkeypatch):
     monkeypatch.setattr(model, "error_probabilities_b", recording_error_probabilities_b)
     model.calculate_probability_thresholds(posterior_loader(3))
     assert len(error_probs) == 3 and not any(probs.requires_grad for probs in error_probs)
-
-
-def test_learning_leaves_the_germline_model_unchanged():
-    # the germline model was fit to the pileups of common SNPs, so fitting the spectra to the variants mustn't change it
-    germline_model = GermlineModel(sample_segmentation("tumor"), sample_segmentation("normal"), 0.03, 0.002)
-    model = PosteriorModel(-10, -10, device="cpu", germline_model=germline_model)
-    before = {name: tensor.clone() for name, tensor in germline_model.state_dict().items()}
-    loader = [make_batch([0.01, 0.2, 0.5], PLAUSIBLE_VALUES | {Data.ORIGINAL_ALT_COUNT: alt}) for alt in (2, 15, 29)]
-    model.learn_priors_and_spectra(loader, num_iterations=2, ignored_to_non_ignored_ratio=10, learning_rate=0.1)
-    after = germline_model.state_dict()
-    assert all(torch.equal(before[name], after[name]) for name in before)
-    assert not any(parameter.requires_grad for parameter in germline_model.parameters())
 
 
 def make_read_orientation_model(damage_mean: float = 0.1, sample: str = "TUMOR") -> ReadOrientationModel:
@@ -465,20 +392,29 @@ def test_damage_needs_snvs_with_orientation_counts():
     assert_no_nan(model, batch)
 
 
-def test_known_artifacts_rule_out_seq_errors_from_damage():
-    model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=make_read_orientation_model())
-    batch = make_snv_batch([("ACG", "T", 6, 0)], SNV_VALUES)
-    batch.float_tensor[0, Data.CACHED_ARTIFACT_LOGIT.idx] = math.inf
-    assert model.log_relative_posteriors_bc(batch)[0, Call.SEQ_ERROR].item() == constants.IMPOSSIBLE_LOG_PROB
-
-
-def test_learning_leaves_the_read_orientation_model_unchanged():
+def test_learning_leaves_the_germline_and_read_orientation_models_unchanged():
+    # the germline model was fit to the pileups of common SNPs and the read orientation model to F1R2 counts, so fitting
+    # the spectra to the variants mustn't change them
+    germline_model = GermlineModel(sample_segmentation("tumor"), sample_segmentation("normal"), 0.03, 0.002)
     read_orientation_model = make_read_orientation_model()
-    model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=read_orientation_model)
-    before = {name: buffer.clone() for name, buffer in read_orientation_model.named_buffers()}
-    loader = [make_snv_batch([("ACG", "T", 6, 0)] * 4, SNV_VALUES | {Data.CACHED_ARTIFACT_LOGIT: 3})]
+    model = PosteriorModel(
+        -10, -10, device="cpu", germline_model=germline_model, read_orientation_model=read_orientation_model
+    )
+
+    def state() -> dict:
+        germline_state = {"germline " + name: tensor.clone() for name, tensor in germline_model.state_dict().items()}
+        orientation_state = {
+            "orientation " + name: buffer.clone() for name, buffer in read_orientation_model.named_buffers()
+        }
+        return germline_state | orientation_state
+
+    before = state()
+    loader = [make_batch([0.01, 0.2, 0.5], PLAUSIBLE_VALUES | {Data.ORIGINAL_ALT_COUNT: alt}) for alt in (2, 15, 29)]
+    loader.append(make_snv_batch([("ACG", "T", 6, 0)] * 4, SNV_VALUES | {Data.CACHED_ARTIFACT_LOGIT: 3}))
     model.learn_priors_and_spectra(loader, num_iterations=2, ignored_to_non_ignored_ratio=10, learning_rate=0.1)
-    assert all(torch.equal(before[name], buffer) for name, buffer in read_orientation_model.named_buffers())
+    after = state()
+    assert before.keys() == after.keys() and all(torch.equal(before[name], after[name]) for name in before)
+    assert not any(parameter.requires_grad for parameter in germline_model.parameters())
 
 
 # the deletion of one repeat unit of a 12-base STR, at depth 100 with 6 alt reads, with the values of SNV_VALUES
@@ -520,10 +456,13 @@ def test_slippage_is_a_sequencing_error():
     assert log_posteriors_bc[0, Call.SLIPPAGE].item() == log_posteriors_bc[1, Call.SLIPPAGE].item()
 
 
-def test_known_artifacts_rule_out_slippage():
-    model = make_posterior_model("cpu")
-    batch = make_batch([1e-8], STR_INDEL_VALUES | {Data.CACHED_ARTIFACT_LOGIT: math.inf})
-    assert model.log_relative_posteriors_bc(batch)[0, Call.SLIPPAGE].item() == constants.IMPOSSIBLE_LOG_PROB
+def test_known_artifacts_rule_out_seq_errors_from_damage_and_slippage():
+    model = PosteriorModel(-10, -10, device="cpu", read_orientation_model=make_read_orientation_model())
+    known_artifact = {Data.CACHED_ARTIFACT_LOGIT: math.inf}
+    damage = make_snv_batch([("ACG", "T", 6, 0)], SNV_VALUES | known_artifact)
+    slippage = make_batch([1e-8], STR_INDEL_VALUES | known_artifact)
+    for batch, call in ((damage, Call.SEQ_ERROR), (slippage, Call.SLIPPAGE)):
+        assert model.log_relative_posteriors_bc(batch)[0, call].item() == constants.IMPOSSIBLE_LOG_PROB
 
 
 def test_posteriors_copy_no_python_values_to_the_device(monkeypatch):

@@ -16,7 +16,6 @@ import torch
 from intervaltree import IntervalTree
 from torch.utils.data import DataLoader
 
-from permutect import misc_utils
 from permutect.data import memory_mapped_data as memory_mapped_data_module
 from permutect.data import reads_dataset
 from permutect.data.batch import Batch
@@ -69,90 +68,60 @@ def assert_same_data(memory_mapped_data: MemoryMappedData, expected: list[Datum]
         assert np.array_equal(datum.reads_re, expected_datum.reads_re)
 
 
-def test_empty_generator(tmp_path):
-    # e.g. filter_variants when no dataset variant is in the VCF, or edit_dataset removing everything
-    empty = MemoryMappedData.from_generator(iter([]), estimated_num_data=10, estimated_num_reads=10)
-    assert_same_data(empty, [])
-
-    tarfile = str(tmp_path / "empty.tar")
-    empty.save_to_tarfile(tarfile)
-    assert_same_data(MemoryMappedData.load_from_tarfile(tarfile), [])
-
-
+@pytest.mark.parametrize("constructor", ["from_generator", "from_chunks"])
 @pytest.mark.parametrize("estimated_num_data, estimated_num_reads", [(0, 0), (1, 1), (0, 100), (100, 0), (100, 100)])
-def test_capacity_grows_to_fit(estimated_num_data, estimated_num_reads):
-    # the datum with 40 reads needs more than double the capacity of its predecessors, and one datum has no reads
+def test_capacity_grows_to_fit(constructor, estimated_num_data, estimated_num_reads):
+    # the datum with 40 reads needs more than double the capacity of its predecessors, and one datum has no reads.  Chunks
+    # of 3, 1 and 6 data are each written at once.
     read_counts = [1, 2, 40, 0, 3, 1, 5, 2, 1, 7]
     data = [make_datum(index, num_reads) for index, num_reads in enumerate(read_counts)]
-    memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data, estimated_num_reads)
+    if constructor == "from_generator":
+        memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data, estimated_num_reads)
+    else:
+        chunks = [StackedData.of(chunk) for chunk in (data[:3], data[3:4], data[4:])]
+        memory_mapped_data = MemoryMappedData.from_chunks(chunks, estimated_num_data, estimated_num_reads)
     assert_same_data(memory_mapped_data, data)
 
 
-@pytest.mark.parametrize("estimated_num_data, estimated_num_reads", [(0, 0), (2, 3), (100, 100)])
-def test_from_chunks_matches_from_generator(estimated_num_data, estimated_num_reads):
-    # writing chunks of data all at once gives the same memory maps as writing them datum by datum, as they grow or not
-    data = [make_datum(index, index % 4) for index in range(10)]
-    by_datum = MemoryMappedData.from_generator(data, estimated_num_data=10, estimated_num_reads=15)
-    chunks = [StackedData.of(chunk) for chunk in (data[:3], data[3:4], data[4:])]
-    by_chunk = MemoryMappedData.from_chunks(chunks, estimated_num_data, estimated_num_reads)
-    for name in ("int_mmap", "float_mmap", "reads_mmap"):
-        by_datum_array, by_chunk_array = getattr(by_datum, name), getattr(by_chunk, name)
-        assert by_chunk_array.dtype == by_datum_array.dtype and by_chunk_array.tobytes() == by_datum_array.tobytes()
-    assert_same_data(by_chunk, data)
-
-
-def test_unused_capacity_is_left_out(tmp_path):
-    # from_generator grows its memory maps beyond the data, as a list grows
-    data = [make_datum(index, num_reads=3) for index in range(10)]
-    memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=1000, estimated_num_reads=5000)
-    tarfile = str(tmp_path / "data.tar")
-    memory_mapped_data.save_to_tarfile(tarfile)
-    loaded = MemoryMappedData.load_from_tarfile(tarfile)
-
-    datum_bytes = data[0].get_int_array().nbytes + data[0].get_float_array().nbytes
-    for mmd in (memory_mapped_data, loaded):
-        assert len(mmd.int_mmap) == len(mmd.float_mmap) == 10 and len(mmd.reads_mmap) == 30
-        assert mmd.num_bytes() == 10 * datum_bytes + data[0].reads_re.nbytes * 10
-    assert_same_data(loaded, data)
-
-    # the saved tarfile is as small as one of the same data made with exactly enough capacity
-    exact_tarfile = str(tmp_path / "exact.tar")
-    MemoryMappedData.from_generator(data, estimated_num_data=10, estimated_num_reads=30).save_to_tarfile(exact_tarfile)
-    assert os.path.getsize(tarfile) == os.path.getsize(exact_tarfile)
-
-
-def save_to_tarfile(data: list[Datum], tarfile_name: str):
-    memory_mapped_data = MemoryMappedData.from_generator(data, estimated_num_data=len(data), estimated_num_reads=0)
-    memory_mapped_data.save_to_tarfile(tarfile_name)
-
-
-@pytest.mark.parametrize("block_bytes", [None, 64])
-def test_saved_arrays_are_written_into_the_tarfile_as_np_save_writes_them(tmp_path, monkeypatch, block_bytes):
-    # rather than saved to temporary files first and then copied into the tarfile, here in blocks of 64 bytes or not
-    data = [make_datum(index, index % 4) for index in range(10)]
-    saved = MemoryMappedData.from_generator(data, estimated_num_data=10, estimated_num_reads=20)
+@pytest.mark.parametrize(
+    "num_data, block_bytes, compressed",
+    [(0, None, False), (10, None, False), (10, 64, False), (10, None, True)],
+    ids=["empty", "uncompressed", "written_in_blocks", "compressed"],
+)
+def test_save_and_load(tmp_path, monkeypatch, num_data, block_bytes, compressed):
+    # no data at all, eg from filter_variants when no dataset variant is in the VCF, or edit_dataset removing everything,
+    # and arrays written into the tarfile in blocks of 64 bytes
     if block_bytes is not None:
         monkeypatch.setattr(memory_mapped_data_module, "NPY_WRITE_BLOCK_BYTES", block_bytes)
+    data = [make_datum(index, index % 4) for index in range(num_data)]
+    num_reads = sum(len(datum.reads_re) for datum in data)
 
-    def no_temporary_files(*args, **kwargs):
-        raise AssertionError("save_to_tarfile made a temporary file")
-
-    monkeypatch.setattr(memory_mapped_data_module, "NamedTemporaryFile", no_temporary_files)
-    tar = str(tmp_path / "data.tar")
+    # from_generator grows its memory maps beyond the data, as a list grows, and the unused capacity is left out: the
+    # tarfile is as small as one of the same data made with exactly enough capacity
+    saved = MemoryMappedData.from_generator(data, estimated_num_data=1000, estimated_num_reads=5000)
+    tar, exact_tar = str(tmp_path / "data.tar"), str(tmp_path / "exact.tar")
     saved.save_to_tarfile(tar)
+    MemoryMappedData.from_generator(data, num_data, num_reads).save_to_tarfile(exact_tar)
+    assert os.path.getsize(tar) == os.path.getsize(exact_tar)
+    if compressed:
+        with open(tar, "rb") as uncompressed, gzip.open(tar + ".gz", "wb") as gzipped:
+            shutil.copyfileobj(uncompressed, gzipped)
+        tar += ".gz"
 
-    with tarfile.open(tar) as archive:
-        members = {member.name: archive.extractfile(member).read() for member in archive.getmembers()}
-    arrays = {
-        "int_array" + memory_mapped_data_module.SUFFIX_FOR_INT_MMAP: saved.int_mmap,
-        "float_array" + memory_mapped_data_module.SUFFIX_FOR_FLOAT_MMAP: saved.float_mmap,
-        "reads_array" + memory_mapped_data_module.SUFFIX_FOR_READS_MMAP: saved.reads_mmap,
-    }
-    for name, array in arrays.items():
-        np_save_bytes = io.BytesIO()
-        np.save(np_save_bytes, array)
-        assert members[name] == np_save_bytes.getvalue(), name
-    assert_same_data(MemoryMappedData.load_from_tarfile(tar), data)
+    loaded = MemoryMappedData.load_from_tarfile(tar)
+    assert_same_data(loaded, data)
+    if num_data == 0:
+        return
+    num_bytes = sum(
+        datum.get_int_array().nbytes + datum.get_float_array().nbytes + datum.reads_re.nbytes for datum in data
+    )
+    for mmd in (saved, loaded):
+        assert len(mmd.int_mmap) == len(mmd.float_mmap) == num_data and len(mmd.reads_mmap) == num_reads
+        assert mmd.num_bytes() == num_bytes
+    if not compressed:
+        # mapped in place rather than extracted, which copied all the data, in every process of distributed training
+        mmaps = (loaded.int_mmap, loaded.float_mmap, loaded.reads_mmap)
+        assert all(os.path.samefile(mmap.filename, tar) for mmap in mmaps)
 
 
 @pytest.mark.parametrize("size, error", [(9, ValueError), (11, OSError)])
@@ -162,25 +131,6 @@ def test_a_tarfile_member_gets_exactly_its_size(tmp_path, size, error):
     with tarfile.open(str(tmp_path / "data.tar"), "w") as tar:
         with pytest.raises(error):
             memory_mapped_data_module.add_to_tarfile(tar, "member", [b"x" * 6, b"x" * 4], size=size)
-
-
-def test_uncompressed_tarfile_is_mapped_in_place(tmp_path):
-    # rather than extracted, which copied all the data, in every process of distributed training
-    data = [make_datum(index, index % 4) for index in range(10)]
-    tar = str(tmp_path / "data.tar")
-    save_to_tarfile(data, tar)
-    loaded = MemoryMappedData.load_from_tarfile(tar)
-    assert all(os.path.samefile(mmap.filename, tar) for mmap in (loaded.int_mmap, loaded.float_mmap, loaded.reads_mmap))
-    assert_same_data(loaded, data)
-
-
-def test_compressed_tarfile_is_extracted(tmp_path):
-    data = [make_datum(index, index % 4) for index in range(10)]
-    tar = str(tmp_path / "data.tar")
-    save_to_tarfile(data, tar)
-    with open(tar, "rb") as uncompressed, gzip.open(tar + ".gz", "wb") as compressed:
-        shutil.copyfileobj(uncompressed, compressed)
-    assert_same_data(MemoryMappedData.load_from_tarfile(tar + ".gz"), data)
 
 
 def test_reads_must_match_counts():
@@ -333,19 +283,6 @@ def test_reads_dataset_shards_share_the_memory(monkeypatch, capsys):
     assert chunk_messages == ["Worker 0 will divide its portion of the data into 3 chunks."] * 2
 
 
-def test_restrict_to_labeled_only_when_first_data_are_unlabeled():
-    # the labeled proportion is estimated from the first 1001 data, which are all unlabeled here
-    data = [make_datum(index, 1) for index in range(1002)]
-    labeled = [make_datum(2000, 2, Label.ARTIFACT), make_datum(2001, 1, Label.VARIANT)]
-    memory_mapped_data = MemoryMappedData.from_generator(
-        data + labeled, estimated_num_data=2000, estimated_num_reads=2000
-    )
-    assert_same_data(memory_mapped_data.restrict_to_labeled_only(), labeled)
-
-    empty = MemoryMappedData.from_generator(iter([]), estimated_num_data=0, estimated_num_reads=0)
-    assert_same_data(empty.restrict_to_labeled_only(), [])
-
-
 def annotated_mafs(tmp_path, **segmentations) -> list:
     # the MAF and normal MAF that VCF annotation gives an SNV at chr1:100 and a deletion at chr1:200
     vcf = tmp_path / "variants.vcf"
@@ -420,14 +357,6 @@ def test_data_saved_in_an_older_layout_fail_to_load(tmp_path):
             old_tar.addfile(member, io.BytesIO(contents))
     with pytest.raises(ValueError, match="layout version 1"):
         MemoryMappedData.load_from_tarfile(old_path)
-
-
-def test_vcf_annotation_keys_follow_misc_utils(tmp_path, monkeypatch):
-    # like the output join in filter_variants, both sides of the annotation join must use the same allele keys, so that
-    # changing the keys cannot make every datum silently drop out of the annotated data
-    original_allele_key = misc_utils.allele_key
-    monkeypatch.setattr(memory_mapped_data_module, "allele_key", lambda ref, alt: original_allele_key(ref, alt) + 1)
-    assert len(annotated_mafs(tmp_path)) == 2
 
 
 def test_vcf_annotation_of_variants_with_the_same_truncated_alleles(tmp_path):

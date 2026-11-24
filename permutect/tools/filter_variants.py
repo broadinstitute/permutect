@@ -33,7 +33,6 @@ from permutect.metrics.posterior_result import PosteriorResultTable
 from permutect.misc_utils import Timer
 from permutect.misc_utils import VcfEditor
 from permutect.misc_utils import allele_key
-from permutect.misc_utils import encode_variant
 from permutect.misc_utils import get_tumor_sample_index
 from permutect.misc_utils import gpu_if_available
 from permutect.misc_utils import overlapping_filters
@@ -751,7 +750,7 @@ def apply_filtering_to_vcf(
                 filters.update(v.FILTER.split(";"))
             num_missing += 1
             if len(missing_examples) < 5:
-                missing_examples.append(encode_variant(v))
+                missing_examples.append(f"{v.CHROM}:{v.POS} {v.REF}>{v.ALT[0]}")
         # sorted, since the order of a set of strings changes from run to run with Python's hash randomization
         v.FILTER = ";".join(sorted(filters)) if filters else "PASS"
     results_table.close()

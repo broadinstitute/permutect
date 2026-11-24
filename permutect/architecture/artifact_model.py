@@ -196,9 +196,6 @@ class ArtifactModel(torch.nn.Module):
             + "or perhaps were generated with different versions of Permutect."
         )
 
-    def ref_alt_seq_embedding_dimension(self) -> int:
-        return self.haplotypes_cnn.output_dimension()
-
     def haplotypes_length(self) -> int:
         return self._haplotypes_length
 

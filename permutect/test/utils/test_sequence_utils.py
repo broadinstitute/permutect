@@ -3,7 +3,6 @@ from math import isclose
 import permutect.utils.sequence_utils as sequence_utils
 from permutect.utils.sequence_utils import StemLoop
 from permutect.utils.sequence_utils import StemLoopPart
-from permutect.utils.sequence_utils import contains_near_stem_loop
 from permutect.utils.sequence_utils import find_near_stem_loop
 from permutect.utils.sequence_utils import fold_sequence
 
@@ -125,8 +124,8 @@ def test_sequences_fold_into_stem_loops():
         (start_position + 6, start_position + 10),
         (start_position + 20, start_position + 24),
     ]
-    assert contains_near_stem_loop(stem_loops_with_final_g, "chr20", final_g_position)
-    assert not contains_near_stem_loop(stem_loops_with_final_g, "chr20", final_g_position, max_energy=0.5)
+    assert stem_loops_with_final_g[0].contains_near("chr20", final_g_position)
+    assert 0.5 <= stem_loops_with_final_g[0].total_energy < 1.5
 
 
 def test_fold_sequence_skips_non_acgt_bases():

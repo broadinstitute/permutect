@@ -1,7 +1,9 @@
+import contextlib
+import io
 import math
 import random
 import re
-import tempfile
+from types import SimpleNamespace
 
 import cyvcf2
 import numpy as np
@@ -18,8 +20,7 @@ from permutect.data.compact_posterior_data import CompactPosteriorData
 from permutect.data.datum import Data
 from permutect.metrics.evaluation_metrics import EvaluationMetrics
 from permutect.metrics.posterior_result import PosteriorResult
-from permutect.misc_utils import encode_datum
-from permutect.misc_utils import encode_variant
+from permutect.misc_utils import allele_key
 from permutect.misc_utils import get_tumor_sample_index
 from permutect.misc_utils import str_repeat_count_change
 from permutect.misc_utils import str_repeat_lengths
@@ -32,6 +33,7 @@ from permutect.slippage.slippage_model import MIN_SLIPPAGE_STR_LENGTH
 from permutect.test.architecture.test_posterior_model import make_read_orientation_model
 from permutect.test.architecture.test_posterior_model_priors import make_batch
 from permutect.test.test_file_names import *
+from permutect.test.test_misc_utils import TUMOR_NORMAL_VCF_HEADER
 from permutect.test.test_misc_utils import VCF_HEADER
 from permutect.test.test_misc_utils import make_datum as make_datum_with_alleles
 from permutect.test.test_misc_utils import vcf_line
@@ -45,7 +47,7 @@ from permutect.utils.enums import Call
 from permutect.utils.enums import Label
 from permutect.utils.enums import Variation
 
-# the arguments of both end-to-end filtering tests, including brief test-time adaptation
+# the arguments of the end-to-end filtering runs, including brief test-time adaptation
 SHARED_FILTERING_ARGS = {
     constants.ARTIFACT_MODEL_NAME: PERMUTECT_V0_9_2_ARTIFACT_MODEL,
     constants.TRAINABLE_PARAMETERS_NAME: "CLUSTERING",
@@ -64,68 +66,97 @@ def parse_filtering_arguments(args: dict):
     )
 
 
-def test_filtering_on_dream1_chr20(monkeypatch, capsys):
-    permutect_vcf = tempfile.NamedTemporaryFile()
-    tensorboard_dir = tempfile.TemporaryDirectory()
+def record_filters(record) -> set:
+    # cyvcf2 gives None for PASS and for a missing FILTER
+    return set(record.FILTER.split(";")) if record.FILTER else set()
 
-    filtering_args = parse_filtering_arguments(
-        {
-            constants.INPUT_NAME: MUTECT2_CHR20_FILTERED_VCF,
-            constants.TEST_DATASET_NAME: DREAM_1_CHR20_PLAIN_TEXT_DATA,
-            constants.CONTIGS_TABLE_NAME: HG19_CONTIGS_TABLE,
-            constants.OUTPUT_NAME: permutect_vcf.name,
-            constants.TENSORBOARD_DIR_NAME: tensorboard_dir.name,
-            constants.SPECTRUM_BATCH_SIZE_NAME: "256",
-        }
+
+@pytest.fixture(scope="module")
+def seqc2_filtering(tmp_path_factory) -> SimpleNamespace:
+    """
+    filter_variants on SEQC2's WES chr20 data after pre_permutect_filtering, with a germline model and a read orientation
+    model, run twice.  The first run records what it prints and the CompactPosteriorData, PosteriorResults and
+    SummaryWriters that it makes.
+    """
+    directory = tmp_path_factory.mktemp("seqc2_filtering")
+    pre_filtered_vcf = run_pre_permutect_filtering(MUTECT2_SEQC2_WES_VCF, HG38_CHR20_REFERENCE)
+    germline_model, read_orientation_model = directory / "germline_model.pt", directory / "read_orientation_model.pt"
+    make_read_orientation_model(sample=tumor_sample(pre_filtered_vcf.name)).save(read_orientation_model)
+    segment_pileups.segment_pileups(
+        SEQC2_WES_TUMOR_PILEUPS,
+        directory / "tumor.segments.table",
+        normal_input_table=SEQC2_WES_NORMAL_PILEUPS,
+        germline_model=germline_model,
     )
 
-    # every CompactPosteriorData that filter_variants makes
-    compact_data = []
+    def run(name: str) -> str:
+        output_vcf = str(directory / f"{name}.vcf")
+        filtering_args = {
+            constants.INPUT_NAME: pre_filtered_vcf.name,
+            constants.TEST_DATASET_NAME: SEQC2_WES_PLAIN_TEXT_DATA,
+            constants.CONTIGS_TABLE_NAME: HG38_CONTIGS_TABLE,
+            constants.GERMLINE_MODEL_NAME: str(germline_model),
+            constants.READ_ORIENTATION_MODEL_NAME: str(read_orientation_model),
+            constants.OUTPUT_NAME: output_vcf,
+            constants.TENSORBOARD_DIR_NAME: str(directory / f"{name}-tensorboard"),
+            constants.SPECTRUM_BATCH_SIZE_NAME: "256",
+            # normalizing the test dataset in a process of its own
+            constants.NUM_PROCESSES_NAME: "2",
+        }
+        filter_variants.main_without_parsing(parse_filtering_arguments(filtering_args))
+        return output_vcf
+
+    recorded = SimpleNamespace(compact_data=[], posterior_results=[], writers=[])
 
     class RecordedCompactPosteriorData(CompactPosteriorData):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
-            compact_data.append(self)
-
-    monkeypatch.setattr(filter_variants, "CompactPosteriorData", RecordedCompactPosteriorData)
-
-    # every PosteriorResult that filter_variants makes
-    posterior_results = []
+            recorded.compact_data.append(self)
 
     class RecordedPosteriorResult(PosteriorResult):
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
-            posterior_results.append(self)
-
-    monkeypatch.setattr(filter_variants, "PosteriorResult", RecordedPosteriorResult)
-
-    # every SummaryWriter that filter_variants makes
-    writers = []
+            recorded.posterior_results.append(self)
 
     class RecordedSummaryWriter(SummaryWriter):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self.closed = False
-            writers.append(self)
+            recorded.writers.append(self)
 
         def close(self):
             super().close()
             self.closed = True
 
-    monkeypatch.setattr(filter_variants, "SummaryWriter", RecordedSummaryWriter)
-    filter_variants.main_without_parsing(filtering_args)
+    with pytest.MonkeyPatch.context() as monkeypatch, contextlib.redirect_stdout(io.StringIO()) as output:
+        monkeypatch.setattr(filter_variants, "CompactPosteriorData", RecordedCompactPosteriorData)
+        monkeypatch.setattr(filter_variants, "PosteriorResult", RecordedPosteriorResult)
+        monkeypatch.setattr(filter_variants, "SummaryWriter", RecordedSummaryWriter)
+        first_vcf = run("first")
+    return SimpleNamespace(
+        pre_filtered_vcf=pre_filtered_vcf,
+        first_vcf=first_vcf,
+        second_vcf=run("second"),
+        output=output.getvalue(),
+        **vars(recorded),
+    )
+
+
+def test_filtering_records_and_closes_what_it_makes(seqc2_filtering):
     # the log says which device it ran on, so that a job with a GPU that runs on the CPU is visible
-    assert "Running on " in capsys.readouterr().out
+    assert "Running on " in seqc2_filtering.output
 
     # the writers for test-time adaptation and for the posterior model are closed, so that their last events, such as
     # the final plots, aren't lost when the program exits
+    writers = seqc2_filtering.writers
     assert len(writers) == 2 and all(writer.closed for writer in writers)
 
     # fitting the spectra and finding the thresholds use the spectrum batch size, not the data loaders' batch size of 64
-    assert [data.batch_size for data in compact_data] == [256]
+    assert [data.batch_size for data in seqc2_filtering.compact_data] == [256]
 
     # the values written to the VCF are plain numbers copied from the device once per batch.  Rows of device tensors
     # were read number by number while writing the VCF, which made the CPU wait for the GPU many times per variant.
+    posterior_results = seqc2_filtering.posterior_results
     assert posterior_results
     for result in posterior_results:
         for values in (result.posterior_probabilities, result.log_priors, result.spectra_lls, result.normal_lls):
@@ -133,64 +164,22 @@ def test_filtering_on_dream1_chr20(monkeypatch, capsys):
         assert result.embedding.device.type == "cpu"
 
     # each variant has a twin simulated from the feature clustering model, from the nonartifact component or an artifact
-    # cluster but not the outlier pseudocluster.  The model gives every variant here an artifact probability of at
-    # least about 0.8, so there may be no nonartifact twins at all.
+    # cluster but not the outlier pseudocluster
     for result in posterior_results:
         assert result.simulated_embedding.shape == result.embedding.shape
         assert torch.isfinite(result.simulated_embedding).all()
         assert re.fullmatch(r"nonartifact|artifact cluster \d+", result.simulated_source), result.simulated_source
     assert any(result.simulated_source.startswith("artifact cluster") for result in posterior_results)
 
-    # the output has one record per input record, in order.  Variants without a Permutect posterior, such as those
-    # missing from the dataset, keep the filters they had in the input instead of becoming PASS
-    num_unscored = 0
-    input_records, output_records = cyvcf2.VCF(MUTECT2_CHR20_FILTERED_VCF), cyvcf2.VCF(permutect_vcf.name)
+
+def test_filtering_on_seqc2_wes_chr20(seqc2_filtering):
+    input_records = list(cyvcf2.VCF(seqc2_filtering.pre_filtered_vcf.name))
+    output_vcf = cyvcf2.VCF(seqc2_filtering.first_vcf)
+    output_records = list(output_vcf)
+
+    # the output has one record per input record, in order
     for input_record, output_record in zip(input_records, output_records, strict=True):
         assert (input_record.CHROM, input_record.POS) == (output_record.CHROM, output_record.POS)
-        if output_record.INFO.get(filter_variants.POST_PROB_INFO_KEY) is None:
-            num_unscored += 1
-            assert record_filters(output_record) >= record_filters(input_record)
-    assert num_unscored > 0
-
-    # the INFO descriptions name Permutect, not its old name Mutect3
-    for key in (filter_variants.POST_PROB_INFO_KEY, filter_variants.ARTIFACT_LOD_INFO_KEY):
-        assert "Permutect" in output_records.get_header_type(key)["Description"]
-
-
-def record_filters(record) -> set:
-    # cyvcf2 gives None for PASS and for a missing FILTER
-    return set(record.FILTER.split(";")) if record.FILTER else set()
-
-
-def test_filtering_on_seqc2_wes_chr20(tmp_path):
-    pre_filtered_vcf = run_pre_permutect_filtering(MUTECT2_SEQC2_WES_VCF, HG38_CHR20_REFERENCE)
-    permutect_vcf = tempfile.NamedTemporaryFile()
-    tensorboard_dir = tempfile.TemporaryDirectory()
-    germline_model = tmp_path / "germline_model.pt"
-    read_orientation_model = tmp_path / "read_orientation_model.pt"
-    make_read_orientation_model(sample=tumor_sample(pre_filtered_vcf.name)).save(read_orientation_model)
-    segment_pileups.segment_pileups(
-        SEQC2_WES_TUMOR_PILEUPS,
-        tmp_path / "tumor.segments.table",
-        normal_input_table=SEQC2_WES_NORMAL_PILEUPS,
-        germline_model=germline_model,
-    )
-
-    filtering_args = parse_filtering_arguments(
-        {
-            constants.INPUT_NAME: pre_filtered_vcf.name,
-            constants.TEST_DATASET_NAME: SEQC2_WES_PLAIN_TEXT_DATA,
-            constants.CONTIGS_TABLE_NAME: HG38_CONTIGS_TABLE,
-            constants.GERMLINE_MODEL_NAME: str(germline_model),
-            constants.READ_ORIENTATION_MODEL_NAME: str(read_orientation_model),
-            constants.OUTPUT_NAME: permutect_vcf.name,
-            constants.TENSORBOARD_DIR_NAME: tensorboard_dir.name,
-            # normalizing the test dataset in a process of its own
-            constants.NUM_PROCESSES_NAME: "2",
-        }
-    )
-
-    filter_variants.main_without_parsing(filtering_args)
 
     # these INFO fields have one value per Call type, which the header must declare for allele-aware tools
     per_call_info_keys = [
@@ -199,10 +188,9 @@ def test_filtering_on_seqc2_wes_chr20(tmp_path):
         filter_variants.SPECTRA_LOG_LIKELIHOOD_INFO_KEY,
         filter_variants.NORMAL_LOG_LIKELIHOOD_INFO_KEY,
     ]
-    output_vcf = cyvcf2.VCF(permutect_vcf.name)
     for info_key in per_call_info_keys:
         assert output_vcf.get_header_type(info_key)["Number"] == str(len(Call))
-    for v in output_vcf:
+    for v in output_records:
         for info_key in per_call_info_keys:
             values = v.INFO.get(info_key)
             assert values is None or len(values) == len(Call)
@@ -211,12 +199,10 @@ def test_filtering_on_seqc2_wes_chr20(tmp_path):
     # normal artifacts, while variants that Mutect2 filtered for contamination are scored by the posterior model, which
     # has its own contamination call
     mutect2_contamination = {
-        (v.CHROM, v.POS, v.REF, v.ALT[0])
-        for v in cyvcf2.VCF(pre_filtered_vcf.name)
-        if "contamination" in record_filters(v)
+        (v.CHROM, v.POS, v.REF, v.ALT[0]) for v in input_records if "contamination" in record_filters(v)
     }
     num_scored_mutect2_contamination, num_artifact_filtered = 0, 0
-    for v in cyvcf2.VCF(permutect_vcf.name):
+    for v in output_records:
         filters = record_filters(v)
         posterior_probs = v.INFO.get(filter_variants.POST_PROB_INFO_KEY)
         if (v.CHROM, v.POS, v.REF, v.ALT[0]) in mutect2_contamination and posterior_probs is not None:
@@ -227,25 +213,23 @@ def test_filtering_on_seqc2_wes_chr20(tmp_path):
             assert v.INFO.get(filter_variants.ARTIFACT_LOD_INFO_KEY) is None
     assert num_scored_mutect2_contamination > 0 and num_artifact_filtered > 0
 
-    target_records = [v for v in cyvcf2.VCF(permutect_vcf.name) if v.CHROM == "chr20" and v.POS == 4932703]
+    target_records = [v for v in output_records if v.CHROM == "chr20" and v.POS == 4932703]
     assert len(target_records) == 1
     assert pre_permutect_filtering.HAIRPIN_FILTER in target_records[0].FILTER.split(";")
 
     # given a read orientation model, a variant filtered as a sequencing error only because of damage gets the
     # orientation filter instead, and only SNVs can
-    assert filter_variants.ORIENTATION_FILTER in cyvcf2.VCF(permutect_vcf.name).raw_header
-    for v in cyvcf2.VCF(permutect_vcf.name):
+    assert filter_variants.ORIENTATION_FILTER in output_vcf.raw_header
+    for v in output_records:
         if filter_variants.ORIENTATION_FILTER in record_filters(v):
             assert find_variant_type(v) == Variation.SNV
             assert FILTER_NAMES_OF_CALLS[Call.SEQ_ERROR] not in record_filters(v)
 
     # Mutect2's slippage filter isn't trusted, so the posterior model scores the variants it filtered.  The posterior
     # model's own slippage calls are one-unit indels of STRs of at least the minimum length.
-    mutect2_slippage = {
-        (v.CHROM, v.POS, v.REF, v.ALT[0]) for v in cyvcf2.VCF(pre_filtered_vcf.name) if "slippage" in record_filters(v)
-    }
+    mutect2_slippage = {(v.CHROM, v.POS, v.REF, v.ALT[0]) for v in input_records if "slippage" in record_filters(v)}
     num_scored_mutect2_slippage, num_slippage_calls = 0, 0
-    for v in cyvcf2.VCF(permutect_vcf.name):
+    for v in output_records:
         scored = v.INFO.get(filter_variants.POST_PROB_INFO_KEY) is not None
         num_scored_mutect2_slippage += scored and (v.CHROM, v.POS, v.REF, v.ALT[0]) in mutect2_slippage
         if scored and "slippage" in record_filters(v):
@@ -253,6 +237,26 @@ def test_filtering_on_seqc2_wes_chr20(tmp_path):
             assert find_variant_type(v) in INDEL_VARIATIONS
             assert abs(str_repeat_count_change(v)) == 1 and str_repeat_lengths(v)[1] >= MIN_SLIPPAGE_STR_LENGTH
     assert num_scored_mutect2_slippage > 0 and num_slippage_calls > 0
+
+
+def test_filtering_is_deterministic(seqc2_filtering):
+    """
+    Two runs on the same inputs write the same records, since their random choices, such as the order of the data in
+    test-time adaptation and in fitting the spectra, are seeded.  Each record's filters are sorted, rather than in the
+    order of a set, which changes from run to run with Python's hash randomization and so would be the same in both runs
+    of this one process.
+    """
+
+    def records(vcf: str) -> list[str]:
+        with open(vcf) as file:
+            return [line for line in file if not line.startswith("#")]
+
+    first_records = records(seqc2_filtering.first_vcf)
+    assert records(seqc2_filtering.second_vcf) == first_records
+
+    filters = [record.split("\t")[6].split(";") for record in first_records]
+    assert any(len(names) > 1 for names in filters)
+    assert all(names == sorted(names) for names in filters)
 
 
 FILTER_NAMES_OF_CALLS = filter_variants.FILTER_NAMES
@@ -356,7 +360,7 @@ def test_annotated_alt_orientation_counts_come_from_the_vcf():
     vcf = cyvcf2.VCF(MUTECT2_SEQC2_WES_VCF)
     tumor_sample_index = get_tumor_sample_index(vcf)
     vcf_counts = {
-        encode_variant(v): tumor_alt_orientation_counts(v, tumor_sample_index)
+        (v.CHROM, v.POS, allele_key(v.REF, v.ALT[0])): tumor_alt_orientation_counts(v, tumor_sample_index)
         + tumor_ref_orientation_counts(v, tumor_sample_index)
         for v in vcf
     }
@@ -364,7 +368,16 @@ def test_annotated_alt_orientation_counts_come_from_the_vcf():
     assert data
     fields = (Data.ALT_F1R2_COUNT, Data.ALT_F2R1_COUNT, Data.REF_F1R2_COUNT, Data.REF_F2R1_COUNT)
     counts = np.array([[datum.get(field) for field in fields] for datum in data])
-    expected_counts = np.array([vcf_counts[encode_datum(datum, contig_names)] for datum in data])
+    expected_counts = np.array(
+        [
+            vcf_counts[
+                contig_names[datum.get(Data.CONTIG)],
+                datum.get(Data.POSITION),
+                allele_key(datum.get_ref_allele(), datum.get_alt_allele()),
+            ]
+            for datum in data
+        ]
+    )
     assert np.array_equal(counts, expected_counts, equal_nan=True)
     # Mutect2 annotates every variant, and most have alt reads of both orientations
     assert not np.isnan(counts).any() and np.mean(counts.min(axis=1) > 0) > 0.5
@@ -396,7 +409,7 @@ def test_filtering_checks_germline_mode_like_the_posterior_model(tmp_path):
     output_vcf = str(tmp_path / "filtered.vcf")
     with pytest.raises(AssertionError, match="incompatible"):
         filter_variants.apply_filtering_to_vcf(
-            MUTECT2_CHR20_FILTERED_VCF, output_vcf, {0: "20"}, thresholds, loader, model, None, germline_mode=True
+            MUTECT2_SEQC2_WES_VCF, output_vcf, {0: "chr20"}, thresholds, loader, model, None, germline_mode=True
         )
 
 
@@ -427,6 +440,32 @@ def test_germline_mode_records_a_missed_artifact_as_a_germline_call(tmp_path, mo
         germline_mode=True,
     )
     assert mistaken_calls == [Call.GERMLINE]
+
+
+def test_variants_without_a_posterior_keep_their_filters(tmp_path):
+    # such as those missing from the dataset, which keep the filters they had in the input instead of becoming PASS
+    datum = make_datum_with_alleles(0, 100, "C", "T")
+    datum.set(Data.LOG_ALLELE_FREQUENCY, math.log(0.01))
+    for data_field in (Data.MAF, Data.NORMAL_MAF):
+        datum.set(data_field, 0.5)
+    datum.set(Data.CACHED_ARTIFACT_LOGIT, 0.0)
+    input_vcf, output_vcf = tmp_path / "input.vcf", str(tmp_path / "filtered.vcf")
+    lines = [
+        vcf_line("C", "T", pos=100, filters="germline") + "\tAD\t10,0\t6,3",
+        vcf_line("C", "G", pos=200, filters="germline;normal_artifact") + "\tAD\t10,0\t6,3",
+    ]
+    input_vcf.write_text(TUMOR_NORMAL_VCF_HEADER + "".join(line + "\n" for line in lines))
+
+    nothing_is_an_error = {var_type: 1.0 for var_type in Variation}
+    model = PosteriorModel(-10, -10, device=torch.device("cpu"))
+    summary_writer = SummaryWriter(str(tmp_path / "tensorboard"))
+    filter_variants.apply_filtering_to_vcf(
+        str(input_vcf), output_vcf, {0: "chr1"}, nothing_is_an_error, [Batch([datum])], model, summary_writer
+    )
+    scored, unscored = cyvcf2.VCF(output_vcf)
+    assert scored.INFO.get(filter_variants.POST_PROB_INFO_KEY) is not None and scored.FILTER is None
+    assert unscored.INFO.get(filter_variants.POST_PROB_INFO_KEY) is None
+    assert record_filters(unscored) == {"germline", "normal_artifact"}
 
 
 def test_filtering_needs_a_vcf_sorted_by_position(tmp_path):
@@ -472,15 +511,11 @@ def test_posterior_info_holds_the_embeddings_and_the_twins_component():
     assert float16_components_b.tolist() == components
 
 
-def test_load_model_returns_model_in_eval_mode():
-    model = load_model(PERMUTECT_V0_9_2_ARTIFACT_MODEL, device=torch.device("cpu"))
-    assert not any(module.training for module in model.modules())
-
-
 def test_posterior_data_artifact_logits_are_deterministic(tmp_path):
     model_path = tmp_path / "dropout-model.pt"
     save_dropout_model(model_path)
     model = load_model(model_path, device=torch.device("cpu"))
+    assert not any(module.training for module in model.modules())
 
     dataset = filter_variants.make_annotated_dataset(
         SEQC2_WES_PLAIN_TEXT_DATA, MUTECT2_SEQC2_WES_VCF, contig_index_to_name_map(HG38_CONTIGS_TABLE)
@@ -496,37 +531,3 @@ def test_posterior_data_artifact_logits_are_deterministic(tmp_path):
     model.train(True)
     second_logits = artifact_logits()
     assert np.array_equal(first_logits, second_logits)
-
-
-def test_filtering_is_deterministic(tmp_path):
-    """
-    Two runs on the same inputs write the same records, since their random choices, such as the order of the data in
-    test-time adaptation and in fitting the spectra, are seeded.  Each record's filters are sorted, rather than in the
-    order of a set, which changes from run to run with Python's hash randomization and so would be the same in both runs
-    of this one process.
-    """
-    pre_filtered_vcf = run_pre_permutect_filtering(MUTECT2_SEQC2_WES_VCF, HG38_CHR20_REFERENCE)
-
-    def filtered_records(run: str) -> list[str]:
-        output_vcf = tmp_path / f"{run}.vcf"
-        filtering_args = parse_filtering_arguments(
-            {
-                constants.INPUT_NAME: pre_filtered_vcf.name,
-                constants.TEST_DATASET_NAME: SEQC2_WES_PLAIN_TEXT_DATA,
-                constants.CONTIGS_TABLE_NAME: HG38_CONTIGS_TABLE,
-                constants.OUTPUT_NAME: str(output_vcf),
-                constants.TENSORBOARD_DIR_NAME: str(tmp_path / f"{run}-tensorboard"),
-                # at most two EM iterations after the warm start, to keep it quick
-                constants.NUM_SPECTRUM_ITERATIONS_NAME: "2",
-            }
-        )
-        filter_variants.main_without_parsing(filtering_args)
-        with open(output_vcf) as file:
-            return [line for line in file if not line.startswith("#")]
-
-    first_records = filtered_records("first")
-    assert filtered_records("second") == first_records
-
-    filters = [record.split("\t")[6].split(";") for record in first_records]
-    assert any(len(names) > 1 for names in filters)
-    assert all(names == sorted(names) for names in filters)

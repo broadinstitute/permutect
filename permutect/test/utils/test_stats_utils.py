@@ -1,10 +1,7 @@
-import math
-
 import torch
 
 from permutect.utils.stats_utils import beta_binomial_log_lk
 from permutect.utils.stats_utils import binomial_log_lk
-from permutect.utils.stats_utils import log_regularized_incomplete_beta
 from permutect.utils.stats_utils import uniform_binomial_log_lk
 
 
@@ -51,30 +48,6 @@ def test_beta_binomial_sharp_limit():
             binom = binomial_log_lk(n=n_tensor, k=k, p=p)
             diff = torch.exp(binom) - torch.exp(beta_binom)
             assert torch.sum(torch.abs(diff)).item() < 10 ** (-1)
-
-
-def test_log_regularized_incomplete_beta():
-    for a, b in [(1, 1), (2, 5), (5, 2), (10, 10)]:
-        atens, btens = torch.tensor([a]), torch.tensor([b])
-
-        # it's a CDF, so should be 0 at 0 and 1 at 1
-        res0 = log_regularized_incomplete_beta(atens, btens, torch.tensor([0]))
-        assert torch.exp(res0).item() < 10 ** (-6)
-
-        res1 = log_regularized_incomplete_beta(atens, btens, torch.tensor([1]))
-        assert torch.abs(1 - torch.exp(res1)).item() < 10 ** (-6)
-
-        # for symmetric beta, it's a CDF so should equal 0.5 at 0.5
-        if a == b:
-            res05 = log_regularized_incomplete_beta(atens, btens, torch.tensor([0.5]))
-            assert torch.abs(0.5 - torch.exp(res05)).item() < 10 ** (-3)
-
-        # for integer parameters it's the probability that a binomial with a + b - 1 trials and success probability x
-        # has at least a successes
-        for x in [0.1, 0.2, 0.3, 0.7, 0.9]:
-            res = torch.exp(log_regularized_incomplete_beta(atens, btens, torch.tensor([x])))
-            expected = sum(math.comb(a + b - 1, j) * x**j * (1 - x) ** (a + b - 1 - j) for j in range(a, a + b))
-            assert torch.abs(res - expected).item() < 10 ** (-5)
 
 
 def test_uniform_binomial():

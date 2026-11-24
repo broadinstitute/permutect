@@ -57,9 +57,6 @@ class LossMetrics:
         self.totals_slvra.record(batch, (values * weights_to_use).detach())
         self.counts_slvra.record(batch, weights_to_use.detach())
 
-    def get_averages(self) -> BatchIndexedTensor:
-        return masked_ratio(self.totals_slvra, self.counts_slvra)
-
     def get_marginal(self, *properties: BatchProperty) -> Tensor:
         return masked_ratio(self.totals_slvra.get_marginal(*properties), self.counts_slvra.get_marginal(*properties))
 
