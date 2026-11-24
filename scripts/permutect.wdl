@@ -49,7 +49,8 @@ workflow Permutect {
         String? m2_extra_args
         String? split_intervals_extra_args
         Int batch_size
-        Int num_workers
+        # filter_variants' DataLoader workers, by default 2 if PermutectFiltering has at least 4 CPUs and none otherwise
+        Int? num_workers
         Int? gpu_count
         String? concordance_header
         # split each multi-nucleotide variant (MNV) into its constituent SNVs, eg to compare with a truth VCF that represents
@@ -341,7 +342,7 @@ workflow Permutect {
         Float? spectrum_learning_rate
         Int? spectrum_batch_size
         Int batch_size
-        Int num_workers
+        Int? num_workers
         Int? gpu_count
         String? permutect_filtering_extra_args
 
@@ -355,6 +356,9 @@ workflow Permutect {
     }
 
     Int num_cpus = select_first([cpu, 4])
+    # In training, 2 DataLoader workers were as fast as more, and without them it was 16% slower.  They and the main process
+    # need at least 4 CPUs (2 cores).
+    Int num_dataloader_workers = select_first([num_workers, if num_cpus >= 4 then 2 else 0])
 
     # Without mem, an estimate of the peak memory from measurements in November 2026, plus 1.5 GB of margin:
     # - preprocessing the test dataset, in a spawned process per CPU that imports torch and permutect, takes about 1.8 GB
@@ -364,10 +368,9 @@ workflow Permutect {
     # - each DataLoader worker adds up to about 0.5 GB.  The batch size and the number of GPUs don't matter.
     Float preprocessing_gb = 1.8 + 0.62 * num_cpus
     Float filtering_gb = 3.75 + 0.64 * size(test_dataset, "GB")
-    Float peak_gb = (if preprocessing_gb > filtering_gb then preprocessing_gb else filtering_gb) + 0.5 * num_workers
+    Float peak_gb = (if preprocessing_gb > filtering_gb then preprocessing_gb else filtering_gb) + 0.5 * num_dataloader_workers
     # in MB as Cromwell counts them, 2^20 bytes, so a little more than the estimate
     Int machine_mem = if defined(mem) then mem * 1000 else ceil((peak_gb + 1.5) * 1000)
-    Int command_mem = machine_mem - 500
     # the reference, the test dataset and its normalized copy, in temporary memory maps, which is smaller, and the VCF, as
     # given, pre-filtered and filtered
     Int default_disk_space = ceil(size(ref_fasta, "GB") + 2 * size(test_dataset, "GB") + 3 * size(mutect2_vcf, "GB")) + 10
@@ -385,7 +388,7 @@ workflow Permutect {
             --contigs_table ~{contigs_table} \
             --output permutect-filtered.vcf \
             --tensorboard_dir tensorboard \
-            --batch_size ~{batch_size} --num_workers ~{num_workers} --num_processes ~{num_cpus} \
+            --batch_size ~{batch_size} --num_workers ~{num_dataloader_workers} --num_processes ~{num_cpus} \
             ~{" --num_spectrum_iterations " + num_spectrum_iterations} \
             ~{" --spectrum_learning_rate " + spectrum_learning_rate} \
             ~{" --spectrum_batch_size " + spectrum_batch_size} \

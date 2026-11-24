@@ -416,7 +416,7 @@ def test_permutect_filtering_stops_when_a_tool_fails(tmp_path, failing_tool, exp
         "artifact_model": "model.pt",
         "contigs_table": "contigs.table",
         "batch_size": 64,
-        "num_workers": 2,
+        "num_dataloader_workers": 2,
         "num_cpus": 2,
         "num_spectrum_iterations": None,
         "spectrum_learning_rate": None,
