@@ -1,6 +1,9 @@
 version 1.0
 
-import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/61/plain-WDL/descriptor" as m2
+# the Mutect2 workflow: snapshots of GATK's scripts/mutect2_wdl/mutect2.wdl in the public Terra method
+# davidben/mutect2-for-permutect, numbered independently of the mutect2-testing versions.  (Terra accepts imports only
+# from some domains, such as api.firecloud.org and raw.githubusercontent.com, not storage.googleapis.com.)
+import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-for-permutect/versions/1/plain-WDL/descriptor" as m2
 
 workflow Permutect {
     input {
