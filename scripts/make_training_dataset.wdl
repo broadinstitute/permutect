@@ -75,7 +75,6 @@ workflow MakeTrainingDataset {
         Int max_retries = 1
         Int small_task_mem = 4
         Int small_task_disk = 100
-        Int boot_disk_size = 12
         String? gcs_project_for_requester_pays
 
         # Use as a last resort to increase the disk given to every task in case of ill behaving data
@@ -141,7 +140,6 @@ workflow MakeTrainingDataset {
                 max_retries =  max_retries,
                 small_task_mem = small_task_mem,
                 small_task_disk = small_task_disk,
-                boot_disk_size = boot_disk_size,
                 gcs_project_for_requester_pays = gcs_project_for_requester_pays_hack,
                 emergency_extra_disk = emergency_extra_disk
         }
