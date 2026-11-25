@@ -136,8 +136,9 @@ def run_permutect_wdl(
         # Terra turns unset optional inputs into empty strings, which the workflow must treat as unset
         "Permutect.masks": "",
         "Permutect.intervals": [""],
-        "Permutect.test_dataset_truth_vcf": "",
-        "Permutect.test_dataset_truth_vcf_idx": "",
+        "Permutect.germline_resource": [""],
+        "Permutect.common_variants_vcf": ["", ""],
+        "Permutect.test_dataset_truth_vcf": [""],
         "Permutect.tumor_only_cached_m2_outputs": (
             make_cached_m2_outputs(
                 working_dir, "tumor_only_cached_m2_outputs.tar", with_pileups, False, learn_read_orientation

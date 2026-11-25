@@ -40,16 +40,23 @@ workflow MakeTrainingDataset {
         # NOTE: this is a HACK because call-caching on Terra is unreliable.
         String? cached_plain_text_dataset
 
-        File? germline_resource
-        File? blacklist_vcf
-        File? permutect_training_dataset_truth_vcf
-
-        # Indices of the VCFs above, usually unnecessary on both local and cloud backends.  Each VCF's index is assumed to
-        # be the VCF's path plus .tbi for a bgzipped VCF (.vcf.gz or .vcf.bgz) or .idx for a plain .vcf.  Specify an
-        # index only to override that, for example for a non-standard extension.
-        File? germline_resource_idx
-        File? blacklist_vcf_idx
-        File? permutect_training_dataset_truth_vcf_idx
+        # VCFs, each an array of the VCF and, optionally, its index: [vcf] or [vcf, idx], or [] for none.  GATK finds a
+        # VCF's index only by name beside the VCF: the VCF's path plus .tbi for a bgzipped VCF (.vcf.gz or .vcf.bgz), or
+        # plus .idx for a plain .vcf.  Given [vcf], the workflow derives that path and passes the index along with the
+        # VCF, so that backends that localize files put it beside the VCF, while on Terra the tasks stream both.  So
+        # [vcf] suffices on every backend, and an index given as the second element must be that same file.  In a Terra
+        # configuration, an attribute expression such as workspace.gnomad gives a one-element array.  Elements that are
+        # "" are ignored, since Terra may turn unset data table values into "" (see below).  (Earlier versions took each
+        # index as a separate input, such as germline_resource_idx.)
+        # The germline resource and the blacklist are optional but strongly recommended, so each must be given, if only
+        # as [] to go without it.
+        # a germline resource with population allele frequencies, eg gnomAD's, with which Mutect2 recognizes germline
+        # variants
+        Array[File] germline_resource
+        # a blacklist of sites, which Mutect2 takes as its panel of normals
+        Array[File] blacklist_vcf
+        # a truth VCF, which labels the training dataset.  It's genuinely optional and may be left unset.
+        Array[File]? permutect_training_dataset_truth_vcf
 
         # extra arguments
         String? m2_extra_args
@@ -84,32 +91,29 @@ workflow MakeTrainingDataset {
         File NONE = ""
     }
 
-    # The reads and intervals without their "" elements, which Terra may have made from unset data table values, eg
-    # [this.bam, this.bai] becoming [bam, ""].  WDL has no filter function, so a scatter without calls keeps the other
-    # elements, and select_all collects them.
-    scatter (reads_file in reads) {
-        if (reads_file != "") {
-            File given_reads_file = reads_file
+    # The input arrays without their "" elements, which Terra may have made from unset data table values, eg [this.bam,
+    # this.bai] becoming [bam, ""].  WDL has no filter function, so a scatter without calls keeps the other elements,
+    # and select_all collects them.  Keep given_arrays and the indices into nonblank below in the same order.
+    Array[Array[File]] given_arrays = [reads, intervals, germline_resource, blacklist_vcf,
+        select_first([permutect_training_dataset_truth_vcf, []])]
+    scatter (given_array in given_arrays) {
+        scatter (element in given_array) {
+            if (element != "") {
+                File nonblank_element = element
+            }
         }
+        Array[File] nonblank = select_all(nonblank_element)
     }
-    scatter (interval_file in intervals) {
-        if (interval_file != "") {
-            File given_interval_file = interval_file
-        }
-    }
-    Array[File] given_reads = select_all(given_reads_file)
-    Array[File] given_intervals = select_all(given_interval_file)
+    Array[File] given_reads = nonblank[0]
+    Array[File] given_intervals = nonblank[1]
+    Array[File] given_germline_resource = nonblank[2]
+    Array[File] given_blacklist_vcf = nonblank[3]
+    Array[File] given_permutect_training_dataset_truth_vcf = nonblank[4]
 
     File? masks_hack = if (select_first([masked_intervals,""]) == "") then NONE else masked_intervals
-    File? germline_resource_hack = if select_first([germline_resource, ""]) == "" then NONE else germline_resource
-    File? germline_resource_idx_hack = if select_first([germline_resource_idx, ""]) == "" then NONE else germline_resource_idx
-    File? blacklist_vcf_hack = if select_first([blacklist_vcf, ""]) == "" then NONE else blacklist_vcf
-    File? blacklist_vcf_idx_hack = if select_first([blacklist_vcf_idx, ""]) == "" then NONE else blacklist_vcf_idx
     File? dragstr_model_hack = if select_first([dragstr_model, ""]) == "" then NONE else dragstr_model
     File? gatk_override_hack = if select_first([gatk_override, ""]) == "" then NONE else gatk_override
     String? gcs_project_for_requester_pays_hack = if select_first([gcs_project_for_requester_pays, ""]) == "" then NONE else gcs_project_for_requester_pays
-    File? permutect_training_dataset_truth_vcf_hack = if select_first([permutect_training_dataset_truth_vcf, ""]) == "" then NONE else permutect_training_dataset_truth_vcf
-    File? permutect_training_dataset_truth_vcf_idx_hack = if select_first([permutect_training_dataset_truth_vcf_idx, ""]) == "" then NONE else permutect_training_dataset_truth_vcf_idx
     String? cached_plain_text_dataset_hack = if select_first([cached_plain_text_dataset, ""]) == "" then NONE else cached_plain_text_dataset
 
     if (!defined(cached_plain_text_dataset_hack)) {
@@ -120,17 +124,16 @@ workflow MakeTrainingDataset {
                 ref_fasta = ref_fasta,
                 tumor_reads = given_reads,
                 normal_reads = [],
-                germline_resource = germline_resource_hack,
-                germline_resource_idx = germline_resource_idx_hack,
-                pon = blacklist_vcf_hack,
-                pon_idx = blacklist_vcf_idx_hack,
+                germline_resource = given_germline_resource,
+                pon = given_blacklist_vcf,
+                # the training dataset doesn't use pileup summaries
+                common_variants_vcf = [],
                 m2_extra_args = m2_extra_args,
                 dragstr_model = dragstr_model_hack,
                 make_bamout = make_bamout,
                 compress_vcfs = compress_vcfs,
                 make_permutect_training_dataset = true,
-                permutect_training_dataset_truth_vcf = permutect_training_dataset_truth_vcf_hack,
-                permutect_training_dataset_truth_vcf_idx = permutect_training_dataset_truth_vcf_idx_hack,
+                permutect_training_dataset_truth_vcf = given_permutect_training_dataset_truth_vcf,
                 skip_filtering = true,
                 gatk_docker = permutect_docker,
                 gatk_override = gatk_override_hack,

@@ -47,19 +47,26 @@ workflow Permutect {
         # ignore control_bam and run Mutect2 on the primary sample alone, eg to compare a tumor-normal pair's tumor-only
         # calls with its matched-normal calls.  With control_bam empty, the run is tumor-only regardless.
         Boolean tumor_only = false
-        File? germline_resource
+        # VCFs, each an array of the VCF and, optionally, its index: [vcf] or [vcf, idx], or [] for none.  GATK finds a
+        # VCF's index only by name beside the VCF: the VCF's path plus .tbi for a bgzipped VCF (.vcf.gz or .vcf.bgz), or
+        # plus .idx for a plain .vcf.  Given [vcf], the workflow derives that path and passes the index along with the
+        # VCF, so that backends that localize files put it beside the VCF, while on Terra the tasks stream both.  So
+        # [vcf] suffices on every backend, and an index given as the second element must be that same file.  In a Terra
+        # configuration, an attribute expression such as workspace.gnomad gives a one-element array.  Elements that are
+        # "" are ignored, since Terra may turn unset data table values into "" (see below).  (Earlier versions took each
+        # index as a separate input, such as germline_resource_idx.)
+        # The germline resource and the common variants are optional but strongly recommended, so each must be given, if
+        # only as [] to go without it.
+        # a germline resource with population allele frequencies, eg gnomAD's, with which Mutect2 recognizes germline
+        # variants
+        Array[File] germline_resource
         # common SNPs with population allele frequencies, for segmenting the tumor and normal by minor allele fraction
         # and estimating the tumor's contamination with segment_pileups.  Their allele frequencies must be accurate, eg
         # from gnomAD.  For genomes these should be common SNPs throughout the genome, not only in exons.
-        File? common_variants_vcf
-        File? test_dataset_truth_vcf    # used for evaluation
-
-        # Indices of the VCFs above, usually unnecessary on both local and cloud backends.  Each VCF's index is assumed to
-        # be the VCF's path plus .tbi for a bgzipped VCF (.vcf.gz or .vcf.bgz) or .idx for a plain .vcf.  Specify an
-        # index only to override that, for example for a non-standard extension.
-        File? germline_resource_idx
-        File? common_variants_vcf_idx
-        File? test_dataset_truth_vcf_idx
+        Array[File] common_variants_vcf
+        # a truth VCF, which labels the test dataset and with which Concordance evaluates Permutect's calls.  It's
+        # genuinely optional and may be left unset.
+        Array[File]? test_dataset_truth_vcf
 
         File? realignment_index_bundle
         File? dragstr_model
@@ -123,45 +130,39 @@ workflow Permutect {
 
     File? masks_hack = if (select_first([masks,""]) == "") then NONE else masks
 
-    # The reads and intervals arrays without their "" elements, which Terra may have made from unset data table values,
-    # eg [this.normal_bam, this.normal_bai] becoming ["", ""].  WDL has no filter function, so a scatter without calls
-    # keeps the other elements, and select_all collects them.
-    scatter (primary_file in primary_bam) {
-        if (primary_file != "") {
-            File given_primary_file = primary_file
+    # The input arrays without their "" elements, which Terra may have made from unset data table values, eg
+    # [this.normal_bam, this.normal_bai] becoming ["", ""].  WDL has no filter function, so a scatter without calls
+    # keeps the other elements, and select_all collects them.  Keep given_arrays and the indices into nonblank below in
+    # the same order.
+    Array[Array[File]] given_arrays = [primary_bam, control_bam, intervals, germline_resource, common_variants_vcf,
+        select_first([test_dataset_truth_vcf, []])]
+    scatter (given_array in given_arrays) {
+        scatter (element in given_array) {
+            if (element != "") {
+                File nonblank_element = element
+            }
         }
+        Array[File] nonblank = select_all(nonblank_element)
     }
-    scatter (control_file in control_bam) {
-        if (control_file != "") {
-            File given_control_file = control_file
-        }
-    }
-    scatter (interval_file in intervals) {
-        if (interval_file != "") {
-            File given_interval_file = interval_file
-        }
-    }
-    Array[File] primary_reads = select_all(given_primary_file)
-    Array[File] control_reads = select_all(given_control_file)
-    Array[File] given_intervals = select_all(given_interval_file)
+    Array[File] primary_reads = nonblank[0]
+    Array[File] control_reads = nonblank[1]
+    Array[File] given_intervals = nonblank[2]
+    Array[File] given_germline_resource = nonblank[3]
+    Array[File] given_common_variants_vcf = nonblank[4]
+    Array[File] given_test_dataset_truth_vcf = nonblank[5]
 
-    File? germline_resource_hack = if select_first([germline_resource, ""]) == "" then NONE else germline_resource
-    File? germline_resource_idx_hack = if select_first([germline_resource_idx, ""]) == "" then NONE else germline_resource_idx
-
-    File? common_variants_vcf_hack = if select_first([common_variants_vcf, ""]) == "" then NONE else common_variants_vcf
-    File? common_variants_vcf_idx_hack = if select_first([common_variants_vcf_idx, ""]) == "" then NONE else common_variants_vcf_idx
     File? realignment_index_bundle_hack = if select_first([realignment_index_bundle, ""]) == "" then NONE else realignment_index_bundle
     File? dragstr_model_hack = if select_first([dragstr_model, ""]) == "" then NONE else dragstr_model
-    File? test_dataset_truth_vcf_hack = if select_first([test_dataset_truth_vcf, ""]) == "" then NONE else test_dataset_truth_vcf
-    File? test_dataset_truth_vcf_idx_hack = if select_first([test_dataset_truth_vcf_idx, ""]) == "" then NONE else test_dataset_truth_vcf_idx
 
-    # The truth VCF's index, unless given, is its path plus .tbi if it's bgzipped or .idx if not.  Concordance needs it
-    # here.  Mutect2 finds the indices of the other VCFs the same way.
-    if (defined(test_dataset_truth_vcf_hack)) {
-        String test_dataset_truth_vcf_path = "~{test_dataset_truth_vcf_hack}"
-        File conventional_test_dataset_truth_vcf_idx = test_dataset_truth_vcf_path + (if sub(test_dataset_truth_vcf_path, "\\.b?gz$", "") != test_dataset_truth_vcf_path then ".tbi" else ".idx")
-    }
-    File? test_dataset_truth_vcf_idx_or_conventional = if defined(test_dataset_truth_vcf_idx_hack) then test_dataset_truth_vcf_idx_hack else conventional_test_dataset_truth_vcf_idx
+    # The truth VCF with its index, which Concordance needs here: the array as given if it has the index, and otherwise
+    # the VCF and its index's path, as Mutect2's WDL derives the indices of its VCFs: the VCF's path plus .tbi if it's
+    # bgzipped or .idx if not
+    Boolean has_truth_vcf = length(given_test_dataset_truth_vcf) > 0
+    String truth_vcf_path = if has_truth_vcf then "~{given_test_dataset_truth_vcf[0]}" else ""
+    Array[File] test_dataset_truth_vcf_with_index = if length(given_test_dataset_truth_vcf) == 1
+        then [truth_vcf_path,
+            truth_vcf_path + (if sub(truth_vcf_path, "\\.b?gz$", "") != truth_vcf_path then ".tbi" else ".idx")]
+        else given_test_dataset_truth_vcf
 
     File? gatk_override_hack = if select_first([gatk_override, ""]) == "" then NONE else gatk_override
 
@@ -189,8 +190,7 @@ workflow Permutect {
             input:
                 make_permutect_training_dataset = false,
                 make_permutect_test_dataset = true,
-                permutect_test_dataset_truth_vcf = test_dataset_truth_vcf_hack,
-                permutect_test_dataset_truth_vcf_idx = test_dataset_truth_vcf_idx_or_conventional,
+                permutect_test_dataset_truth_vcf = given_test_dataset_truth_vcf,
                 intervals = given_intervals,
                 masked_intervals = masks_hack,
                 ref_fasta = ref_fasta,
@@ -198,10 +198,10 @@ workflow Permutect {
                 normal_reads = normal_reads,
 
                 scatter_count = scatter_count,
-                germline_resource = germline_resource_hack,
-                germline_resource_idx = germline_resource_idx_hack,
-                common_variants_vcf = common_variants_vcf_hack,
-                common_variants_vcf_idx = common_variants_vcf_idx_hack,
+                germline_resource = given_germline_resource,
+                # Permutect uses no panel of normals
+                pon = [],
+                common_variants_vcf = given_common_variants_vcf,
                 skip_filtering = skip_m2_filtering,
                 # segment_pileups estimates the contamination instead
                 skip_calculate_contamination = true,
@@ -315,13 +315,13 @@ workflow Permutect {
             permutect_docker = permutect_docker,
     }
 
-    if (defined(test_dataset_truth_vcf_hack)){
+    if (has_truth_vcf) {
         call Concordance as PermutectConcordance {
             input:
                 intervals = given_intervals,
                 masks = masks_hack,
-                truth_vcf = select_first([test_dataset_truth_vcf_hack]),
-                truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_or_conventional]),
+                truth_vcf = test_dataset_truth_vcf_with_index[0],
+                truth_vcf_idx = test_dataset_truth_vcf_with_index[1],
                 eval_vcf = PermutectFiltering.output_vcf,
                 eval_vcf_idx = PermutectFiltering.output_vcf_idx,
                 split_mnvs = split_mnvs,

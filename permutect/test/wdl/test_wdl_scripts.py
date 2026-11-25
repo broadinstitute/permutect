@@ -55,7 +55,13 @@ def test_index_inputs_are_given_index_files():
                     bindings.append((os.path.basename(wdl), line_number, match.group(1), match.group(2)))
 
     assert bindings, "no index-file inputs found; has the WDL syntax changed?"
-    wrong = [binding for binding in bindings if "idx" not in binding[3]]
+
+    # an index is a file whose name says so, or element 1 of an array of a VCF and its index, such as
+    # truth_vcf_with_index[1]
+    def is_index(expression: str) -> bool:
+        return "idx" in expression or re.search(r"_with_index\[1\]$", expression) is not None
+
+    wrong = [binding for binding in bindings if not is_index(binding[3])]
     assert not wrong, f"index inputs bound to something other than an index: {wrong}"
 
 

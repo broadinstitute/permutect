@@ -9,12 +9,16 @@ workflow ComparePermutect {
         # took a single, optional file.)
         Array[File] intervals
 		File? masks
-    	File permutect_vcf
-    	File permutect_vcf_idx
-        File other_vcf
-    	File other_vcf_idx
-    	File truth_vcf
-    	File truth_vcf_idx
+        # Permutect's calls, another tool's calls and the truth, each an array of the VCF and, optionally, its index:
+        # [vcf] or [vcf, idx].  Concordance finds each index only by name beside its VCF: the VCF's path plus .tbi for a
+        # bgzipped VCF (.vcf.gz or .vcf.bgz), or plus .idx for a plain .vcf.  Given [vcf], the workflow derives that
+        # path and passes the index along with the VCF, so [vcf] suffices on every backend, and an index given as the
+        # second element must be that same file.  Elements that are "" are ignored, since Terra may turn unset data
+        # table values into "" (see below).  (Earlier versions took each index as a separate input, such as
+        # permutect_vcf_idx.)
+        Array[File]+ permutect_vcf
+        Array[File]+ other_vcf
+        Array[File]+ truth_vcf
 
     	# runtime
     	String gatk_docker
@@ -29,14 +33,32 @@ workflow ComparePermutect {
         File NONE = ""
     }
 
-    # The intervals without their "" elements, which Terra may have made from unset data table values.  WDL has no
-    # filter function, so a scatter without calls keeps the other elements, and select_all collects them.
-    scatter (interval_file in intervals) {
-        if (interval_file != "") {
-            File given_interval_file = interval_file
+    # The input arrays without their "" elements, which Terra may have made from unset data table values.  WDL has no
+    # filter function, so a scatter without calls keeps the other elements, and select_all collects them.  Keep
+    # given_arrays and the indices into nonblank below in the same order.
+    Array[Array[File]] given_arrays = [intervals, permutect_vcf, other_vcf, truth_vcf]
+    scatter (given_array in given_arrays) {
+        scatter (element in given_array) {
+            if (element != "") {
+                File nonblank_element = element
+            }
         }
+        Array[File] nonblank = select_all(nonblank_element)
     }
-    Array[File] given_intervals = select_all(given_interval_file)
+    Array[File] given_intervals = nonblank[0]
+
+    # Each VCF with its index: the array as given if it has the index, and otherwise the VCF and the index where GATK
+    # looks for it, the VCF's path plus .tbi for a bgzipped VCF (.vcf.gz or .vcf.bgz) or .idx for a plain .vcf.  Keep
+    # the indices into vcf_with_index below in the order of the VCFs.
+    scatter (given_vcf in [nonblank[1], nonblank[2], nonblank[3]]) {
+        String vcf_path = if length(given_vcf) > 0 then "~{given_vcf[0]}" else ""
+        Array[File] vcf_with_index = if length(given_vcf) == 1
+            then [vcf_path, vcf_path + (if sub(vcf_path, "\\.b?gz$", "") != vcf_path then ".tbi" else ".idx")]
+            else given_vcf
+    }
+    Array[File] permutect_vcf_with_index = vcf_with_index[0]
+    Array[File] other_vcf_with_index = vcf_with_index[1]
+    Array[File] truth_vcf_with_index = vcf_with_index[2]
 
     File? masks_hack = if select_first([masks, ""]) == "" then NONE else masks
     File? gatk_override_hack = if select_first([gatk_override, ""]) == "" then NONE else gatk_override
@@ -45,10 +67,10 @@ workflow ComparePermutect {
         input:
             intervals = given_intervals,
             masks = masks_hack,
-            truth_vcf = truth_vcf,
-            truth_vcf_idx = truth_vcf_idx,
-            eval_vcf = permutect_vcf,
-            eval_vcf_idx = permutect_vcf_idx,
+            truth_vcf = truth_vcf_with_index[0],
+            truth_vcf_idx = truth_vcf_with_index[1],
+            eval_vcf = permutect_vcf_with_index[0],
+            eval_vcf_idx = permutect_vcf_with_index[1],
             gatk_override = gatk_override_hack,
             gatk_docker = gatk_docker
     }
@@ -57,10 +79,10 @@ workflow ComparePermutect {
         input:
             intervals = given_intervals,
             masks = masks_hack,
-            truth_vcf = truth_vcf,
-            truth_vcf_idx = truth_vcf_idx,
-            eval_vcf = other_vcf,
-            eval_vcf_idx = other_vcf_idx,
+            truth_vcf = truth_vcf_with_index[0],
+            truth_vcf_idx = truth_vcf_with_index[1],
+            eval_vcf = other_vcf_with_index[0],
+            eval_vcf_idx = other_vcf_with_index[1],
             gatk_override = gatk_override_hack,
             gatk_docker = gatk_docker
     }
