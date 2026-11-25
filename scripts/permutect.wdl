@@ -6,7 +6,12 @@ workflow Permutect {
     input {
         File artifact_model
 
-        File? intervals
+        # Files of the genomic intervals to call, such as .interval_list or .bed files, or [] to call the whole genome.
+        # Mutect2's WDL and Concordance give GATK each file with its own -L, and GATK takes the union of their
+        # intervals.  In a Terra configuration, an attribute expression such as workspace.intervals gives a one-element
+        # array.  Elements that are "" are ignored, since Terra may turn unset data table values into "" (see below).
+        # (Earlier versions took a single, optional file.)
+        Array[File] intervals
         File? masks
         # The reference FASTA.  Its companion files are not inputs: Mutect2 (GATK), bcftools and pysam find them by name in
         # the FASTA's directory, and GATK accepts no other names, so they must exist there under these names:
@@ -116,12 +121,11 @@ workflow Permutect {
         File NONE = ""
     }
 
-    File? intervals_hack = if (select_first([intervals,""]) == "") then NONE else intervals
     File? masks_hack = if (select_first([masks,""]) == "") then NONE else masks
 
-    # The reads arrays without their "" elements, which Terra may have made from unset data table values, eg
-    # [this.normal_bam, this.normal_bai] becoming ["", ""].  WDL has no filter function, so a scatter without calls keeps
-    # the other elements, and select_all collects them.
+    # The reads and intervals arrays without their "" elements, which Terra may have made from unset data table values,
+    # eg [this.normal_bam, this.normal_bai] becoming ["", ""].  WDL has no filter function, so a scatter without calls
+    # keeps the other elements, and select_all collects them.
     scatter (primary_file in primary_bam) {
         if (primary_file != "") {
             File given_primary_file = primary_file
@@ -132,8 +136,14 @@ workflow Permutect {
             File given_control_file = control_file
         }
     }
+    scatter (interval_file in intervals) {
+        if (interval_file != "") {
+            File given_interval_file = interval_file
+        }
+    }
     Array[File] primary_reads = select_all(given_primary_file)
     Array[File] control_reads = select_all(given_control_file)
+    Array[File] given_intervals = select_all(given_interval_file)
 
     File? germline_resource_hack = if select_first([germline_resource, ""]) == "" then NONE else germline_resource
     File? germline_resource_idx_hack = if select_first([germline_resource_idx, ""]) == "" then NONE else germline_resource_idx
@@ -181,7 +191,7 @@ workflow Permutect {
                 make_permutect_test_dataset = true,
                 permutect_test_dataset_truth_vcf = test_dataset_truth_vcf_hack,
                 permutect_test_dataset_truth_vcf_idx = test_dataset_truth_vcf_idx_or_conventional,
-                intervals = intervals_hack,
+                intervals = given_intervals,
                 masked_intervals = masks_hack,
                 ref_fasta = ref_fasta,
                 tumor_reads = primary_reads,
@@ -308,7 +318,7 @@ workflow Permutect {
     if (defined(test_dataset_truth_vcf_hack)){
         call Concordance as PermutectConcordance {
             input:
-                intervals = intervals_hack,
+                intervals = given_intervals,
                 masks = masks_hack,
                 truth_vcf = select_first([test_dataset_truth_vcf_hack]),
                 truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_or_conventional]),
@@ -511,7 +521,8 @@ task SplitMultiallelics {
 
 task Concordance {
     input {
-    	File? intervals
+        # files of genomic intervals, whose union the task evaluates, or none for the whole genome
+        Array[File] intervals
     	File? masks
     	File truth_vcf
     	File truth_vcf_idx
@@ -546,7 +557,7 @@ task Concordance {
         gatk IndexFeatureFile -I "$eval_vcf"
 
         gatk --java-options "-Xmx2g" Concordance \
-            ~{"-L " + intervals} \
+            ~{if length(intervals) > 0 then "-L " else ""}~{sep=" -L " intervals} \
             ~{"-XL " + masks} \
             -truth ~{truth_vcf} -eval "$eval_vcf" \
             -tpfn "tpfn.vcf" \

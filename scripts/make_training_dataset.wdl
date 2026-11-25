@@ -7,7 +7,12 @@ import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versio
 workflow MakeTrainingDataset {
     input {
         # basic inputs
-        File? intervals
+        # Files of the genomic intervals to call, such as .interval_list or .bed files, or [] to call the whole genome.
+        # Mutect2's WDL gives GATK each file with its own -L, and GATK takes the union of their intervals.  In a
+        # Terra configuration, an attribute expression such as workspace.intervals gives a one-element array.  Elements
+        # that are "" are ignored, since Terra may turn unset data table values into "" (see below).  (Earlier versions
+        # took a single, optional file.)
+        Array[File] intervals
         File? masked_intervals
         # The reference FASTA.  Its companion files are not inputs: Mutect2 (GATK) finds them by name in the FASTA's
         # directory and accepts no other names, so they must exist there under these names:
@@ -79,17 +84,22 @@ workflow MakeTrainingDataset {
         File NONE = ""
     }
 
-    # The reads without their "" elements, which Terra may have made from unset data table values, eg [this.bam, this.bai]
-    # becoming [bam, ""].  WDL has no filter function, so a scatter without calls keeps the other elements, and
-    # select_all collects them.
+    # The reads and intervals without their "" elements, which Terra may have made from unset data table values, eg
+    # [this.bam, this.bai] becoming [bam, ""].  WDL has no filter function, so a scatter without calls keeps the other
+    # elements, and select_all collects them.
     scatter (reads_file in reads) {
         if (reads_file != "") {
             File given_reads_file = reads_file
         }
     }
+    scatter (interval_file in intervals) {
+        if (interval_file != "") {
+            File given_interval_file = interval_file
+        }
+    }
     Array[File] given_reads = select_all(given_reads_file)
+    Array[File] given_intervals = select_all(given_interval_file)
 
-    File? intervals_hack = if (select_first([intervals,""]) == "") then NONE else intervals
     File? masks_hack = if (select_first([masked_intervals,""]) == "") then NONE else masked_intervals
     File? germline_resource_hack = if select_first([germline_resource, ""]) == "" then NONE else germline_resource
     File? germline_resource_idx_hack = if select_first([germline_resource_idx, ""]) == "" then NONE else germline_resource_idx
@@ -105,7 +115,7 @@ workflow MakeTrainingDataset {
     if (!defined(cached_plain_text_dataset_hack)) {
         call m2.Mutect2 {
             input:
-                intervals = intervals_hack,
+                intervals = given_intervals,
                 masked_intervals = masks_hack,
                 ref_fasta = ref_fasta,
                 tumor_reads = given_reads,

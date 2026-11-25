@@ -205,17 +205,22 @@ def task_output_globs(wdl_path: str, task_name: str) -> dict:
 
 def fill_placeholders(command: str, inputs: dict) -> str:
     """
-    Replace the WDL placeholders ~{name}, ~{name[index]}, ~{default="..." name}, ~{"prefix" + name}, ~{sep=" " name}
-    and ~{if name then "..." else "..."}, as Cromwell would.  An undefined (None) input gives its default, or nothing, an
-    array input given a separator its elements joined by the separator, an indexed array input its element, and a
-    Boolean input in a conditional the string for its value.
+    Replace the WDL placeholders ~{name}, ~{name[index]}, ~{default="..." name}, ~{"prefix" + name}, ~{sep=" " name},
+    ~{if name then "..." else "..."} and ~{if length(name) > 0 then "..." else "..."}, as Cromwell would.  An undefined
+    (None) input gives its default, or nothing, an array input given a separator its elements joined by the separator,
+    an indexed array input its element, and a Boolean input, or whether an array input is non-empty, in a conditional
+    the string for its value.
     """
 
     def fill_conditional(match):
-        name, if_true, if_false = match.groups()
-        return if_true if inputs[name] else if_false
+        array_name, name, if_true, if_false = match.groups()
+        condition = bool(inputs[array_name]) if array_name is not None else inputs[name]
+        return if_true if condition else if_false
 
-    command = re.sub(r'~\{if\s+(\w+)\s+then\s+"([^"]*)"\s+else\s+"([^"]*)"\}', fill_conditional, command)
+    condition_pattern = r'(?:length\((\w+)\)\s*>\s*0|(\w+))'
+    command = re.sub(
+        r'~\{if\s+' + condition_pattern + r'\s+then\s+"([^"]*)"\s+else\s+"([^"]*)"\}', fill_conditional, command
+    )
 
     def fill(match):
         _, separator, default, prefix, name, index = match.groups()
@@ -451,6 +456,21 @@ def test_concordance_evaluates_the_mnv_split_vcf_if_asked(tmp_path, split_mnvs):
     concordance_calls = [call.split() for call in calls if " Concordance " in call]
     assert len(concordance_calls) == 1
     assert concordance_calls[0][concordance_calls[0].index("-eval") + 1] == evaluated
+
+
+@pytest.mark.parametrize("intervals", [[], ["targets.interval_list", "extra.bed"]])
+def test_concordance_takes_the_union_of_the_intervals(tmp_path, intervals):
+    # Concordance gets each interval file with its own -L, so that GATK takes their union, and no -L without intervals
+    inputs = {"eval_vcf": "permutect.vcf.gz", "truth_vcf": "truth.vcf", "split_mnvs": "false", "intervals": intervals}
+    command = fill_placeholders(task_command(PERMUTECT_WDL, "Concordance"), defaultdict(lambda: None, inputs))
+    recorder = '#!/bin/bash\necho "$(basename "$0") $*" >> calls.txt\n'
+    run_bash(command, tmp_path, {"bcftools": recorder, "gatk": recorder})
+    calls = (tmp_path / "calls.txt").read_text().splitlines()
+
+    concordance_calls = [call.split() for call in calls if " Concordance " in call]
+    assert len(concordance_calls) == 1
+    words = concordance_calls[0]
+    assert [words[n + 1] for n, word in enumerate(words) if word == "-L"] == intervals
 
 
 @pytest.mark.parametrize("with_pileups", [True, False])

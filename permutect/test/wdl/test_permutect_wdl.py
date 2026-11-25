@@ -135,6 +135,7 @@ def run_permutect_wdl(
         "Permutect.permutect_docker": PERMUTECT_TEST_DOCKER,
         # Terra turns unset optional inputs into empty strings, which the workflow must treat as unset
         "Permutect.masks": "",
+        "Permutect.intervals": [""],
         "Permutect.test_dataset_truth_vcf": "",
         "Permutect.test_dataset_truth_vcf_idx": "",
         "Permutect.tumor_only_cached_m2_outputs": (

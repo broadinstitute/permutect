@@ -2,7 +2,12 @@ version 1.0
 
 workflow ComparePermutect {
     input {
-		File? intervals
+        # Files of the genomic intervals to compare, such as .interval_list or .bed files, or [] for the whole genome.
+        # Concordance gives GATK each file with its own -L, and GATK takes the union of their intervals.  In a Terra
+        # configuration, an attribute expression such as workspace.intervals gives a one-element array.  Elements that
+        # are "" are ignored, since Terra may turn unset data table values into "" (see below).  (Earlier versions
+        # took a single, optional file.)
+        Array[File] intervals
 		File? masks
     	File permutect_vcf
     	File permutect_vcf_idx
@@ -24,13 +29,21 @@ workflow ComparePermutect {
         File NONE = ""
     }
 
-    File? intervals_hack = if select_first([intervals, ""]) == "" then NONE else intervals
+    # The intervals without their "" elements, which Terra may have made from unset data table values.  WDL has no
+    # filter function, so a scatter without calls keeps the other elements, and select_all collects them.
+    scatter (interval_file in intervals) {
+        if (interval_file != "") {
+            File given_interval_file = interval_file
+        }
+    }
+    Array[File] given_intervals = select_all(given_interval_file)
+
     File? masks_hack = if select_first([masks, ""]) == "" then NONE else masks
     File? gatk_override_hack = if select_first([gatk_override, ""]) == "" then NONE else gatk_override
 
     call Concordance as PermutectConcordance {
         input:
-            intervals = intervals_hack,
+            intervals = given_intervals,
             masks = masks_hack,
             truth_vcf = truth_vcf,
             truth_vcf_idx = truth_vcf_idx,
@@ -42,7 +55,7 @@ workflow ComparePermutect {
 
     call Concordance as OtherConcordance {
         input:
-            intervals = intervals_hack,
+            intervals = given_intervals,
             masks = masks_hack,
             truth_vcf = truth_vcf,
             truth_vcf_idx = truth_vcf_idx,
@@ -89,7 +102,8 @@ workflow ComparePermutect {
 
 task Concordance {
     input {
-    	File? intervals
+        # files of genomic intervals, whose union the task evaluates, or none for the whole genome
+        Array[File] intervals
     	File? masks
     	File truth_vcf
     	File truth_vcf_idx
@@ -107,7 +121,7 @@ task Concordance {
         export GATK_LOCAL_JAR=~{default="/root/gatk.jar" gatk_override}
 
         gatk --java-options "-Xmx2g" Concordance \
-            ~{"-L " + intervals} \
+            ~{if length(intervals) > 0 then "-L " else ""}~{sep=" -L " intervals} \
             ~{"-XL " + masks} \
             -truth ~{truth_vcf} -eval ~{eval_vcf} \
             -tpfn "tpfn.vcf" \
