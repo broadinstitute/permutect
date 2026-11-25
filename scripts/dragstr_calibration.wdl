@@ -15,8 +15,16 @@ workflow DragstrCalibration {
         # a local Cromwell, put them beside it, while on Terra the task streams them from the bucket.  A missing companion
         # file fails the workflow early, with an error naming the file.
         File ref_fasta
-        File reads
-        File reads_index
+        # The sample's reads: an array whose first element is a BAM or CRAM file, which the task uses as reads[0], and
+        # whose optional second element is its index.  GATK finds the index only by name in the reads' directory, so it
+        # must be there under one of these names, whether or not the array includes it:
+        # - for x.bam: x.bai, x.bam.bai, x.csi or x.bam.csi
+        # - for x.cram: x.crai or x.cram.crai
+        # On Terra the task streams the reads from the bucket and GATK finds the index there, so the BAM or CRAM alone
+        # suffices.  On a backend that localizes files, such as a local Cromwell, include the index, so that it is
+        # localized beside the reads.  Including it always works.  (Earlier versions took the index as the separate input
+        # reads_index.)
+        Array[File]+ reads
     }
 
     # The reference FASTA and its companion files, derived as Mutect2's WDL derives them: the index, the FASTA's path plus
@@ -30,8 +38,7 @@ workflow DragstrCalibration {
     call CalibrateDragstrModel {
         input:
             reference = reference,
-            reads = reads,
-            reads_index = reads_index
+            reads = reads
     }
 
     output {
@@ -43,8 +50,9 @@ task CalibrateDragstrModel {
   input {
     # the reference FASTA, then its .fai index, its .dict dictionary and, if it's bgzipped, its .gzi block index
     Array[File] reference
-    File reads
-    File reads_index
+    # the reads: a BAM or CRAM, which the command uses as reads[0], optionally followed by its index (see the workflow's
+    # reads input)
+    Array[File]+ reads
 
     String docker = "us.gcr.io/broad-gatk/gatk:4.5.0.0"
     Int preemptible_tries = 1
@@ -62,7 +70,6 @@ task CalibrateDragstrModel {
   parameter_meta{
       reference: {localization_optional: true}
       reads: {localization_optional: true}
-      reads_index: {localization_optional: true}
     }
 
   command <<<
@@ -75,7 +82,7 @@ task CalibrateDragstrModel {
 
     gatk --java-options "-Xmx~{command_mem}m" CalibrateDragstrModel \
         -R ~{reference[0]} \
-        -I ~{reads} \
+        -I ~{reads[0]} \
         -str str_table.tsv \
         -O params.dragstr \
         ~{parallel_args}

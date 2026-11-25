@@ -19,8 +19,18 @@ workflow MakeTrainingDataset {
         # a local Cromwell, put them beside it, while on Terra they are streamed from the bucket.  A missing companion
         # file fails the workflow early, with an error naming the file.
         File ref_fasta
-        File reads
-        File reads_index
+        # The sample's reads, which Mutect2's WDL takes as tumor_reads: an array whose first element is a BAM or CRAM file
+        # and whose optional second element is its index.  GATK finds the index only by name in the reads' directory, so
+        # it must be there under one of these names, whether or not the array includes it:
+        # - for x.bam: x.bai, x.bam.bai, x.csi or x.bam.csi
+        # - for x.cram: x.crai or x.cram.crai
+        # On Terra, Mutect2 streams the reads from the bucket and finds the index there, so the BAM or CRAM alone
+        # suffices: in a configuration, an attribute expression such as this.bam gives a one-element array, and
+        # [this.bam, this.bai] a two-element one.  On a backend that localizes files, such as a local Cromwell, include
+        # the index, so that it is localized beside the reads.  Including it always works.  Elements that are "" are
+        # ignored, since Terra may turn unset data table values into "" (see below).  (Earlier versions took the index as
+        # the separate input reads_index.)
+        Array[File]+ reads
 
         # NOTE: this is a HACK because call-caching on Terra is unreliable.
         String? cached_plain_text_dataset
@@ -69,6 +79,16 @@ workflow MakeTrainingDataset {
         File NONE = ""
     }
 
+    # The reads without their "" elements, which Terra may have made from unset data table values, eg [this.bam, this.bai]
+    # becoming [bam, ""].  WDL has no filter function, so a scatter without calls keeps the other elements, and
+    # select_all collects them.
+    scatter (reads_file in reads) {
+        if (reads_file != "") {
+            File given_reads_file = reads_file
+        }
+    }
+    Array[File] given_reads = select_all(given_reads_file)
+
     File? intervals_hack = if (select_first([intervals,""]) == "") then NONE else intervals
     File? masks_hack = if (select_first([masked_intervals,""]) == "") then NONE else masked_intervals
     File? germline_resource_hack = if select_first([germline_resource, ""]) == "" then NONE else germline_resource
@@ -88,8 +108,8 @@ workflow MakeTrainingDataset {
                 intervals = intervals_hack,
                 masked_intervals = masks_hack,
                 ref_fasta = ref_fasta,
-                tumor_reads = reads,
-                tumor_reads_index = reads_index,
+                tumor_reads = given_reads,
+                normal_reads = [],
                 germline_resource = germline_resource_hack,
                 germline_resource_idx = germline_resource_idx_hack,
                 pon = blacklist_vcf_hack,

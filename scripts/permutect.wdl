@@ -22,12 +22,25 @@ workflow Permutect {
         Int? num_spectrum_iterations
         Float? spectrum_learning_rate
         Int? spectrum_batch_size
-        File primary_bam
-        File primary_bai
-        File? control_bam
-        File? control_bai
-        # ignore control_bam and control_bai and run Mutect2 on the primary sample alone, eg to compare a tumor-normal
-        # pair's tumor-only calls with its matched-normal calls.  Without control_bam, the run is tumor-only regardless.
+        # The primary (tumor) sample's reads, which Mutect2's WDL takes as tumor_reads: an array whose first element is a
+        # BAM or CRAM file and whose optional second element is its index.  GATK finds the index only by name in the
+        # reads' directory, so it must be there under one of these names, whether or not the array includes it:
+        # - for x.bam: x.bai, x.bam.bai, x.csi or x.bam.csi
+        # - for x.cram: x.crai or x.cram.crai
+        # On Terra, Mutect2 streams the reads from the bucket and finds the index there, so the BAM or CRAM alone
+        # suffices: in a configuration, an attribute expression such as this.tumor_bam gives a one-element array, and
+        # [this.tumor_bam, this.tumor_bai] a two-element one.  On a backend that localizes files, such as a local
+        # Cromwell, include the index, so that it is localized beside the reads.  Including it always works.  Elements
+        # that are "" are ignored, since Terra may turn unset data table values into "" (see below).  (Earlier versions
+        # took the index as the separate input primary_bai.)
+        Array[File]+ primary_bam
+        # The control (normal) sample's reads, likewise, or [] for a tumor-only run.  In a Terra configuration,
+        # this.normal_bam or [this.normal_bam, this.normal_bai] gives [] if the attributes are unset.  (Earlier versions
+        # took the index as the separate input control_bai, and the reads as an optional input that was left unset for a
+        # tumor-only run.)
+        Array[File] control_bam
+        # ignore control_bam and run Mutect2 on the primary sample alone, eg to compare a tumor-normal pair's tumor-only
+        # calls with its matched-normal calls.  With control_bam empty, the run is tumor-only regardless.
         Boolean tumor_only = false
         File? germline_resource
         # common SNPs with population allele frequencies, for segmenting the tumor and normal by minor allele fraction
@@ -106,8 +119,22 @@ workflow Permutect {
     File? intervals_hack = if (select_first([intervals,""]) == "") then NONE else intervals
     File? masks_hack = if (select_first([masks,""]) == "") then NONE else masks
 
-    File? control_bam_hack = if select_first([control_bam, ""]) == "" then NONE else control_bam
-    File? control_bai_hack = if select_first([control_bai, ""]) == "" then NONE else control_bai
+    # The reads arrays without their "" elements, which Terra may have made from unset data table values, eg
+    # [this.normal_bam, this.normal_bai] becoming ["", ""].  WDL has no filter function, so a scatter without calls keeps
+    # the other elements, and select_all collects them.
+    scatter (primary_file in primary_bam) {
+        if (primary_file != "") {
+            File given_primary_file = primary_file
+        }
+    }
+    scatter (control_file in control_bam) {
+        if (control_file != "") {
+            File given_control_file = control_file
+        }
+    }
+    Array[File] primary_reads = select_all(given_primary_file)
+    Array[File] control_reads = select_all(given_control_file)
+
     File? germline_resource_hack = if select_first([germline_resource, ""]) == "" then NONE else germline_resource
     File? germline_resource_idx_hack = if select_first([germline_resource_idx, ""]) == "" then NONE else germline_resource_idx
 
@@ -142,9 +169,8 @@ workflow Permutect {
     String? gcs_project_for_requester_pays_hack = if select_first([gcs_project_for_requester_pays, ""]) == "" then NONE else gcs_project_for_requester_pays
 
     # whether Mutect2 runs without a normal, which decides the cached Mutect2 outputs to use and the outputs to write
-    Boolean tumor_only_mode = tumor_only || !defined(control_bam_hack)
-    File? normal_bam = if tumor_only_mode then NONE else control_bam_hack
-    File? normal_bai = if tumor_only_mode then NONE else control_bai_hack
+    Boolean tumor_only_mode = tumor_only || length(control_reads) == 0
+    Array[File] normal_reads = if tumor_only_mode then [] else control_reads
     String? cached_m2_outputs_to_use = if tumor_only_mode then tumor_only_cached_m2_outputs_hack else cached_m2_outputs_hack
 
     Boolean use_cache = defined(cached_m2_outputs_to_use)
@@ -158,10 +184,8 @@ workflow Permutect {
                 intervals = intervals_hack,
                 masked_intervals = masks_hack,
                 ref_fasta = ref_fasta,
-                tumor_reads = primary_bam,
-                tumor_reads_index = primary_bai,
-                normal_reads = normal_bam,
-                normal_reads_index = normal_bai,
+                tumor_reads = primary_reads,
+                normal_reads = normal_reads,
 
                 scatter_count = scatter_count,
                 germline_resource = germline_resource_hack,
