@@ -172,6 +172,10 @@ task Preprocess {
         Int? disk_space
         Int? cpu
         Int? mem
+        # The CPU platform Google gives the task.  On Terra in November 2026, with 4 vCPUs, Intel Ice Lake (an N2
+        # machine) ran preprocess_dataset in 0.63 times the time on the default CPUs (2.3 GHz Haswell), for 0.78 times
+        # the billed time and 0.82 times the cost.
+        String cpu_platform = "Intel Ice Lake"
     }
 
     Int num_cpus = select_first([cpu, 4])
@@ -198,6 +202,7 @@ task Preprocess {
         preemptible: preemptible
         maxRetries: select_first([max_retries, 0])
         cpu: num_cpus
+        cpuPlatform: cpu_platform
     }
 
     output {
