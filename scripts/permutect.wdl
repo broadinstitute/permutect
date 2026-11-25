@@ -1,6 +1,6 @@
 version 1.0
 
-import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/60/plain-WDL/descriptor" as m2
+import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/61/plain-WDL/descriptor" as m2
 
 workflow Permutect {
     input {
@@ -8,9 +8,16 @@ workflow Permutect {
 
         File? intervals
         File? masks
+        # The reference FASTA.  Its companion files are not inputs: Mutect2 (GATK), bcftools and pysam find them by name in
+        # the FASTA's directory, and GATK accepts no other names, so they must exist there under these names:
+        # - its index, the FASTA's path plus .fai, eg Homo_sapiens_assembly38.fasta.fai
+        # - its sequence dictionary, the FASTA's path with its extension (.fasta, .fa, .fna, .fas or .txt, optionally
+        #   followed by .gz) replaced by .dict, eg Homo_sapiens_assembly38.dict
+        # - for a bgzipped FASTA (.gz), its block index, the FASTA's path plus .gzi
+        # The workflow passes these files to tasks along with the FASTA, so that backends that localize files, such as a
+        # local Cromwell, put them beside it, while on Terra Mutect2 streams them from the bucket.  A missing companion
+        # file fails the workflow early, with an error naming the file.
         File ref_fasta
-        File ref_fai
-        File ref_dict
         Int scatter_count
         Int? num_spectrum_iterations
         Float? spectrum_learning_rate
@@ -121,6 +128,14 @@ workflow Permutect {
 
     File? gatk_override_hack = if select_first([gatk_override, ""]) == "" then NONE else gatk_override
 
+    # The reference FASTA and its companion files for this workflow's tasks, derived as Mutect2's WDL derives them for
+    # its own: the index, the FASTA's path plus .fai; the dictionary, the FASTA's path with its extension replaced by
+    # .dict; and for a bgzipped FASTA the block index, its path plus .gzi.  Tasks use reference[0] as the FASTA.
+    String ref_fasta_path = "~{ref_fasta}"
+    Array[String] ref_gzi = if sub(ref_fasta_path, "\\.gz$", "") != ref_fasta_path then [ref_fasta_path + ".gzi"] else []
+    Array[File] reference = flatten([[ref_fasta_path, ref_fasta_path + ".fai",
+        sub(ref_fasta_path, "\\.(fasta|fas|fa|fna|txt)(\\.gz)?$", "") + ".dict"], ref_gzi])
+
     String? cached_m2_outputs_hack = if (select_first([cached_m2_outputs,""]) == "") then NONE else cached_m2_outputs
     String? tumor_only_cached_m2_outputs_hack = if (select_first([tumor_only_cached_m2_outputs,""]) == "") then NONE else tumor_only_cached_m2_outputs
 
@@ -143,8 +158,6 @@ workflow Permutect {
                 intervals = intervals_hack,
                 masked_intervals = masks_hack,
                 ref_fasta = ref_fasta,
-                ref_fai = ref_fai,
-                ref_dict = ref_dict,
                 tumor_reads = primary_bam,
                 tumor_reads_index = primary_bai,
                 normal_reads = normal_bam,
@@ -209,9 +222,7 @@ workflow Permutect {
         input:
             input_vcf = select_first([Mutect2.output_vcf, ExtractM2Outputs.mutect2_vcf]),
             input_vcf_idx = select_first([Mutect2.output_vcf_idx, ExtractM2Outputs.mutect2_vcf_idx]),
-            ref_fasta = ref_fasta,
-            ref_fai = ref_fai,
-            ref_dict = ref_dict,
+            reference = reference,
             gatk_docker = permutect_docker
     }
 
@@ -252,8 +263,7 @@ workflow Permutect {
     call PermutectFiltering {
         input:
             mutect2_vcf = SplitMultiallelics.output_vcf,
-            ref_fasta = ref_fasta,
-            ref_fai = ref_fai,
+            reference = reference,
             hairpin_filter = filter_pcr_errors,
             artifact_model = artifact_model,
             test_dataset = select_first([Mutect2.permutect_test_dataset, ExtractM2Outputs.test_dataset]),
@@ -331,8 +341,8 @@ workflow Permutect {
         File contigs_table
         # Mutect2's VCF with its multiallelic records split, which pre_permutect_filtering filters for filter_variants
         File mutect2_vcf
-        File ref_fasta
-        File ref_fai
+        # the reference FASTA, then its .fai index, its .dict dictionary and, if it's bgzipped, its .gzi block index
+        Array[File] reference
         # whether pre_permutect_filtering applies its hairpin filter as well as its multiallelic indel filter
         Boolean hairpin_filter
         File? germline_model
@@ -373,13 +383,13 @@ workflow Permutect {
     Int machine_mem = if defined(mem) then mem * 1000 else ceil((peak_gb + 1.5) * 1000)
     # the reference, the test dataset and its normalized copy, in temporary memory maps, which is smaller, and the VCF, as
     # given, pre-filtered and filtered
-    Int default_disk_space = ceil(size(ref_fasta, "GB") + 2 * size(test_dataset, "GB") + 3 * size(mutect2_vcf, "GB")) + 10
+    Int default_disk_space = ceil(size(reference, "GB") + 2 * size(test_dataset, "GB") + 3 * size(mutect2_vcf, "GB")) + 10
 
     command <<<
         set -euo pipefail
         genomic_span=`grep "callable" ~{mutect_stats} | while read name value; do echo $value; done`
 
-        pre_permutect_filtering --input ~{mutect2_vcf} --reference ~{ref_fasta} --output pre-filtered.vcf \
+        pre_permutect_filtering --input ~{mutect2_vcf} --reference ~{reference[0]} --output pre-filtered.vcf \
             ~{if hairpin_filter then "" else "--no_hairpin_filter"}
 
         # one process per CPU reads and normalizes chunks of the test dataset
@@ -431,9 +441,8 @@ task SplitMultiallelics {
     input {
         File input_vcf
         File input_vcf_idx
-        File ref_fasta
-        File ref_fai
-        File ref_dict
+        # the reference FASTA, then its .fai index, its .dict dictionary and, if it's bgzipped, its .gzi block index
+        Array[File] reference
         String gatk_docker
         Int? preemptible
         Int max_retries = 0
@@ -446,12 +455,12 @@ task SplitMultiallelics {
     Int machine_mem = mem * 1000
     Int command_mem = machine_mem - 500
     # the reference, and the VCF, its split copy and the output
-    Int default_disk_space = ceil(size(ref_fasta, "GB") + 3 * size(input_vcf, "GB")) + 10
+    Int default_disk_space = ceil(size(reference, "GB") + 3 * size(input_vcf, "GB")) + 10
 
     command <<<
         set -euo pipefail
 
-        bcftools norm -m -any -f ~{ref_fasta} ~{input_vcf} > split.vcf
+        bcftools norm -m -any -f ~{reference[0]} ~{input_vcf} > split.vcf
 
         gatk --java-options "-Xmx~{command_mem}m" IndexFeatureFile -I split.vcf
 

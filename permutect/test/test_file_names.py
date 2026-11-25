@@ -9,8 +9,6 @@ PREPROCESSED_DATA = os.path.join(integration_test_dir, "preprocessed-dataset.tar
 
 HG38_CONTIGS_TABLE = os.path.join(integration_test_dir, "hg38-contigs.table")
 HG38_CHR20_REFERENCE = os.path.join(integration_test_dir, "Homo_sapiens_assembly38_chr20.fasta")
-HG38_CHR20_REFERENCE_INDEX = HG38_CHR20_REFERENCE + ".fai"
-HG38_CHR20_REFERENCE_DICT = os.path.join(integration_test_dir, "Homo_sapiens_assembly38_chr20.dict")
 SEQC2_WES_PLAIN_TEXT_DATA = os.path.join(integration_test_dir, "seqc2-wes-chr20-plain-text.dataset")
 # chr20 of the GetPileupSummaries tables of SEQC2's WES_IL_T_1 and WES_IL_N_1, with gnomAD allele frequencies
 SEQC2_WES_TUMOR_PILEUPS = os.path.join(integration_test_dir, "seqc2-wes-chr20-tumor.pileups.table")

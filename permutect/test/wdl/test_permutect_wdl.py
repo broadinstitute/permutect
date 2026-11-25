@@ -113,8 +113,6 @@ def run_permutect_wdl(
     inputs = {
         "Permutect.artifact_model": PERMUTECT_V0_9_2_ARTIFACT_MODEL,
         "Permutect.ref_fasta": HG38_CHR20_REFERENCE,
-        "Permutect.ref_fai": HG38_CHR20_REFERENCE_INDEX,
-        "Permutect.ref_dict": HG38_CHR20_REFERENCE_DICT,
         "Permutect.primary_bam": placeholder_bam,
         "Permutect.primary_bai": placeholder_bai,
         "Permutect.control_bam": placeholder_bam if with_normal else "",

@@ -205,10 +205,10 @@ def task_output_globs(wdl_path: str, task_name: str) -> dict:
 
 def fill_placeholders(command: str, inputs: dict) -> str:
     """
-    Replace the WDL placeholders ~{name}, ~{default="..." name}, ~{"prefix" + name}, ~{sep=" " name} and
-    ~{if name then "..." else "..."}, as Cromwell would.  An undefined (None) input gives its default, or nothing, an
-    array input given a separator its elements joined by the separator, and a Boolean input in a conditional the string
-    for its value.
+    Replace the WDL placeholders ~{name}, ~{name[index]}, ~{default="..." name}, ~{"prefix" + name}, ~{sep=" " name}
+    and ~{if name then "..." else "..."}, as Cromwell would.  An undefined (None) input gives its default, or nothing, an
+    array input given a separator its elements joined by the separator, an indexed array input its element, and a
+    Boolean input in a conditional the string for its value.
     """
 
     def fill_conditional(match):
@@ -218,15 +218,17 @@ def fill_placeholders(command: str, inputs: dict) -> str:
     command = re.sub(r'~\{if\s+(\w+)\s+then\s+"([^"]*)"\s+else\s+"([^"]*)"\}', fill_conditional, command)
 
     def fill(match):
-        _, separator, default, prefix, name = match.groups()
+        _, separator, default, prefix, name, index = match.groups()
         value = inputs[name]
+        if value is not None and index is not None:
+            value = value[int(index)]
         if value is None:
             return default or ""
         if separator is not None:
             return separator.join(str(element) for element in value)
         return (prefix or "") + str(value)
 
-    pattern = r'~\{(?:sep=(["\'])(.*?)\1\s+)?(?:default="([^"]*)"\s+)?(?:"([^"]*)"\s*\+\s*)?(\w+)\}'
+    pattern = r'~\{(?:sep=(["\'])(.*?)\1\s+)?(?:default="([^"]*)"\s+)?(?:"([^"]*)"\s*\+\s*)?(\w+)(?:\[(\d+)\])?\}'
     return re.sub(pattern, fill, command)
 
 
@@ -389,7 +391,7 @@ def run_with_fake_tools(working_dir, command: str, fake_tools: dict) -> tuple[bo
 @pytest.mark.parametrize("bcftools_exit_code, expected_calls", [(0, ["bcftools", "gatk", "gatk"]), (255, ["bcftools"])])
 def test_split_multiallelics_stops_when_bcftools_fails(tmp_path, bcftools_exit_code, expected_calls):
     # eg bcftools norm exits with 255 at a REF mismatch after writing part of its output
-    inputs = {"ref_fasta": "ref.fasta", "input_vcf": "input.vcf", "command_mem": 3500}
+    inputs = {"reference": ["ref.fasta", "ref.fasta.fai", "ref.dict"], "input_vcf": "input.vcf", "command_mem": 3500}
     command = fill_placeholders(task_command(PERMUTECT_WDL, "SplitMultiallelics"), inputs)
     fake_tools = {"bcftools": fake_tool(bcftools_exit_code), "gatk": fake_tool()}
     succeeded, calls = run_with_fake_tools(tmp_path, command, fake_tools)
@@ -410,7 +412,7 @@ def test_permutect_filtering_stops_when_a_tool_fails(tmp_path, failing_tool, exp
     inputs = {
         "mutect_stats": "mutect.stats",
         "mutect2_vcf": "mutect2.vcf",
-        "ref_fasta": "ref.fasta",
+        "reference": ["ref.fasta", "ref.fasta.fai", "ref.dict"],
         "hairpin_filter": False,
         "test_dataset": "test.dataset",
         "artifact_model": "model.pt",

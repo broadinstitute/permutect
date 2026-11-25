@@ -5,18 +5,31 @@ version 1.0
 
 workflow DragstrCalibration {
     input {
+        # The reference FASTA.  Its companion files are not inputs: GATK finds them by name in the FASTA's directory and
+        # accepts no other names, so they must exist there under these names:
+        # - its index, the FASTA's path plus .fai, eg Homo_sapiens_assembly38.fasta.fai
+        # - its sequence dictionary, the FASTA's path with its extension (.fasta, .fa, .fna, .fas or .txt, optionally
+        #   followed by .gz) replaced by .dict, eg Homo_sapiens_assembly38.dict
+        # - for a bgzipped FASTA (.gz), its block index, the FASTA's path plus .gzi
+        # The workflow passes these files to its task along with the FASTA, so that backends that localize files, such as
+        # a local Cromwell, put them beside it, while on Terra the task streams them from the bucket.  A missing companion
+        # file fails the workflow early, with an error naming the file.
         File ref_fasta
-        File ref_fai
-        File ref_dict
         File reads
         File reads_index
     }
 
+    # The reference FASTA and its companion files, derived as Mutect2's WDL derives them: the index, the FASTA's path plus
+    # .fai; the dictionary, the FASTA's path with its extension replaced by .dict; and for a bgzipped FASTA the block
+    # index, its path plus .gzi.  The task uses reference[0] as the FASTA.
+    String ref_fasta_path = "~{ref_fasta}"
+    Array[String] ref_gzi = if sub(ref_fasta_path, "\\.gz$", "") != ref_fasta_path then [ref_fasta_path + ".gzi"] else []
+    Array[File] reference = flatten([[ref_fasta_path, ref_fasta_path + ".fai",
+        sub(ref_fasta_path, "\\.(fasta|fas|fa|fna|txt)(\\.gz)?$", "") + ".dict"], ref_gzi])
+
     call CalibrateDragstrModel {
         input:
-            ref_fasta = ref_fasta,
-            ref_fai = ref_fai,
-            ref_dict = ref_dict,
+            reference = reference,
             reads = reads,
             reads_index = reads_index
     }
@@ -28,9 +41,8 @@ workflow DragstrCalibration {
 
 task CalibrateDragstrModel {
   input {
-    File ref_fasta
-    File ref_fai
-    File ref_dict
+    # the reference FASTA, then its .fai index, its .dict dictionary and, if it's bgzipped, its .gzi block index
+    Array[File] reference
     File reads
     File reads_index
 
@@ -48,9 +60,7 @@ task CalibrateDragstrModel {
   Int command_mem = machine_mem - 500
 
   parameter_meta{
-      ref_fasta: {localization_optional: true}
-      ref_fai: {localization_optional: true}
-      ref_dict: {localization_optional: true}
+      reference: {localization_optional: true}
       reads: {localization_optional: true}
       reads_index: {localization_optional: true}
     }
@@ -59,12 +69,12 @@ task CalibrateDragstrModel {
     set -x
 
     gatk ComposeSTRTableFile \
-      -R ~{ref_fasta} \
+      -R ~{reference[0]} \
       -O str_table.tsv
 
 
     gatk --java-options "-Xmx~{command_mem}m" CalibrateDragstrModel \
-        -R ~{ref_fasta} \
+        -R ~{reference[0]} \
         -I ~{reads} \
         -str str_table.tsv \
         -O params.dragstr \
