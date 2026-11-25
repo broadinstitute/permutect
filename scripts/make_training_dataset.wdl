@@ -71,10 +71,8 @@ workflow MakeTrainingDataset {
         String permutect_docker
         File? gatk_override
         Int scatter_count
-        # Mutect2's tasks and Preprocess have their own preemptible inputs
+        # Mutect2's tasks and Preprocess have their own preemptible inputs and size their own memory and disk
         Int max_retries = 1
-        Int small_task_mem = 4
-        Int small_task_disk = 100
         String? gcs_project_for_requester_pays
 
         # Use as a last resort to increase the disk given to every task in case of ill behaving data
@@ -137,8 +135,6 @@ workflow MakeTrainingDataset {
                 gatk_override = gatk_override_hack,
                 scatter_count = scatter_count,
                 max_retries =  max_retries,
-                small_task_mem = small_task_mem,
-                small_task_disk = small_task_disk,
                 gcs_project_for_requester_pays = gcs_project_for_requester_pays_hack,
                 emergency_extra_disk = emergency_extra_disk
         }
@@ -173,7 +169,6 @@ task Preprocess {
         Int? disk_space
         Int? cpu
         Int? mem
-        Boolean use_ssd = true
     }
 
     Int num_cpus = select_first([cpu, 4])
@@ -181,7 +176,7 @@ task Preprocess {
     # processes normalizes 10,000 data at a time in well under 1 GB, and the main process needs about 0.5 GB.
     Int machine_mem = if defined(mem) then mem * 1000 else (2 + num_cpus) * 1000
     # the plain text dataset, and the preprocessed data twice, in temporary memory maps and in the tarfile, each less
-    # than half the size of the plain text
+    # than half the size of the plain text, on an SSD, since the task reads and writes them all
     Int default_disk_space = ceil(2 * size(training_dataset, "GB")) + 10
 
     command <<<
@@ -196,7 +191,7 @@ task Preprocess {
         docker: permutect_docker
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
-        disks: "local-disk " + select_first([disk_space, default_disk_space]) + if use_ssd then " SSD" else " HDD"
+        disks: "local-disk " + select_first([disk_space, default_disk_space]) + " SSD"
         preemptible: preemptible
         maxRetries: select_first([max_retries, 0])
         cpu: num_cpus

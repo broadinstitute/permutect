@@ -67,8 +67,13 @@ task CalibrateDragstrModel {
   Int machine_mem = if defined(mem) then mem * 1000 else 4000
   Int command_mem = machine_mem - 500
 
+  # The reference is localized, not streamed: ComposeSTRTableFile reads all of it, and GATK reads a streamed FASTA one
+  # 128 kB request at a time, about 25,000 requests for hg38, while localizing it to an SSD takes half a minute.  This
+  # may be reversed (reference: {localization_optional: true}, and the reference left out of the disk size) once GATK
+  # streams FASTAs efficiently.  The disk holds the reference and the STR table.
+  Int default_disk_space = ceil(size(reference, "GB")) + 10
+
   parameter_meta{
-      reference: {localization_optional: true}
       reads: {localization_optional: true}
     }
 
@@ -90,7 +95,7 @@ task CalibrateDragstrModel {
 
   runtime {
      docker: docker
-     disks: "local-disk " + select_first([disk_space, 100]) + " SSD"
+     disks: "local-disk " + select_first([disk_space, default_disk_space]) + " SSD"
      memory: machine_mem + " MB"
      preemptible: preemptible_tries
      cpu: threads

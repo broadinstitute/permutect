@@ -139,6 +139,9 @@ task Concordance {
     	Int preemptible = 2
 	}
 
+    # the truth and evaluated VCFs and the outputs, subsets of them, written twice by extract_status
+    Int disk_space = ceil(3 * (size(truth_vcf, "GB") + size(eval_vcf, "GB"))) + 10
+
     command <<<
         export GATK_LOCAL_JAR=~{default="/root/gatk.jar" gatk_override}
 
@@ -174,7 +177,7 @@ task Concordance {
         memory: "5 GB"
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image
         docker: "${gatk_docker}"
-        disks: "local-disk " + 100 + " HDD"
+        disks: "local-disk " + disk_space + " SSD"
         preemptible: select_first([preemptible, 2])
     }
 
@@ -216,6 +219,9 @@ task Compare {
     	Int preemptible = 2
 	}
 
+    # the VCFs and their discordant records
+    Int disk_space = ceil(2 * size([permutect_ffn, other_ffn, permutect_fp, other_fp], "GB")) + 10
+
     command <<<
         set -e
         export GATK_LOCAL_JAR=~{default="/root/gatk.jar" gatk_override}
@@ -256,7 +262,7 @@ task Compare {
         memory: "5 GB"
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image
         docker: "${gatk_docker}"
-        disks: "local-disk " + 100 + " HDD"
+        disks: "local-disk " + disk_space + " SSD"
         preemptible: select_first([preemptible, 2])
     }
 

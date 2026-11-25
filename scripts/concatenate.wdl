@@ -53,7 +53,8 @@ task concatenate {
 
     runtime {
         docker: "continuumio/anaconda:latest"
-        disks: "local-disk " + select_first([disk_space, 100]) + " HDD"
+        # the files and their concatenation
+        disks: "local-disk " + select_first([disk_space, ceil(2 * size(inputs, "GB")) + 10]) + " SSD"
     }
 
     output {
