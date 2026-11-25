@@ -111,7 +111,10 @@ workflow Permutect {
         String? gcs_project_for_requester_pays
         File? gatk_override
         String permutect_docker
-        Int? preemptible
+        # Each task has its own preemptible input, the number of preemptible (spot) VMs to try on Google before a
+        # regular one: 3 for tasks that take minutes, 1 for SegmentPileups, which can take hours on genomes, and 0 for
+        # PermutectFiltering, since waiting for scarce preemptible GPUs could cost more time than they save money.
+        # Mutect2's tasks have their own defaults (see Mutect2's WDL).
         Int? max_retries
     }
 
@@ -219,7 +222,6 @@ workflow Permutect {
                 gatk_docker = permutect_docker,
                 gcs_project_for_requester_pays = gcs_project_for_requester_pays_hack,
                 gatk_override = gatk_override_hack,
-                preemptible = preemptible,
                 max_retries = max_retries
         }
 
@@ -234,7 +236,6 @@ workflow Permutect {
                 normal_pileups = Mutect2.normal_pileups,
                 f1r2_counts = Mutect2.f1r2_counts,
                 permutect_docker = permutect_docker,
-                preemptible = preemptible,
                 max_retries = max_retries
         }
     }
@@ -244,7 +245,6 @@ workflow Permutect {
             input:
                 cached_m2_outputs = select_first([cached_m2_outputs_to_use]),
                 permutect_docker = permutect_docker,
-                preemptible = preemptible,
                 max_retries = max_retries
         }
     }
@@ -276,7 +276,6 @@ workflow Permutect {
                 segment_pileups_extra_args = segment_pileups_extra_args,
                 permutect_docker = permutect_docker,
                 mem = segment_pileups_mem,
-                preemptible = preemptible,
                 max_retries = max_retries
         }
     }
@@ -289,7 +288,6 @@ workflow Permutect {
                 f1r2_counts = f1r2_counts,
                 germline_model = SegmentPileups.germline_model,
                 permutect_docker = permutect_docker,
-                preemptible = preemptible,
                 max_retries = max_retries
         }
     }
@@ -391,7 +389,7 @@ workflow Permutect {
         String? permutect_filtering_extra_args
 
         String permutect_docker
-        Int? preemptible
+        Int preemptible = 0
         Int? max_retries
         Int? disk_space
         Int? cpu
@@ -453,7 +451,7 @@ workflow Permutect {
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + select_first([disk_space, default_disk_space]) + " SSD"
-        preemptible: select_first([preemptible, 0])
+        preemptible: preemptible
         maxRetries: select_first([max_retries, 0])
         cpu: num_cpus
         gpuType: "nvidia-tesla-t4"
@@ -478,7 +476,7 @@ task SplitMultiallelics {
         # the reference FASTA, then its .fai index, its .dict dictionary and, if it's bgzipped, its .gzi block index
         Array[File] reference
         String gatk_docker
-        Int? preemptible
+        Int preemptible = 3
         Int max_retries = 0
         Int? disk_space
         Int cpu = 1
@@ -508,7 +506,7 @@ task SplitMultiallelics {
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + select_first([disk_space, default_disk_space]) + " SSD"
-        preemptible: select_first([preemptible, 0])
+        preemptible: preemptible
         maxRetries: max_retries
         cpu: cpu
     }
@@ -534,7 +532,7 @@ task Concordance {
 
     	# runtime
     	String gatk_docker = "us.gcr.io/broad-gatk/gatk"
-    	Int preemptible = 0
+        Int preemptible = 3
         Int? disk_space
 	}
 
@@ -592,7 +590,7 @@ task Concordance {
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         docker: "${gatk_docker}"
         disks: "local-disk " + select_first([disk_space, default_disk_space]) + " HDD"
-        preemptible: select_first([preemptible, 2])
+        preemptible: preemptible
     }
 
     output {
@@ -619,7 +617,7 @@ task SegmentPileups {
         String? segment_pileups_extra_args
 
         String permutect_docker
-        Int? preemptible
+        Int preemptible = 1
         Int? max_retries
         Int? cpu
         # memory in GB, which overrides the estimate below
@@ -657,7 +655,7 @@ task SegmentPileups {
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + disk_space + " SSD"
-        preemptible: select_first([preemptible, 0])
+        preemptible: preemptible
         maxRetries: select_first([max_retries, 0])
         cpu: num_cpus
     }
@@ -680,7 +678,7 @@ task LearnReadOrientationModel {
         File? germline_model
 
         String permutect_docker
-        Int? preemptible
+        Int preemptible = 3
         Int? max_retries
         Int? cpu
         # memory in GB, which overrides the estimate below
@@ -710,7 +708,7 @@ task LearnReadOrientationModel {
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + disk_space + " SSD"
-        preemptible: select_first([preemptible, 0])
+        preemptible: preemptible
         maxRetries: select_first([max_retries, 0])
         cpu: num_cpus
     }
@@ -732,7 +730,7 @@ task ArchiveM2Outputs {
         File? normal_pileups
         Array[File] f1r2_counts = []
         String permutect_docker
-        Int? preemptible
+        Int preemptible = 3
         Int? max_retries
     }
 
@@ -777,7 +775,7 @@ task ArchiveM2Outputs {
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: "2 GB"
         disks: "local-disk " + disk_space + " SSD"
-        preemptible: select_first([preemptible, 0])
+        preemptible: preemptible
         maxRetries: select_first([max_retries, 0])
         cpu: 1
     }
@@ -792,7 +790,7 @@ task ExtractM2Outputs {
     input {
         File cached_m2_outputs
         String permutect_docker
-        Int? preemptible
+        Int preemptible = 3
         Int? max_retries
     }
 
@@ -809,7 +807,7 @@ task ExtractM2Outputs {
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: "2 GB"
         disks: "local-disk " + disk_space + " SSD"
-        preemptible: select_first([preemptible, 0])
+        preemptible: preemptible
         maxRetries: select_first([max_retries, 0])
         cpu: 1
     }

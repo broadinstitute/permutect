@@ -71,7 +71,7 @@ workflow MakeTrainingDataset {
         String permutect_docker
         File? gatk_override
         Int scatter_count
-        Int preemptible = 2
+        # Mutect2's tasks and Preprocess have their own preemptible inputs
         Int max_retries = 1
         Int small_task_mem = 4
         Int small_task_disk = 100
@@ -136,7 +136,6 @@ workflow MakeTrainingDataset {
                 gatk_docker = permutect_docker,
                 gatk_override = gatk_override_hack,
                 scatter_count = scatter_count,
-                preemptible = preemptible,
                 max_retries =  max_retries,
                 small_task_mem = small_task_mem,
                 small_task_disk = small_task_disk,
@@ -169,7 +168,7 @@ task Preprocess {
         Int? source_label
 
         String permutect_docker
-        Int? preemptible
+        Int preemptible = 2
         Int? max_retries
         Int? disk_space
         Int? cpu
@@ -198,7 +197,7 @@ task Preprocess {
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + select_first([disk_space, default_disk_space]) + if use_ssd then " SSD" else " HDD"
-        preemptible: select_first([preemptible, 2])
+        preemptible: preemptible
         maxRetries: select_first([max_retries, 0])
         cpu: num_cpus
     }
