@@ -73,7 +73,6 @@ workflow MakeTrainingDataset {
         Int scatter_count
         Int preemptible = 2
         Int max_retries = 1
-        Int small_task_cpu = 2
         Int small_task_mem = 4
         Int small_task_disk = 100
         Int boot_disk_size = 12
@@ -140,7 +139,6 @@ workflow MakeTrainingDataset {
                 scatter_count = scatter_count,
                 preemptible = preemptible,
                 max_retries =  max_retries,
-                small_task_cpu = small_task_cpu,
                 small_task_mem = small_task_mem,
                 small_task_disk = small_task_disk,
                 boot_disk_size = boot_disk_size,
