@@ -622,6 +622,10 @@ task SegmentPileups {
         Int? cpu
         # memory in GB, which overrides the estimate below
         Int? mem
+        # The CPU platform Google gives the task.  On Terra in November 2026, Intel Ice Lake (an N2 machine) took 0.57
+        # times the time on the default CPUs (2.3 GHz Haswell) for 0.60 times the cost, ahead of Cascade Lake, AMD Rome
+        # and Skylake.
+        String cpu_platform = "Intel Ice Lake"
     }
 
     # numba parallelizes the E-step: in November 2026 a genome took 17% less time with 8 vCPUs than with 4, at about 40%
@@ -658,6 +662,7 @@ task SegmentPileups {
         preemptible: preemptible
         maxRetries: select_first([max_retries, 0])
         cpu: num_cpus
+        cpuPlatform: cpu_platform
     }
 
     output {
@@ -683,6 +688,10 @@ task LearnReadOrientationModel {
         Int? cpu
         # memory in GB, which overrides the estimate below
         Int? mem
+        # The CPU platform Google gives the task.  On Terra in November 2026, Intel Ice Lake (an N2 machine) took 0.56
+        # to 0.57 times the time on the default CPUs (2.3 GHz Haswell) for 0.58 to 0.60 times the cost, ahead of AMD
+        # Rome, Cascade Lake and Skylake.
+        String cpu_platform = "Intel Ice Lake"
     }
 
     # torch uses a thread per core: in November 2026 4 vCPUs (2 cores) were 1.6-1.8 times as fast as 2, at the same cost
@@ -711,6 +720,7 @@ task LearnReadOrientationModel {
         preemptible: preemptible
         maxRetries: select_first([max_retries, 0])
         cpu: num_cpus
+        cpuPlatform: cpu_platform
     }
 
     output {
