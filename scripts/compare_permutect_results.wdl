@@ -172,7 +172,7 @@ task Concordance {
 
     runtime {
         memory: "5 GB"
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image
         docker: "${gatk_docker}"
         disks: "local-disk " + 100 + " HDD"
         preemptible: select_first([preemptible, 2])
@@ -254,7 +254,7 @@ task Compare {
 
     runtime {
         memory: "5 GB"
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image
         docker: "${gatk_docker}"
         disks: "local-disk " + 100 + " HDD"
         preemptible: select_first([preemptible, 2])
