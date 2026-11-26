@@ -223,9 +223,9 @@ def fill_placeholders(command: str, inputs: dict) -> str:
         condition = bool(inputs[array_name]) if array_name is not None else inputs[name]
         return if_true if condition else if_false
 
-    condition_pattern = r'(?:length\((\w+)\)\s*>\s*0|(\w+))'
+    condition_pattern = r"(?:length\((\w+)\)\s*>\s*0|(\w+))"
     command = re.sub(
-        r'~\{if\s+' + condition_pattern + r'\s+then\s+"([^"]*)"\s+else\s+"([^"]*)"\}', fill_conditional, command
+        r"~\{if\s+" + condition_pattern + r'\s+then\s+"([^"]*)"\s+else\s+"([^"]*)"\}', fill_conditional, command
     )
 
     def fill(match):
