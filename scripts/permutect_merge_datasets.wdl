@@ -34,14 +34,16 @@ task EditDataset {
         Int? disk_space
         Int? cpu
         Int? mem
-        Boolean use_ssd = true
     }
 
-    # the input datasets and the edited dataset, which is no bigger than them
+    # the input datasets and the edited dataset, which is no bigger than them, on an SSD, since the task reads and
+    # writes them all
     Int default_disk_space = ceil(2 * size(train_tar, "GB")) + 10
 
-    # Mem is in units of GB but our memory runtime value is in MB
-    Int machine_mem = if defined(mem) then mem * 1000 else 16000
+    # Mem is in units of GB but our memory runtime value is in MB.  edit_dataset memory-maps the datasets and edits them
+    # 100,000 data at a time, so its memory doesn't grow with them: in November 2026 merging four 1.4 GB datasets used at
+    # most 1.2 GB of the machine's memory.
+    Int machine_mem = if defined(mem) then mem * 1000 else 4000
 
     command <<<
         set -e
@@ -55,9 +57,9 @@ task EditDataset {
 
     runtime {
         docker: permutect_docker
-        bootDiskSizeGb: 12
+        bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
-        disks: "local-disk " + select_first([disk_space, default_disk_space]) + if use_ssd then " SSD" else " HDD"
+        disks: "local-disk " + select_first([disk_space, default_disk_space]) + " SSD"
         preemptible: select_first([preemptible, 10])
         maxRetries: select_first([max_retries, 0])
         cpu: select_first([cpu, 1])

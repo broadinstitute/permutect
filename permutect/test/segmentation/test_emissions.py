@@ -186,3 +186,39 @@ def test_phased_genotype_log_likelihoods_with_site_adjustments():
     hom_alt = 3
     assert shortfall[hom_alt][2] > unadjusted[hom_alt][2]
     assert dispersed[hom_alt][1] > unadjusted[hom_alt][1] + 10
+
+
+def test_pair_log_likelihoods_match_log_likelihoods():
+    model = EmissionModel(
+        contamination=0.03,
+        error_rate=0.002,
+        hom_concentration=50.0,
+        het_concentration=80.0,
+        reference_bias=1.05,
+        outlier_weight=0.004,
+    )
+    rng = np.random.default_rng(3)
+    pileups = simulate_pileups(model, rng.choice([0.2, 0.5], 500), rng)
+    mafs_k = torch.tensor([0.0, 0.2, 0.35, 0.5], dtype=torch.float64)
+    sites_p, states_p = (torch.from_numpy(rng.integers(0, size, 2000)) for size in (500, 4))
+    with torch.no_grad():
+        expected_p = model.log_likelihoods(pileups, mafs_k)[sites_p, states_p]
+        assert torch.allclose(model.pair_log_likelihoods(pileups, sites_p, mafs_k[states_p]), expected_p)
+
+
+def test_fit_without_pairs_of_tiny_posterior():
+    # leaving out the pairs of a site and a MAF whose posterior is below min_posterior hardly changes the M-step
+    truth = EmissionModel(
+        contamination=0.02, error_rate=0.005, hom_concentration=30.0, het_concentration=60.0, reference_bias=1.1
+    )
+    rng = np.random.default_rng(4)
+    mafs_k = torch.tensor([0.1, 0.3, 0.5], dtype=torch.float64)
+    states_n = rng.integers(0, 3, 20000)
+    pileups = simulate_pileups(truth, mafs_k.numpy()[states_n], rng)
+    # each site's posterior is almost all on its true MAF
+    posteriors_nk = torch.nn.functional.one_hot(torch.from_numpy(states_n), 3).to(torch.float64) * (1 - 2e-9) + 1e-9
+    every_pair, likely_pairs = EmissionModel(contamination=0.02), EmissionModel(contamination=0.02)
+    every_pair.fit(pileups, posteriors_nk, mafs_k, max_iterations=20)
+    likely_pairs.fit(pileups, posteriors_nk, mafs_k, max_iterations=20, min_posterior=1e-6)
+    for every, likely in zip(every_pair.parameters(), likely_pairs.parameters()):
+        assert torch.allclose(every, likely, rtol=1e-5)

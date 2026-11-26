@@ -1,40 +1,75 @@
 version 1.0
 
-import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-testing/versions/60/plain-WDL/descriptor" as m2
+# the Mutect2 workflow: snapshots of GATK's scripts/mutect2_wdl/mutect2.wdl in the public Terra method
+# davidben/mutect2-for-permutect, numbered independently of the mutect2-testing versions.  (Terra accepts imports only
+# from some domains, such as api.firecloud.org and raw.githubusercontent.com, not storage.googleapis.com.)
+import "https://api.firecloud.org/ga4gh/v1/tools/davidben:mutect2-for-permutect/versions/1/plain-WDL/descriptor" as m2
 
 workflow Permutect {
     input {
         File artifact_model
 
-        File? intervals
+        # Files of the genomic intervals to call, such as .interval_list or .bed files, or [] to call the whole genome.
+        # Mutect2's WDL and Concordance give GATK each file with its own -L, and GATK takes the union of their
+        # intervals.  In a Terra configuration, an attribute expression such as workspace.intervals gives a one-element
+        # array.  Elements that are "" are ignored, since Terra may turn unset data table values into "" (see below).
+        # (Earlier versions took a single, optional file.)
+        Array[File] intervals
         File? masks
+        # The reference FASTA.  Its companion files are not inputs: Mutect2 (GATK), bcftools and pysam find them by name in
+        # the FASTA's directory, and GATK accepts no other names, so they must exist there under these names:
+        # - its index, the FASTA's path plus .fai, eg Homo_sapiens_assembly38.fasta.fai
+        # - its sequence dictionary, the FASTA's path with its extension (.fasta, .fa, .fna, .fas or .txt, optionally
+        #   followed by .gz) replaced by .dict, eg Homo_sapiens_assembly38.dict
+        # - for a bgzipped FASTA (.gz), its block index, the FASTA's path plus .gzi
+        # The workflow passes these files to tasks along with the FASTA, so that backends that localize files, such as a
+        # local Cromwell, put them beside it, while on Terra Mutect2 streams them from the bucket.  A missing companion
+        # file fails the workflow early, with an error naming the file.
         File ref_fasta
-        File ref_fai
-        File ref_dict
         Int scatter_count
         Int? num_spectrum_iterations
         Float? spectrum_learning_rate
         Int? spectrum_batch_size
-        File primary_bam
-        File primary_bai
-        File? control_bam
-        File? control_bai
-        # ignore control_bam and control_bai and run Mutect2 on the primary sample alone, eg to compare a tumor-normal
-        # pair's tumor-only calls with its matched-normal calls.  Without control_bam, the run is tumor-only regardless.
+        # The primary (tumor) sample's reads, which Mutect2's WDL takes as tumor_reads: an array whose first element is a
+        # BAM or CRAM file and whose optional second element is its index.  GATK finds the index only by name in the
+        # reads' directory, so it must be there under one of these names, whether or not the array includes it:
+        # - for x.bam: x.bai, x.bam.bai, x.csi or x.bam.csi
+        # - for x.cram: x.crai or x.cram.crai
+        # On Terra, Mutect2 streams the reads from the bucket and finds the index there, so the BAM or CRAM alone
+        # suffices: in a configuration, an attribute expression such as this.tumor_bam gives a one-element array, and
+        # [this.tumor_bam, this.tumor_bai] a two-element one.  On a backend that localizes files, such as a local
+        # Cromwell, include the index, so that it is localized beside the reads.  Including it always works.  Elements
+        # that are "" are ignored, since Terra may turn unset data table values into "" (see below).  (Earlier versions
+        # took the index as the separate input primary_bai.)
+        Array[File]+ primary_bam
+        # The control (normal) sample's reads, likewise, or [] for a tumor-only run.  In a Terra configuration,
+        # this.normal_bam or [this.normal_bam, this.normal_bai] gives [] if the attributes are unset.  (Earlier versions
+        # took the index as the separate input control_bai, and the reads as an optional input that was left unset for a
+        # tumor-only run.)
+        Array[File] control_bam
+        # ignore control_bam and run Mutect2 on the primary sample alone, eg to compare a tumor-normal pair's tumor-only
+        # calls with its matched-normal calls.  With control_bam empty, the run is tumor-only regardless.
         Boolean tumor_only = false
-        File? germline_resource
+        # VCFs, each an array of the VCF and, optionally, its index: [vcf] or [vcf, idx], or [] for none.  GATK finds a
+        # VCF's index only by name beside the VCF: the VCF's path plus .tbi for a bgzipped VCF (.vcf.gz or .vcf.bgz), or
+        # plus .idx for a plain .vcf.  Given [vcf], the workflow derives that path and passes the index along with the
+        # VCF, so that backends that localize files put it beside the VCF, while on Terra the tasks stream both.  So
+        # [vcf] suffices on every backend, and an index given as the second element must be that same file.  In a Terra
+        # configuration, an attribute expression such as workspace.gnomad gives a one-element array.  Elements that are
+        # "" are ignored, since Terra may turn unset data table values into "" (see below).  (Earlier versions took each
+        # index as a separate input, such as germline_resource_idx.)
+        # The germline resource and the common variants are optional but strongly recommended, so each must be given, if
+        # only as [] to go without it.
+        # a germline resource with population allele frequencies, eg gnomAD's, with which Mutect2 recognizes germline
+        # variants
+        Array[File] germline_resource
         # common SNPs with population allele frequencies, for segmenting the tumor and normal by minor allele fraction
         # and estimating the tumor's contamination with segment_pileups.  Their allele frequencies must be accurate, eg
         # from gnomAD.  For genomes these should be common SNPs throughout the genome, not only in exons.
-        File? common_variants_vcf
-        File? test_dataset_truth_vcf    # used for evaluation
-
-        # Indices of the VCFs above, usually unnecessary on both local and cloud backends.  Each VCF's index is assumed to
-        # be the VCF's path plus .tbi for a bgzipped VCF (.vcf.gz or .vcf.bgz) or .idx for a plain .vcf.  Specify an
-        # index only to override that, for example for a non-standard extension.
-        File? germline_resource_idx
-        File? common_variants_vcf_idx
-        File? test_dataset_truth_vcf_idx
+        Array[File] common_variants_vcf
+        # a truth VCF, which labels the test dataset and with which Concordance evaluates Permutect's calls.  It's
+        # genuinely optional and may be left unset.
+        Array[File]? test_dataset_truth_vcf
 
         File? realignment_index_bundle
         File? dragstr_model
@@ -49,7 +84,8 @@ workflow Permutect {
         String? m2_extra_args
         String? split_intervals_extra_args
         Int batch_size
-        Int num_workers
+        # filter_variants' DataLoader workers, by default 2 if PermutectFiltering has at least 4 CPUs and none otherwise
+        Int? num_workers
         Int? gpu_count
         String? concordance_header
         # split each multi-nucleotide variant (MNV) into its constituent SNVs, eg to compare with a truth VCF that represents
@@ -78,7 +114,10 @@ workflow Permutect {
         String? gcs_project_for_requester_pays
         File? gatk_override
         String permutect_docker
-        Int? preemptible
+        # Each task has its own preemptible input, the number of preemptible (spot) VMs to try on Google before a
+        # regular one: 3 for tasks that take minutes, 1 for SegmentPileups, which can take hours on genomes, and 0 for
+        # PermutectFiltering, since waiting for scarce preemptible GPUs could cost more time than they save money.
+        # Mutect2's tasks have their own defaults (see Mutect2's WDL).
         Int? max_retries
     }
 
@@ -95,30 +134,51 @@ workflow Permutect {
         File NONE = ""
     }
 
-    File? intervals_hack = if (select_first([intervals,""]) == "") then NONE else intervals
     File? masks_hack = if (select_first([masks,""]) == "") then NONE else masks
 
-    File? control_bam_hack = if select_first([control_bam, ""]) == "" then NONE else control_bam
-    File? control_bai_hack = if select_first([control_bai, ""]) == "" then NONE else control_bai
-    File? germline_resource_hack = if select_first([germline_resource, ""]) == "" then NONE else germline_resource
-    File? germline_resource_idx_hack = if select_first([germline_resource_idx, ""]) == "" then NONE else germline_resource_idx
+    # The input arrays without their "" elements, which Terra may have made from unset data table values, eg
+    # [this.normal_bam, this.normal_bai] becoming ["", ""].  WDL has no filter function, so a scatter without calls
+    # keeps the other elements, and select_all collects them.  Keep given_arrays and the indices into nonblank below in
+    # the same order.
+    Array[Array[File]] given_arrays = [primary_bam, control_bam, intervals, germline_resource, common_variants_vcf,
+        select_first([test_dataset_truth_vcf, []])]
+    scatter (given_array in given_arrays) {
+        scatter (element in given_array) {
+            if (element != "") {
+                File nonblank_element = element
+            }
+        }
+        Array[File] nonblank = select_all(nonblank_element)
+    }
+    Array[File] primary_reads = nonblank[0]
+    Array[File] control_reads = nonblank[1]
+    Array[File] given_intervals = nonblank[2]
+    Array[File] given_germline_resource = nonblank[3]
+    Array[File] given_common_variants_vcf = nonblank[4]
+    Array[File] given_test_dataset_truth_vcf = nonblank[5]
 
-    File? common_variants_vcf_hack = if select_first([common_variants_vcf, ""]) == "" then NONE else common_variants_vcf
-    File? common_variants_vcf_idx_hack = if select_first([common_variants_vcf_idx, ""]) == "" then NONE else common_variants_vcf_idx
     File? realignment_index_bundle_hack = if select_first([realignment_index_bundle, ""]) == "" then NONE else realignment_index_bundle
     File? dragstr_model_hack = if select_first([dragstr_model, ""]) == "" then NONE else dragstr_model
-    File? test_dataset_truth_vcf_hack = if select_first([test_dataset_truth_vcf, ""]) == "" then NONE else test_dataset_truth_vcf
-    File? test_dataset_truth_vcf_idx_hack = if select_first([test_dataset_truth_vcf_idx, ""]) == "" then NONE else test_dataset_truth_vcf_idx
 
-    # The truth VCF's index, unless given, is its path plus .tbi if it's bgzipped or .idx if not.  Concordance needs it
-    # here.  Mutect2 finds the indices of the other VCFs the same way.
-    if (defined(test_dataset_truth_vcf_hack)) {
-        String test_dataset_truth_vcf_path = "~{test_dataset_truth_vcf_hack}"
-        File conventional_test_dataset_truth_vcf_idx = test_dataset_truth_vcf_path + (if sub(test_dataset_truth_vcf_path, "\\.b?gz$", "") != test_dataset_truth_vcf_path then ".tbi" else ".idx")
-    }
-    File? test_dataset_truth_vcf_idx_or_conventional = if defined(test_dataset_truth_vcf_idx_hack) then test_dataset_truth_vcf_idx_hack else conventional_test_dataset_truth_vcf_idx
+    # The truth VCF with its index, which Concordance needs here: the array as given if it has the index, and otherwise
+    # the VCF and its index's path, as Mutect2's WDL derives the indices of its VCFs: the VCF's path plus .tbi if it's
+    # bgzipped or .idx if not
+    Boolean has_truth_vcf = length(given_test_dataset_truth_vcf) > 0
+    String truth_vcf_path = if has_truth_vcf then "~{given_test_dataset_truth_vcf[0]}" else ""
+    Array[File] test_dataset_truth_vcf_with_index = if length(given_test_dataset_truth_vcf) == 1
+        then [truth_vcf_path,
+            truth_vcf_path + (if sub(truth_vcf_path, "\\.b?gz$", "") != truth_vcf_path then ".tbi" else ".idx")]
+        else given_test_dataset_truth_vcf
 
     File? gatk_override_hack = if select_first([gatk_override, ""]) == "" then NONE else gatk_override
+
+    # The reference FASTA and its companion files for this workflow's tasks, derived as Mutect2's WDL derives them for
+    # its own: the index, the FASTA's path plus .fai; the dictionary, the FASTA's path with its extension replaced by
+    # .dict; and for a bgzipped FASTA the block index, its path plus .gzi.  Tasks use reference[0] as the FASTA.
+    String ref_fasta_path = "~{ref_fasta}"
+    Array[String] ref_gzi = if sub(ref_fasta_path, "\\.gz$", "") != ref_fasta_path then [ref_fasta_path + ".gzi"] else []
+    Array[File] reference = flatten([[ref_fasta_path, ref_fasta_path + ".fai",
+        sub(ref_fasta_path, "\\.(fasta|fas|fa|fna|txt)(\\.gz)?$", "") + ".dict"], ref_gzi])
 
     String? cached_m2_outputs_hack = if (select_first([cached_m2_outputs,""]) == "") then NONE else cached_m2_outputs
     String? tumor_only_cached_m2_outputs_hack = if (select_first([tumor_only_cached_m2_outputs,""]) == "") then NONE else tumor_only_cached_m2_outputs
@@ -126,9 +186,8 @@ workflow Permutect {
     String? gcs_project_for_requester_pays_hack = if select_first([gcs_project_for_requester_pays, ""]) == "" then NONE else gcs_project_for_requester_pays
 
     # whether Mutect2 runs without a normal, which decides the cached Mutect2 outputs to use and the outputs to write
-    Boolean tumor_only_mode = tumor_only || !defined(control_bam_hack)
-    File? normal_bam = if tumor_only_mode then NONE else control_bam_hack
-    File? normal_bai = if tumor_only_mode then NONE else control_bai_hack
+    Boolean tumor_only_mode = tumor_only || length(control_reads) == 0
+    Array[File] normal_reads = if tumor_only_mode then [] else control_reads
     String? cached_m2_outputs_to_use = if tumor_only_mode then tumor_only_cached_m2_outputs_hack else cached_m2_outputs_hack
 
     Boolean use_cache = defined(cached_m2_outputs_to_use)
@@ -137,23 +196,18 @@ workflow Permutect {
             input:
                 make_permutect_training_dataset = false,
                 make_permutect_test_dataset = true,
-                permutect_test_dataset_truth_vcf = test_dataset_truth_vcf_hack,
-                permutect_test_dataset_truth_vcf_idx = test_dataset_truth_vcf_idx_or_conventional,
-                intervals = intervals_hack,
+                permutect_test_dataset_truth_vcf = given_test_dataset_truth_vcf,
+                intervals = given_intervals,
                 masked_intervals = masks_hack,
                 ref_fasta = ref_fasta,
-                ref_fai = ref_fai,
-                ref_dict = ref_dict,
-                tumor_reads = primary_bam,
-                tumor_reads_index = primary_bai,
-                normal_reads = normal_bam,
-                normal_reads_index = normal_bai,
+                tumor_reads = primary_reads,
+                normal_reads = normal_reads,
 
                 scatter_count = scatter_count,
-                germline_resource = germline_resource_hack,
-                germline_resource_idx = germline_resource_idx_hack,
-                common_variants_vcf = common_variants_vcf_hack,
-                common_variants_vcf_idx = common_variants_vcf_idx_hack,
+                germline_resource = given_germline_resource,
+                # Permutect uses no panel of normals
+                pon = [],
+                common_variants_vcf = given_common_variants_vcf,
                 skip_filtering = skip_m2_filtering,
                 # segment_pileups estimates the contamination instead
                 skip_calculate_contamination = true,
@@ -171,7 +225,6 @@ workflow Permutect {
                 gatk_docker = permutect_docker,
                 gcs_project_for_requester_pays = gcs_project_for_requester_pays_hack,
                 gatk_override = gatk_override_hack,
-                preemptible = preemptible,
                 max_retries = max_retries
         }
 
@@ -186,7 +239,6 @@ workflow Permutect {
                 normal_pileups = Mutect2.normal_pileups,
                 f1r2_counts = Mutect2.f1r2_counts,
                 permutect_docker = permutect_docker,
-                preemptible = preemptible,
                 max_retries = max_retries
         }
     }
@@ -196,7 +248,6 @@ workflow Permutect {
             input:
                 cached_m2_outputs = select_first([cached_m2_outputs_to_use]),
                 permutect_docker = permutect_docker,
-                preemptible = preemptible,
                 max_retries = max_retries
         }
     }
@@ -208,9 +259,7 @@ workflow Permutect {
         input:
             input_vcf = select_first([Mutect2.output_vcf, ExtractM2Outputs.mutect2_vcf]),
             input_vcf_idx = select_first([Mutect2.output_vcf_idx, ExtractM2Outputs.mutect2_vcf_idx]),
-            ref_fasta = ref_fasta,
-            ref_fai = ref_fai,
-            ref_dict = ref_dict,
+            reference = reference,
             gatk_docker = permutect_docker
     }
 
@@ -230,7 +279,6 @@ workflow Permutect {
                 segment_pileups_extra_args = segment_pileups_extra_args,
                 permutect_docker = permutect_docker,
                 mem = segment_pileups_mem,
-                preemptible = preemptible,
                 max_retries = max_retries
         }
     }
@@ -243,7 +291,6 @@ workflow Permutect {
                 f1r2_counts = f1r2_counts,
                 germline_model = SegmentPileups.germline_model,
                 permutect_docker = permutect_docker,
-                preemptible = preemptible,
                 max_retries = max_retries
         }
     }
@@ -251,8 +298,7 @@ workflow Permutect {
     call PermutectFiltering {
         input:
             mutect2_vcf = SplitMultiallelics.output_vcf,
-            ref_fasta = ref_fasta,
-            ref_fai = ref_fai,
+            reference = reference,
             hairpin_filter = filter_pcr_errors,
             artifact_model = artifact_model,
             test_dataset = select_first([Mutect2.permutect_test_dataset, ExtractM2Outputs.test_dataset]),
@@ -270,13 +316,13 @@ workflow Permutect {
             permutect_docker = permutect_docker,
     }
 
-    if (defined(test_dataset_truth_vcf_hack)){
+    if (has_truth_vcf) {
         call Concordance as PermutectConcordance {
             input:
-                intervals = intervals_hack,
+                intervals = given_intervals,
                 masks = masks_hack,
-                truth_vcf = select_first([test_dataset_truth_vcf_hack]),
-                truth_vcf_idx = select_first([test_dataset_truth_vcf_idx_or_conventional]),
+                truth_vcf = test_dataset_truth_vcf_with_index[0],
+                truth_vcf_idx = test_dataset_truth_vcf_with_index[1],
                 eval_vcf = PermutectFiltering.output_vcf,
                 eval_vcf_idx = PermutectFiltering.output_vcf_idx,
                 split_mnvs = split_mnvs,
@@ -330,8 +376,8 @@ workflow Permutect {
         File contigs_table
         # Mutect2's VCF with its multiallelic records split, which pre_permutect_filtering filters for filter_variants
         File mutect2_vcf
-        File ref_fasta
-        File ref_fai
+        # the reference FASTA, then its .fai index, its .dict dictionary and, if it's bgzipped, its .gzi block index
+        Array[File] reference
         # whether pre_permutect_filtering applies its hairpin filter as well as its multiallelic indel filter
         Boolean hairpin_filter
         File? germline_model
@@ -341,12 +387,12 @@ workflow Permutect {
         Float? spectrum_learning_rate
         Int? spectrum_batch_size
         Int batch_size
-        Int num_workers
+        Int? num_workers
         Int? gpu_count
         String? permutect_filtering_extra_args
 
         String permutect_docker
-        Int? preemptible
+        Int preemptible = 0
         Int? max_retries
         Int? disk_space
         Int? cpu
@@ -355,6 +401,9 @@ workflow Permutect {
     }
 
     Int num_cpus = select_first([cpu, 4])
+    # In training, 2 DataLoader workers were as fast as more, and without them it was 16% slower.  They and the main process
+    # need at least 4 CPUs (2 cores).
+    Int num_dataloader_workers = select_first([num_workers, if num_cpus >= 4 then 2 else 0])
 
     # Without mem, an estimate of the peak memory from measurements in November 2026, plus 1.5 GB of margin:
     # - preprocessing the test dataset, in a spawned process per CPU that imports torch and permutect, takes about 1.8 GB
@@ -364,16 +413,18 @@ workflow Permutect {
     # - each DataLoader worker adds up to about 0.5 GB.  The batch size and the number of GPUs don't matter.
     Float preprocessing_gb = 1.8 + 0.62 * num_cpus
     Float filtering_gb = 3.75 + 0.64 * size(test_dataset, "GB")
-    Float peak_gb = (if preprocessing_gb > filtering_gb then preprocessing_gb else filtering_gb) + 0.5 * num_workers
+    Float peak_gb = (if preprocessing_gb > filtering_gb then preprocessing_gb else filtering_gb) + 0.5 * num_dataloader_workers
     # in MB as Cromwell counts them, 2^20 bytes, so a little more than the estimate
     Int machine_mem = if defined(mem) then mem * 1000 else ceil((peak_gb + 1.5) * 1000)
-    Int command_mem = machine_mem - 500
+    # the reference, the test dataset and its normalized copy, in temporary memory maps, which is smaller, and the VCF, as
+    # given, pre-filtered and filtered
+    Int default_disk_space = ceil(size(reference, "GB") + 2 * size(test_dataset, "GB") + 3 * size(mutect2_vcf, "GB")) + 10
 
     command <<<
         set -euo pipefail
         genomic_span=`grep "callable" ~{mutect_stats} | while read name value; do echo $value; done`
 
-        pre_permutect_filtering --input ~{mutect2_vcf} --reference ~{ref_fasta} --output pre-filtered.vcf \
+        pre_permutect_filtering --input ~{mutect2_vcf} --reference ~{reference[0]} --output pre-filtered.vcf \
             ~{if hairpin_filter then "" else "--no_hairpin_filter"}
 
         # one process per CPU reads and normalizes chunks of the test dataset
@@ -382,7 +433,7 @@ workflow Permutect {
             --contigs_table ~{contigs_table} \
             --output permutect-filtered.vcf \
             --tensorboard_dir tensorboard \
-            --batch_size ~{batch_size} --num_workers ~{num_workers} --num_processes ~{num_cpus} \
+            --batch_size ~{batch_size} --num_workers ~{num_dataloader_workers} --num_processes ~{num_cpus} \
             ~{" --num_spectrum_iterations " + num_spectrum_iterations} \
             ~{" --spectrum_learning_rate " + spectrum_learning_rate} \
             ~{" --spectrum_batch_size " + spectrum_batch_size} \
@@ -402,8 +453,8 @@ workflow Permutect {
         docker: permutect_docker
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
-        disks: "local-disk " + select_first([disk_space, 100]) + " SSD"
-        preemptible: select_first([preemptible, 0])
+        disks: "local-disk " + select_first([disk_space, default_disk_space]) + " SSD"
+        preemptible: preemptible
         maxRetries: select_first([max_retries, 0])
         cpu: num_cpus
         gpuType: "nvidia-tesla-t4"
@@ -425,13 +476,12 @@ task SplitMultiallelics {
     input {
         File input_vcf
         File input_vcf_idx
-        File ref_fasta
-        File ref_fai
-        File ref_dict
+        # the reference FASTA, then its .fai index, its .dict dictionary and, if it's bgzipped, its .gzi block index
+        Array[File] reference
         String gatk_docker
-        Int? preemptible
+        Int preemptible = 3
         Int max_retries = 0
-        Int disk_space = 100
+        Int? disk_space
         Int cpu = 1
         Int mem = 4
     }
@@ -439,11 +489,13 @@ task SplitMultiallelics {
     # Mem is in units of GB but our command and memory runtime values are in MB
     Int machine_mem = mem * 1000
     Int command_mem = machine_mem - 500
+    # the reference, and the VCF, its split copy and the output
+    Int default_disk_space = ceil(size(reference, "GB") + 3 * size(input_vcf, "GB")) + 10
 
     command <<<
         set -euo pipefail
 
-        bcftools norm -m -any -f ~{ref_fasta} ~{input_vcf} > split.vcf
+        bcftools norm -m -any -f ~{reference[0]} ~{input_vcf} > split.vcf
 
         gatk --java-options "-Xmx~{command_mem}m" IndexFeatureFile -I split.vcf
 
@@ -456,8 +508,8 @@ task SplitMultiallelics {
         docker: gatk_docker
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
-        disks: "local-disk " + disk_space + " SSD"
-        preemptible: select_first([preemptible, 0])
+        disks: "local-disk " + select_first([disk_space, default_disk_space]) + " SSD"
+        preemptible: preemptible
         maxRetries: max_retries
         cpu: cpu
     }
@@ -470,7 +522,8 @@ task SplitMultiallelics {
 
 task Concordance {
     input {
-    	File? intervals
+        # files of genomic intervals, whose union the task evaluates, or none for the whole genome
+        Array[File] intervals
     	File? masks
     	File truth_vcf
     	File truth_vcf_idx
@@ -482,8 +535,13 @@ task Concordance {
 
     	# runtime
     	String gatk_docker = "us.gcr.io/broad-gatk/gatk"
-    	Int preemptible = 0
+        Int preemptible = 3
+        Int? disk_space
 	}
+
+    # The VCFs and Concordance's outputs and the records extracted from them, about twice the VCFs' uncompressed size, which
+    # is up to about five times a bgzipped VCF's
+    Int default_disk_space = ceil(10 * (size(truth_vcf, "GB") + size(eval_vcf, "GB"))) + 10
 
     command <<<
         eval_vcf="~{eval_vcf}"
@@ -500,7 +558,7 @@ task Concordance {
         gatk IndexFeatureFile -I "$eval_vcf"
 
         gatk --java-options "-Xmx2g" Concordance \
-            ~{"-L " + intervals} \
+            ~{if length(intervals) > 0 then "-L " else ""}~{sep=" -L " intervals} \
             ~{"-XL " + masks} \
             -truth ~{truth_vcf} -eval "$eval_vcf" \
             -tpfn "tpfn.vcf" \
@@ -534,8 +592,8 @@ task Concordance {
         memory: "5 GB"
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         docker: "${gatk_docker}"
-        disks: "local-disk " + 100 + " HDD"
-        preemptible: select_first([preemptible, 2])
+        disks: "local-disk " + select_first([disk_space, default_disk_space]) + " HDD"
+        preemptible: preemptible
     }
 
     output {
@@ -562,15 +620,28 @@ task SegmentPileups {
         String? segment_pileups_extra_args
 
         String permutect_docker
-        Int? preemptible
+        Int preemptible = 1
         Int? max_retries
         Int? cpu
+        # memory in GB, which overrides the estimate below
         Int? mem
+        # The CPU platform Google gives the task.  On Terra in November 2026, Intel Ice Lake (an N2 machine) took 0.57
+        # times the time on the default CPUs (2.3 GHz Haswell) for 0.60 times the cost, ahead of Cascade Lake, AMD Rome
+        # and Skylake.
+        String cpu_platform = "Intel Ice Lake"
     }
 
-    # Mem is in units of GB but our runtime value is in MB.  TODO: the segmentation's memory grows with the number of
-    # sites, and for the tens of millions of common SNPs of a genome each sites x MAF states array takes about 11 GB.
-    Int machine_mem = if defined(mem) then mem * 1000 else 16000
+    # numba parallelizes the E-step: in November 2026 a genome took 17% less time with 8 vCPUs than with 4, at about 40%
+    # more cost, and 16 vCPUs were no faster than 8
+    Int num_cpus = select_first([cpu, 4])
+
+    # Without mem, an estimate of the peak memory from measurements in November 2026, plus 1.5 GB of margin: about 2 GB
+    # plus 0.8-1 GB per million sites of the larger sample, whose pileups table holds 32 (hg38) to 41 (b37) million
+    # sites per GB.  The runtime value is in MB.
+    Float tumor_gb = size(tumor_pileups, "GB")
+    Float normal_gb = size(normal_pileups, "GB")
+    Float peak_gb = 2.0 + 33 * (if tumor_gb > normal_gb then tumor_gb else normal_gb)
+    Int machine_mem = if defined(mem) then mem * 1000 else ceil((peak_gb + 1.5) * 1000)
     Int disk_space = ceil(2 * size(tumor_pileups, "GB") + 2 * size(normal_pileups, "GB")) + 10
 
     command <<<
@@ -591,9 +662,10 @@ task SegmentPileups {
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + disk_space + " SSD"
-        preemptible: select_first([preemptible, 0])
+        preemptible: preemptible
         maxRetries: select_first([max_retries, 0])
-        cpu: select_first([cpu, 4])
+        cpu: num_cpus
+        cpuPlatform: cpu_platform
     }
 
     output {
@@ -614,13 +686,27 @@ task LearnReadOrientationModel {
         File? germline_model
 
         String permutect_docker
-        Int? preemptible
+        Int preemptible = 3
         Int? max_retries
+        Int? cpu
+        # memory in GB, which overrides the estimate below
         Int? mem
+        # The CPU platform Google gives the task.  On Terra in November 2026, Intel Ice Lake (an N2 machine) took 0.56
+        # to 0.57 times the time on the default CPUs (2.3 GHz Haswell) for 0.58 to 0.60 times the cost, ahead of AMD
+        # Rome, Cascade Lake and Skylake.
+        String cpu_platform = "Intel Ice Lake"
     }
 
-    # Mem is in units of GB but our runtime value is in MB.  The tool reads the counts without extracting them.
-    Int machine_mem = if defined(mem) then mem * 1000 else 4000
+    # torch uses a thread per core: in November 2026 4 vCPUs (2 cores) were 1.6-1.8 times as fast as 2, at the same cost
+    Int num_cpus = select_first([cpu, 4])
+
+    # Without mem, an estimate of the peak memory from measurements in November 2026, plus 1.5 GB of margin: about 1.35 GB
+    # plus, per GB of F1R2 counts, 81 GB with a germline model, whose minor allele fraction mixtures multiply the distinct
+    # sites, or 32 GB without.  An FFPE genome's 80 MB of counts peaked at 7.8 GB with its germline model.
+    Float peak_gb = 1.35 + (if defined(germline_model) then 81 else 32) * size(f1r2_counts, "GB")
+    # in MB as Cromwell counts them, 2^20 bytes, so a little more than the estimate
+    Int machine_mem = if defined(mem) then mem * 1000 else ceil((peak_gb + 1.5) * 1000)
+    # the counts, which the tool reads without extracting them, and the germline model
     Int disk_space = ceil(size(f1r2_counts, "GB") + size(germline_model, "GB")) + 10
 
     command <<<
@@ -634,9 +720,10 @@ task LearnReadOrientationModel {
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: machine_mem + " MB"
         disks: "local-disk " + disk_space + " SSD"
-        preemptible: select_first([preemptible, 0])
+        preemptible: preemptible
         maxRetries: select_first([max_retries, 0])
-        cpu: 1
+        cpu: num_cpus
+        cpuPlatform: cpu_platform
     }
 
     output {
@@ -656,7 +743,7 @@ task ArchiveM2Outputs {
         File? normal_pileups
         Array[File] f1r2_counts = []
         String permutect_docker
-        Int? preemptible
+        Int preemptible = 3
         Int? max_retries
     }
 
@@ -701,7 +788,7 @@ task ArchiveM2Outputs {
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: "2 GB"
         disks: "local-disk " + disk_space + " SSD"
-        preemptible: select_first([preemptible, 0])
+        preemptible: preemptible
         maxRetries: select_first([max_retries, 0])
         cpu: 1
     }
@@ -716,7 +803,7 @@ task ExtractM2Outputs {
     input {
         File cached_m2_outputs
         String permutect_docker
-        Int? preemptible
+        Int preemptible = 3
         Int? max_retries
     }
 
@@ -733,7 +820,7 @@ task ExtractM2Outputs {
         bootDiskSizeGb: 4  # Cromwell on GCP Batch adds 30 GB for the OS and the docker image (7.2 GB unpacked)
         memory: "2 GB"
         disks: "local-disk " + disk_space + " SSD"
-        preemptible: select_first([preemptible, 0])
+        preemptible: preemptible
         maxRetries: select_first([max_retries, 0])
         cpu: 1
     }

@@ -114,16 +114,24 @@ class EmissionModel(nn.Module):
         het_concentrations = self.het_concentration if het_concentrations is None else het_concentrations
 
         def log_beta_binomial(sample_alt_fractions, concentration: Tensor) -> Tensor:
-            means = self.alt_fractions(sample_alt_fractions, allele_frequencies)
-            if alt_fraction_factors is not None:
-                means = means * alt_fraction_factors
-            return beta_binomial_log_lk(depths, alt_counts, means * concentration, (1 - means) * concentration)
+            return self._log_beta_binomial(
+                alt_counts, depths, allele_frequencies, sample_alt_fractions, concentration, alt_fraction_factors
+            )
 
         hom_ref = log_beta_binomial(0.0, hom_concentrations)
         alt_on_minor_haplotype = log_beta_binomial(mafs, het_concentrations)
         alt_on_major_haplotype = log_beta_binomial(1 - mafs, het_concentrations)
         hom_alt = log_beta_binomial(1.0, hom_concentrations)
         return hom_ref, alt_on_minor_haplotype, alt_on_major_haplotype, hom_alt
+
+    def _log_beta_binomial(
+        self, alt_counts, depths, allele_frequencies, sample_alt_fractions, concentration, alt_fraction_factors=None
+    ) -> Tensor:
+        """log P(alt count | depth, allele frequency) given the fraction of the sample's alleles that are alt"""
+        means = self.alt_fractions(sample_alt_fractions, allele_frequencies)
+        if alt_fraction_factors is not None:
+            means = means * alt_fraction_factors
+        return beta_binomial_log_lk(depths, alt_counts, means * concentration, (1 - means) * concentration)
 
     def genotype_log_likelihoods(
         self, alt_counts: Tensor, depths: Tensor, allele_frequencies: Tensor, mafs: Tensor
@@ -161,20 +169,53 @@ class EmissionModel(nn.Module):
         hom_ref_n1, het_nk, hom_alt_n1 = self.genotype_log_likelihoods(
             alt_counts_n1, depths_n1, allele_frequencies_n1, mafs_k
         )
+        return self._mixture_log_likelihoods(hom_ref_n1, het_nk, hom_alt_n1, depths_n1, allele_frequencies_n1)
 
+    def pair_log_likelihoods(self, pileups: Pileups, sites_p: Tensor, mafs_p: Tensor) -> Tensor:
+        """
+        log P(alt count | depth, allele frequency, MAF) for each pair p of a site, sites_p[p], and a MAF, mafs_p[p].  The
+        hom genotypes' terms, which don't depend on the MAF, are computed once per site.
+        """
+        alt_counts_n, depths_n, allele_frequencies_n = (
+            pileups.alt_counts_n,
+            pileups.depths_n,
+            pileups.allele_frequencies_n,
+        )
+        hom_ref_n, hom_alt_n = (
+            self._log_beta_binomial(alt_counts_n, depths_n, allele_frequencies_n, x, self.hom_concentration)
+            for x in (0.0, 1.0)
+        )
+        alt_counts_p, depths_p, allele_frequencies_p = (
+            x[sites_p] for x in (alt_counts_n, depths_n, allele_frequencies_n)
+        )
+        het_p = torch.logaddexp(
+            *(
+                self._log_beta_binomial(alt_counts_p, depths_p, allele_frequencies_p, x, self.het_concentration)
+                for x in (mafs_p, 1 - mafs_p)
+            )
+        )
+        return self._mixture_log_likelihoods(
+            hom_ref_n[sites_p], het_p, hom_alt_n[sites_p], depths_p, allele_frequencies_p
+        )
+
+    def _mixture_log_likelihoods(
+        self, hom_ref: Tensor, het: Tensor, hom_alt: Tensor, depths: Tensor, allele_frequencies: Tensor
+    ) -> Tensor:
+        """
+        log P(alt count | depth, allele frequency, MAF) given those of the genotypes, the inputs broadcasting together:
+        the germline genotypes, with their Hardy-Weinberg probabilities, mixed with the outliers
+        """
         # the Hardy-Weinberg probabilities (1 - q)^2 of a hom ref, 2q(1 - q) of a het, times 1/2 for each phase, and q^2
         # of a hom alt
-        log_af_n1, log_1m_af_n1 = torch.log(allele_frequencies_n1), torch.log1p(-allele_frequencies_n1)
-        hom_ref_n1 = 2 * log_1m_af_n1 + hom_ref_n1
-        het_nk = log_af_n1 + log_1m_af_n1 + het_nk
-        hom_alt_n1 = 2 * log_af_n1 + hom_alt_n1
-        germline_nk = torch.logsumexp(torch.stack(torch.broadcast_tensors(hom_ref_n1, het_nk, hom_alt_n1)), dim=0)
+        log_af, log_1m_af = torch.log(allele_frequencies), torch.log1p(-allele_frequencies)
+        hom_ref = 2 * log_1m_af + hom_ref
+        het = log_af + log_1m_af + het
+        hom_alt = 2 * log_af + hom_alt
+        germline = torch.logsumexp(torch.stack(torch.broadcast_tensors(hom_ref, het, hom_alt)), dim=0)
 
         # uniform over alt counts from 0 to the depth
-        outlier_n1 = -torch.log(depths_n1 + 1)
-        return torch.logaddexp(
-            torch.log1p(-self.outlier_weight) + germline_nk, torch.log(self.outlier_weight) + outlier_n1
-        )
+        outlier = -torch.log(depths + 1)
+        return torch.logaddexp(torch.log1p(-self.outlier_weight) + germline, torch.log(self.outlier_weight) + outlier)
 
     def compiled_log_likelihoods(self, pileups: Pileups, mafs_k: np.ndarray, dtype=np.float64) -> np.ndarray:
         """
@@ -204,20 +245,27 @@ class EmissionModel(nn.Module):
         mafs_k: Tensor,
         max_iterations: int = 20,
         step_size: float = 1.0,
+        min_posterior: float = 0.0,
     ):
         """
         The M-step: maximize sum_nk posteriors_nk log P(data of site n | MAF k), the log likelihood weighted by the
         E-step's posteriors, over the learned parameters.  The objective is deterministic and has only five parameters,
         so L-BFGS converges in a few iterations.  A step size above 1 over-relaxes the M-step, multiplying the change
         in the unconstrained parameters.
+
+        A site's posterior is concentrated on a few MAFs, so the terms of pairs of a site and a MAF whose posterior is
+        below min_posterior, which carry almost none of the objective's weight, are left out, which makes the objective
+        far cheaper.
         """
         previous_parameters = [parameter.detach().clone() for parameter in self.parameters()]
         optimizer = torch.optim.LBFGS(self.parameters(), max_iter=max_iterations, line_search_fn="strong_wolfe")
         num_sites = len(posteriors_nk)
+        sites_p, states_p = torch.nonzero(posteriors_nk >= min_posterior, as_tuple=True)
+        posteriors_p, mafs_p = posteriors_nk[sites_p, states_p], mafs_k[states_p]
 
         def closure():
             optimizer.zero_grad()
-            loss = -torch.sum(posteriors_nk * self.log_likelihoods(pileups, mafs_k)) / num_sites
+            loss = -torch.sum(posteriors_p * self.pair_log_likelihoods(pileups, sites_p, mafs_p)) / num_sites
             loss.backward()
             return loss
 

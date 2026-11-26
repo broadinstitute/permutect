@@ -55,7 +55,13 @@ def test_index_inputs_are_given_index_files():
                     bindings.append((os.path.basename(wdl), line_number, match.group(1), match.group(2)))
 
     assert bindings, "no index-file inputs found; has the WDL syntax changed?"
-    wrong = [binding for binding in bindings if "idx" not in binding[3]]
+
+    # an index is a file whose name says so, or element 1 of an array of a VCF and its index, such as
+    # truth_vcf_with_index[1]
+    def is_index(expression: str) -> bool:
+        return "idx" in expression or re.search(r"_with_index\[1\]$", expression) is not None
+
+    wrong = [binding for binding in bindings if not is_index(binding[3])]
     assert not wrong, f"index inputs bound to something other than an index: {wrong}"
 
 
@@ -205,28 +211,35 @@ def task_output_globs(wdl_path: str, task_name: str) -> dict:
 
 def fill_placeholders(command: str, inputs: dict) -> str:
     """
-    Replace the WDL placeholders ~{name}, ~{default="..." name}, ~{"prefix" + name}, ~{sep=" " name} and
-    ~{if name then "..." else "..."}, as Cromwell would.  An undefined (None) input gives its default, or nothing, an
-    array input given a separator its elements joined by the separator, and a Boolean input in a conditional the string
-    for its value.
+    Replace the WDL placeholders ~{name}, ~{name[index]}, ~{default="..." name}, ~{"prefix" + name}, ~{sep=" " name},
+    ~{if name then "..." else "..."} and ~{if length(name) > 0 then "..." else "..."}, as Cromwell would.  An undefined
+    (None) input gives its default, or nothing, an array input given a separator its elements joined by the separator,
+    an indexed array input its element, and a Boolean input, or whether an array input is non-empty, in a conditional
+    the string for its value.
     """
 
     def fill_conditional(match):
-        name, if_true, if_false = match.groups()
-        return if_true if inputs[name] else if_false
+        array_name, name, if_true, if_false = match.groups()
+        condition = bool(inputs[array_name]) if array_name is not None else inputs[name]
+        return if_true if condition else if_false
 
-    command = re.sub(r'~\{if\s+(\w+)\s+then\s+"([^"]*)"\s+else\s+"([^"]*)"\}', fill_conditional, command)
+    condition_pattern = r"(?:length\((\w+)\)\s*>\s*0|(\w+))"
+    command = re.sub(
+        r"~\{if\s+" + condition_pattern + r'\s+then\s+"([^"]*)"\s+else\s+"([^"]*)"\}', fill_conditional, command
+    )
 
     def fill(match):
-        _, separator, default, prefix, name = match.groups()
+        _, separator, default, prefix, name, index = match.groups()
         value = inputs[name]
+        if value is not None and index is not None:
+            value = value[int(index)]
         if value is None:
             return default or ""
         if separator is not None:
             return separator.join(str(element) for element in value)
         return (prefix or "") + str(value)
 
-    pattern = r'~\{(?:sep=(["\'])(.*?)\1\s+)?(?:default="([^"]*)"\s+)?(?:"([^"]*)"\s*\+\s*)?(\w+)\}'
+    pattern = r'~\{(?:sep=(["\'])(.*?)\1\s+)?(?:default="([^"]*)"\s+)?(?:"([^"]*)"\s*\+\s*)?(\w+)(?:\[(\d+)\])?\}'
     return re.sub(pattern, fill, command)
 
 
@@ -389,7 +402,7 @@ def run_with_fake_tools(working_dir, command: str, fake_tools: dict) -> tuple[bo
 @pytest.mark.parametrize("bcftools_exit_code, expected_calls", [(0, ["bcftools", "gatk", "gatk"]), (255, ["bcftools"])])
 def test_split_multiallelics_stops_when_bcftools_fails(tmp_path, bcftools_exit_code, expected_calls):
     # eg bcftools norm exits with 255 at a REF mismatch after writing part of its output
-    inputs = {"ref_fasta": "ref.fasta", "input_vcf": "input.vcf", "command_mem": 3500}
+    inputs = {"reference": ["ref.fasta", "ref.fasta.fai", "ref.dict"], "input_vcf": "input.vcf", "command_mem": 3500}
     command = fill_placeholders(task_command(PERMUTECT_WDL, "SplitMultiallelics"), inputs)
     fake_tools = {"bcftools": fake_tool(bcftools_exit_code), "gatk": fake_tool()}
     succeeded, calls = run_with_fake_tools(tmp_path, command, fake_tools)
@@ -410,13 +423,13 @@ def test_permutect_filtering_stops_when_a_tool_fails(tmp_path, failing_tool, exp
     inputs = {
         "mutect_stats": "mutect.stats",
         "mutect2_vcf": "mutect2.vcf",
-        "ref_fasta": "ref.fasta",
+        "reference": ["ref.fasta", "ref.fasta.fai", "ref.dict"],
         "hairpin_filter": False,
         "test_dataset": "test.dataset",
         "artifact_model": "model.pt",
         "contigs_table": "contigs.table",
         "batch_size": 64,
-        "num_workers": 2,
+        "num_dataloader_workers": 2,
         "num_cpus": 2,
         "num_spectrum_iterations": None,
         "spectrum_learning_rate": None,
@@ -449,6 +462,21 @@ def test_concordance_evaluates_the_mnv_split_vcf_if_asked(tmp_path, split_mnvs):
     concordance_calls = [call.split() for call in calls if " Concordance " in call]
     assert len(concordance_calls) == 1
     assert concordance_calls[0][concordance_calls[0].index("-eval") + 1] == evaluated
+
+
+@pytest.mark.parametrize("intervals", [[], ["targets.interval_list", "extra.bed"]])
+def test_concordance_takes_the_union_of_the_intervals(tmp_path, intervals):
+    # Concordance gets each interval file with its own -L, so that GATK takes their union, and no -L without intervals
+    inputs = {"eval_vcf": "permutect.vcf.gz", "truth_vcf": "truth.vcf", "split_mnvs": "false", "intervals": intervals}
+    command = fill_placeholders(task_command(PERMUTECT_WDL, "Concordance"), defaultdict(lambda: None, inputs))
+    recorder = '#!/bin/bash\necho "$(basename "$0") $*" >> calls.txt\n'
+    run_bash(command, tmp_path, {"bcftools": recorder, "gatk": recorder})
+    calls = (tmp_path / "calls.txt").read_text().splitlines()
+
+    concordance_calls = [call.split() for call in calls if " Concordance " in call]
+    assert len(concordance_calls) == 1
+    words = concordance_calls[0]
+    assert [words[n + 1] for n, word in enumerate(words) if word == "-L"] == intervals
 
 
 @pytest.mark.parametrize("with_pileups", [True, False])

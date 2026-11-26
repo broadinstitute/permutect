@@ -113,12 +113,9 @@ def run_permutect_wdl(
     inputs = {
         "Permutect.artifact_model": PERMUTECT_V0_9_2_ARTIFACT_MODEL,
         "Permutect.ref_fasta": HG38_CHR20_REFERENCE,
-        "Permutect.ref_fai": HG38_CHR20_REFERENCE_INDEX,
-        "Permutect.ref_dict": HG38_CHR20_REFERENCE_DICT,
-        "Permutect.primary_bam": placeholder_bam,
-        "Permutect.primary_bai": placeholder_bai,
-        "Permutect.control_bam": placeholder_bam if with_normal else "",
-        "Permutect.control_bai": placeholder_bai if with_normal else "",
+        "Permutect.primary_bam": [placeholder_bam, placeholder_bai],
+        # without a normal, the empty strings that Terra may make of unset data table values, which the workflow ignores
+        "Permutect.control_bam": [placeholder_bam, placeholder_bai] if with_normal else ["", ""],
         "Permutect.scatter_count": 1,
         "Permutect.batch_size": 64,
         # data loader workers share tensors through a Unix socket in TMPDIR, which Cromwell's Local backend puts too
@@ -138,8 +135,10 @@ def run_permutect_wdl(
         "Permutect.permutect_docker": PERMUTECT_TEST_DOCKER,
         # Terra turns unset optional inputs into empty strings, which the workflow must treat as unset
         "Permutect.masks": "",
-        "Permutect.test_dataset_truth_vcf": "",
-        "Permutect.test_dataset_truth_vcf_idx": "",
+        "Permutect.intervals": [""],
+        "Permutect.germline_resource": [""],
+        "Permutect.common_variants_vcf": ["", ""],
+        "Permutect.test_dataset_truth_vcf": [""],
         "Permutect.tumor_only_cached_m2_outputs": (
             make_cached_m2_outputs(
                 working_dir, "tumor_only_cached_m2_outputs.tar", with_pileups, False, learn_read_orientation
@@ -239,7 +238,8 @@ def metadata_without_pcr_error_filtering(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def metadata_without_normal(tmp_path_factory):
-    # tumor-only because the normal is the empty string that Terra gives for unset inputs, although tumor_only is false.
+    # tumor-only because the normal's reads are the empty strings that Terra may give for unset data table values,
+    # although tumor_only is false.
     # Also without pileups, which Mutect2 makes only with common variants.
     working_dir = tmp_path_factory.mktemp("without_normal")
     return run_permutect_wdl(
