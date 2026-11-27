@@ -108,3 +108,20 @@ def test_datasets_must_have_the_same_widths(tmp_path):
         MemoryMappedData(stacked.int_array_ve, floats_ve, 3, stacked.reads_re, 6).save_to_tarfile(tarfiles[-1])
     with pytest.raises(ValueError):
         run_edit_dataset(tmp_path, tarfiles, EditType.KEEP_EVERYTHING)
+
+
+def test_removing_all_data_or_reads_writes_a_loadable_tarfile(tmp_path):
+    # when an edit leaves no reads (eg removing every datum), no reads array is written, matching load_from_tarfile
+    artifacts_only = [make_datum(index, num_reads=2, label=Label.ARTIFACT) for index in range(3)]
+    artifacts_tar = str(tmp_path / "artifacts.tar")
+    MemoryMappedData.from_generator(artifacts_only, len(artifacts_only), 6).save_to_tarfile(artifacts_tar)
+    empty = run_edit_dataset(tmp_path, [artifacts_tar], EditType.REMOVE_ARTIFACTS)
+    assert len(empty) == 0 and empty.num_reads == 0 and empty.reads_mmap is None
+
+    # likewise when kept data all have zero reads while removed data had reads
+    mixed = [make_datum(0, num_reads=2, label=Label.ARTIFACT), make_datum(1, num_reads=0, label=Label.VARIANT)]
+    mixed_tar = str(tmp_path / "mixed.tar")
+    MemoryMappedData.from_generator(mixed, len(mixed), 2).save_to_tarfile(mixed_tar)
+    readless = run_edit_dataset(tmp_path, [mixed_tar], EditType.REMOVE_ARTIFACTS)
+    assert len(readless) == 1 and readless.num_reads == 0 and readless.reads_mmap is None
+    assert readless.get_datum(0).get(Data.POSITION) == 1

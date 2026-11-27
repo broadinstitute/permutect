@@ -81,8 +81,9 @@ def save_edited_data(memory_mapped_datas, edit_type: str, source: int, output_ta
     num_reads, reads_rows = 0, None
     if reads_dtype_and_row_shape is not None:
         num_reads = sum(int(read_counts(data, start, end)[keep].sum()) for data, start, end, keep in blocks)
-        reads_dtype, reads_row_shape = reads_dtype_and_row_shape
-        reads_rows = ArrayRows(reads_dtype, num_reads, reads_row_shape, (kept_reads(*block) for block in blocks))
+        if num_reads > 0:
+            reads_dtype, reads_row_shape = reads_dtype_and_row_shape
+            reads_rows = ArrayRows(reads_dtype, num_reads, reads_row_shape, (kept_reads(*block) for block in blocks))
     write_data_tarfile(output_tarfile, int_rows, float_rows, reads_rows)
     return num_data, num_reads
 
